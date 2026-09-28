@@ -103,7 +103,7 @@ export function Target({
           />
         ))}
 
-        {/* Pulses while DRAW is up and waiting for you */}
+        {/* Pulses while GO is up and waiting for you */}
         <motion.div
           className="absolute inset-0"
           animate={view.phase === "draw" && !reduced ? { scale: [1, 1.045, 1] } : { scale: 1 }}
@@ -322,7 +322,7 @@ function Readout({
           }}
         >
           <p className="font-display text-[27cqw] font-extrabold leading-none tracking-[-0.04em] text-ink-950 [text-shadow:0_2px_0_rgb(255_255_255/0.35)]">
-            DRAW!
+            GO!
           </p>
           <p className="mt-[2cqw] pl-[0.4em] text-[clamp(11px,4.4cqw,16px)] font-extrabold uppercase tracking-[0.4em] text-ink-950/70">
             Tap!

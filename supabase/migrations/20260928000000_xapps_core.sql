@@ -204,7 +204,7 @@ insert into public.apps
 values
   ('meme-duel', 'Meme Duel', 'Same template. Two captions. The crowd decides.', 'contests', '🖼️', '#ff5ca8', '#8b5cff',
    '/embed/meme-duel', '{async,live,practice}', 'votes', 5, true, 'published'),
-  ('quick-draw', 'Quick Draw', 'Wait for it… wait for it… DRAW.', 'games', '⚡', '#ffe14d', '#ff7a1a',
+  ('quick-draw', 'Reflexes', 'Wait for it… wait for it… GO.', 'games', '⚡', '#ffe14d', '#ff7a1a',
    '/embed/quick-draw', '{live,practice}', 'high', 5, true, 'published'),
   ('hot-takes', 'Hot Takes', 'Pick a side. Make your case. Get ratioed or crowned.', 'debates', '🔥', '#ff9a3d', '#ff3d6e',
    '/embed/hot-takes', '{async,live,practice}', 'votes', 5, true, 'published'),

@@ -324,7 +324,7 @@ describe("presentation", () => {
   it("labels results", () => {
     expect(resultLabel(tap(231))).toBe("231 ms");
     expect(resultLabel(FALSE_START)).toBe("Too early");
-    expect(resultLabel(NO_DRAW)).toBe("No draw");
+    expect(resultLabel(NO_DRAW)).toBe("Missed");
   });
 
   it("builds JSON-safe submission data", () => {

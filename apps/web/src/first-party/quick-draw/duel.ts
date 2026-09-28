@@ -1,5 +1,5 @@
 /**
- * Quick Draw — the duel engine.
+ * Reflexes — the duel engine.
  *
  * A small, framework-free state machine that owns the round clock
  * (intro → STEADY → DRAW → shot → reveal → … → final), talks to the opponent

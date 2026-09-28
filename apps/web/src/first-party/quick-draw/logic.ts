@@ -1,5 +1,5 @@
 /**
- * Quick Draw — pure game rules.
+ * Reflexes — pure game rules.
  *
  * No React, no timers, no SDK side effects: everything here is deterministic
  * given its inputs, so both clients of a live duel compute identical outcomes
@@ -37,7 +37,7 @@ export const STEADY_MIN_MS = 1600;
 export const STEADY_MAX_MS = 4200;
 /** "Round 2" banner before STEADY. Identical on both clients. */
 export const INTRO_MS = 1100;
-/** If you haven't tapped this long after DRAW, the round is a "no draw" for you. */
+/** If you haven't tapped this long after GO, the round is a miss for you. */
 export const MISS_AFTER_MS = 3000;
 /** Give up on the opponent's result this long after our own DRAW (they "never drew"). */
 export const OPP_TIMEOUT_MS = 8000;
@@ -311,11 +311,11 @@ export function describeOutcome(outcome: RoundOutcome, oppName: string): Verdict
   }
 }
 
-/** Short label for one result: "231 ms", "Too early", "No draw". */
+/** Short label for one result: "231 ms", "Too early", "Missed". */
 export function resultLabel(result: RoundResult): string {
   const kind = classify(result);
   if (kind === "false-start") return "Too early";
-  if (kind === "miss") return "No draw";
+  if (kind === "miss") return "Missed";
   return `${result.ms} ms`;
 }
 

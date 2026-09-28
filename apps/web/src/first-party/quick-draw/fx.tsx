@@ -18,7 +18,7 @@ export interface Ripple {
 /**
  * High-noon tension: a vignette that slowly darkens and reddens while STEADY
  * lasts. Its ramp is tied to the longest possible STEADY, never to this
- * round's delay, so it can't be read to predict DRAW.
+ * round's delay, so it can't be read to predict GO.
  */
 export function TensionLayer({ active }: { active: boolean }) {
   const ramp = active
@@ -48,7 +48,7 @@ export function TensionLayer({ active }: { active: boolean }) {
   );
 }
 
-/** Full-screen flash: white for DRAW, red for a false start. */
+/** Full-screen flash: white for GO, red for a false start. */
 export function FlashLayer({ flash, reduced }: { flash: Flash | null; reduced: boolean }) {
   return (
     <AnimatePresence>

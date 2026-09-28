@@ -14,7 +14,7 @@ Anyone can build and list their own app with the `@xapps/sdk`.
 | Default app | Format | Scoring |
 | --- | --- | --- |
 | 🖼️ Meme Duel | Caption the same template, drag stickers, and let the crowd vote | votes |
-| ⚡ Quick Draw | Best-of-five reflex duel, with reaction times measured on each device | rounds won |
+| ⚡ Reflexes | Best-of-five reflex duel, with reaction times measured on each device | rounds won |
 | 🔥 Hot Takes | You're assigned a side; argue it in 280 characters, and the crowd picks the better argument | votes |
 | 🔴 Four in a Row | Classic connect-four with physics and a minimax bot | win/draw/loss |
 | 🧩 Emoji Decode | Eight emoji puzzles, where both speed and accuracy score | points |

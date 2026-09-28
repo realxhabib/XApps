@@ -77,7 +77,7 @@ async function submitDuel(
     display: {
       kind: "text",
       title: `${score.me}–${score.opp}`,
-      body: data.bestMs !== null ? `Fastest draw: ${data.bestMs} ms` : "No clean draws",
+      body: data.bestMs !== null ? `Fastest reaction: ${data.bestMs} ms` : "No clean taps",
     },
   });
 }
@@ -269,14 +269,14 @@ export function QuickDraw() {
     if (result) engineRef.current?.halt();
   }, [result]);
 
-  // Keep render latency out of reaction times: report when DRAW actually painted.
+  // Keep render latency out of reaction times: report when GO actually painted.
   useLayoutEffect(() => {
     if (view.phase !== "draw") return;
     const raf = requestAnimationFrame(() => engineRef.current?.markSignalPainted(performance.now()));
     return () => cancelAnimationFrame(raf);
   }, [view.phase, view.round]);
 
-  // Heartbeat during STEADY. Its tempo follows elapsed time only, so it can't tip off DRAW.
+  // Heartbeat during STEADY. Its tempo follows elapsed time only, so it can't tip off GO.
   useEffect(() => {
     if (view.phase !== "steady") return;
     const startedAt = performance.now();
@@ -405,7 +405,7 @@ export function QuickDraw() {
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center">
             <button
               type="button"
-              aria-label={view.phase === "draw" ? "Draw! Tap now" : "Target. Tap only after DRAW appears"}
+              aria-label={view.phase === "draw" ? "Go! Tap now" : "Target. Tap only after GO appears"}
               // Pointer input is handled on pointerdown by the whole stage (no click delay);
               // this covers assistive tech that activates the button without a pointer.
               onClick={(e) => {
@@ -449,7 +449,7 @@ function hintFor(view: DuelView, oppName: string, live: boolean): Hint | null {
   const { phase, mine, opp, oppFalseStart, round } = view;
   switch (phase) {
     case "intro":
-      return { key: `intro-${round}`, text: "Wait for DRAW, then tap anywhere", desktop: " · or press Space" };
+      return { key: `intro-${round}`, text: "Wait for GO, then tap anywhere", desktop: " · or press Space" };
     case "steady":
       return oppFalseStart
         ? { key: `ofs-${round}`, text: `${oppName} jumped the gun — hold steady!`, tone: "hot" }
@@ -524,7 +524,7 @@ function Announcer({ view, oppName }: { view: DuelView; oppName: string }) {
   let text = "";
   if (view.phase === "intro") text = `Round ${view.round}. Get ready.`;
   else if (view.phase === "steady") text = "Steady.";
-  else if (view.phase === "draw") text = "Draw! Tap now.";
+  else if (view.phase === "draw") text = "Go! Tap now.";
   else if (view.phase === "shot" && view.mine) {
     const kind = classify(view.mine);
     text = kind === "tap" ? `${view.mine.ms} milliseconds.` : kind === "false-start" ? "Too early." : "Too slow.";
@@ -558,9 +558,8 @@ function Pregame({ me, opp, oppName }: { me: PlayerInfo; opp: PlayerInfo; oppNam
           variants={fadeUp}
           className="font-display text-[clamp(44px,13vw,72px)] font-extrabold leading-[0.9] tracking-tight"
         >
-          Quick{" "}
           <span className="bg-[linear-gradient(100deg,#fff8d6,var(--accent-from)_40%,var(--accent-to))] bg-clip-text text-transparent">
-            Draw
+            Reflexes
           </span>
         </motion.h1>
 
@@ -581,7 +580,7 @@ function Pregame({ me, opp, oppName }: { me: PlayerInfo; opp: PlayerInfo; oppNam
 
         <motion.p variants={fadeUp} className="max-w-[19rem] text-sm leading-relaxed text-ink-300">
           Hold still while it says <b className="text-ink-50">STEADY</b>. The instant it flashes{" "}
-          <b className="text-[var(--accent-from)]">DRAW</b>, tap. Jump early and you lose the round.
+          <b className="text-[var(--accent-from)]">GO</b>, tap. Jump early and you lose the round.
         </motion.p>
 
         <motion.div variants={fadeUp} className="flex items-center gap-4">

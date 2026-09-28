@@ -37,8 +37,8 @@ export const OFFICIAL_APPS: AppManifest[] = [
   },
   {
     slug: "quick-draw",
-    name: "Quick Draw",
-    tagline: "Wait for it… wait for it… DRAW.",
+    name: "Reflexes",
+    tagline: "Wait for it… wait for it… GO.",
     description:
       "A best-of-five reflex duel. Hold steady while the tension builds, then tap the instant the signal fires. Tap early and you lose the round. Reaction times are measured on each device, so lag never decides a duel.",
     category: "games",
@@ -51,7 +51,7 @@ export const OFFICIAL_APPS: AppManifest[] = [
     durationLabel: "~45 sec",
     howTo: [
       "Watch the screen. Don't touch anything while it says STEADY.",
-      "The moment it flashes DRAW, tap as fast as you can.",
+      "The moment it flashes GO, tap as fast as you can.",
       "Faster reaction wins the round. First to three rounds takes the duel.",
     ],
     official: true,

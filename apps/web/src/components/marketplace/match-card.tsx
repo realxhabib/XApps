@@ -141,7 +141,7 @@ export function MatchCard({
   );
 }
 
-/** "⚡ @maya beat @leo in Quick Draw" pill for tickers. */
+/** "⚡ @maya beat @leo in Reflexes" pill for tickers. */
 export function ActivityPill({ match, apps }: { match: Match; apps?: AppManifest[] }) {
   const app = apps?.find((a) => a.slug === match.appSlug) ?? getOfficialApp(match.appSlug);
   const winner = match.players.find((p) => p.userId === match.winnerId);
