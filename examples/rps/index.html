@@ -1,0 +1,226 @@
+<!doctype html>
+<!--
+  RPS Showdown — a complete XApps app in one HTML file, no build step.
+
+  It shows the whole SDK surface a head-to-head app needs:
+    • connect() + ready() + onStart()      lifecycle
+    • room.send / room.on                  realtime messages between players
+    • commit → reveal                      so nobody can peek at the other pick
+    • isBot / submitFor                    practice mode against a bot
+    • submit()                             the platform decides the winner
+    • ui.setScores / ui.setStatus          drive the host's HUD
+
+  Hosting it yourself? Import the SDK from your XApps host:
+    import { connect } from "https://<your-xapps-host>/sdk/v1.js";
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RPS Showdown</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --a: #9aa4ff;
+        --b: #5b6bff;
+        --ink: #f6f7fb;
+        --muted: #8d96ad;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: radial-gradient(ellipse at 20% 0%, #232a66 0%, transparent 55%),
+          radial-gradient(ellipse at 100% 100%, #2b1f5e 0%, transparent 50%), #07080d;
+        color: var(--ink);
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        user-select: none;
+      }
+      main { width: min(560px, 100% - 32px); text-align: center; }
+      h1 { font-size: clamp(28px, 6vw, 44px); margin: 0; letter-spacing: -0.03em; }
+      .muted { color: var(--muted); }
+      .arena { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; margin: 28px 0; }
+      .fighter { display: grid; justify-items: center; gap: 8px; }
+      .hand { font-size: clamp(56px, 14vw, 88px); height: 1.2em; display: grid; place-items: center; }
+      .hand.shake { animation: shake 0.5s ease-in-out 3; transform-origin: 50% 90%; }
+      .hand.reveal { animation: pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1); }
+      .name { font-weight: 700; font-size: 14px; }
+      .pips { display: flex; gap: 6px; }
+      .pip { width: 10px; height: 10px; border-radius: 99px; background: rgb(255 255 255 / 0.12); transition: background 0.3s, transform 0.3s; }
+      .pip.on { background: linear-gradient(135deg, var(--a), var(--b)); transform: scale(1.25); }
+      .vs { font-weight: 900; font-style: italic; font-size: 22px; color: var(--muted); }
+      .picks { display: flex; justify-content: center; gap: 12px; }
+      .pick {
+        font-size: 40px; width: 88px; height: 88px; border-radius: 28px; cursor: pointer;
+        border: 1px solid rgb(255 255 255 / 0.12); background: rgb(255 255 255 / 0.05); color: inherit;
+        transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.2s, border-color 0.2s;
+      }
+      .pick:hover:not(:disabled) { transform: translateY(-6px) rotate(-4deg); background: rgb(255 255 255 / 0.1); }
+      .pick:active:not(:disabled) { transform: scale(0.92); }
+      .pick.chosen { border-color: var(--a); background: rgb(154 164 255 / 0.18); transform: translateY(-4px); }
+      .pick:disabled:not(.chosen) { opacity: 0.35; cursor: default; }
+      .status { min-height: 28px; margin-top: 20px; font-weight: 600; }
+      .banner { font-size: 28px; font-weight: 900; letter-spacing: -0.02em; animation: pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1); }
+      @keyframes shake { 0%, 100% { transform: rotate(0) translateY(0); } 50% { transform: rotate(-12deg) translateY(-14px); } }
+      @keyframes pop { from { transform: scale(0.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) { .hand.shake, .hand.reveal, .banner { animation: none; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>✊ RPS Showdown</h1>
+      <p class="muted">First to two wins. Picks are sealed until both players commit.</p>
+      <div class="arena">
+        <div class="fighter"><div id="my-hand" class="hand">✊</div><div id="my-name" class="name">You</div><div id="my-pips" class="pips"></div></div>
+        <div class="vs">VS</div>
+        <div class="fighter"><div id="their-hand" class="hand">✊</div><div id="their-name" class="name">…</div><div id="their-pips" class="pips"></div></div>
+      </div>
+      <div class="picks" id="picks">
+        <button class="pick" data-pick="rock" aria-label="Rock">✊</button>
+        <button class="pick" data-pick="paper" aria-label="Paper">✋</button>
+        <button class="pick" data-pick="scissors" aria-label="Scissors">✌️</button>
+      </div>
+      <div class="status" id="status">Connecting…</div>
+    </main>
+
+    <script type="module">
+      import { connect } from "/sdk/v1.js";
+
+      const EMOJI = { rock: "✊", paper: "✋", scissors: "✌️" };
+      const BEATS = { rock: "scissors", paper: "rock", scissors: "paper" };
+      const TO_WIN = 2;
+      const $ = (id) => document.getElementById(id);
+
+      const xapps = await connect();
+      const me = xapps.me;
+      const them = xapps.opponent;
+      const bot = them?.isBot ? them : null;
+      $("my-name").textContent = `@${me.handle}`;
+      $("their-name").textContent = them ? `@${them.handle}` : "Waiting…";
+
+      let round = 1;
+      let score = { me: 0, them: 0 };
+      let myPick = null;
+      let mySalt = null;
+      const commits = new Map(); // round -> hash from opponent
+      const reveals = new Map(); // round -> { pick, salt } from opponent
+      let finished = false;
+
+      const status = (text) => {
+        $("status").textContent = text;
+        xapps.ui.setStatus(text);
+      };
+      const renderPips = () => {
+        for (const [el, n] of [[$("my-pips"), score.me], [$("their-pips"), score.them]]) {
+          el.innerHTML = Array.from({ length: TO_WIN }, (_, i) => `<span class="pip ${i < n ? "on" : ""}"></span>`).join("");
+        }
+        if (them) xapps.ui.setScores({ [me.id]: score.me, [them.id]: score.them });
+      };
+      const setPicking = (enabled) => {
+        for (const b of document.querySelectorAll(".pick")) {
+          b.disabled = !enabled;
+          if (enabled) b.classList.remove("chosen");
+        }
+      };
+      async function sha256(text) {
+        const bytes = new TextEncoder().encode(text);
+        const digest = await crypto.subtle.digest("SHA-256", bytes);
+        return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+      }
+
+      // --- Commit → reveal protocol --------------------------------------
+      // 1. Each player sends hash(pick + salt). 2. Once both hashes are in,
+      //    each reveals pick + salt. 3. Everyone verifies and scores the round.
+      xapps.room.on("commit", ({ round: r, hash }) => {
+        commits.set(r, hash);
+        maybeReveal();
+      });
+      xapps.room.on("reveal", async ({ round: r, pick, salt }) => {
+        if ((await sha256(pick + salt)) !== commits.get(r)) return; // tampered reveal: ignore
+        reveals.set(r, { pick });
+        maybeScore();
+      });
+
+      function maybeReveal() {
+        if (myPick && commits.has(round) && !reveals.has(`sent-${round}`)) {
+          reveals.set(`sent-${round}`, true);
+          xapps.room.send("reveal", { round, pick: myPick, salt: mySalt });
+        }
+      }
+
+      async function choose(pick) {
+        if (myPick || finished) return;
+        myPick = pick;
+        mySalt = crypto.randomUUID();
+        document.querySelector(`[data-pick="${pick}"]`).classList.add("chosen");
+        setPicking(false);
+        xapps.ui.haptic("light");
+        status(them ? `Locked in. Waiting for @${them.handle}…` : "Locked in.");
+        if (bot) {
+          // Practice: this client plays the bot too.
+          setTimeout(() => {
+            const botPick = ["rock", "paper", "scissors"][Math.floor(Math.random() * 3)];
+            reveals.set(round, { pick: botPick });
+            maybeScore();
+          }, 500 + Math.random() * 900);
+        } else {
+          xapps.room.send("commit", { round, hash: await sha256(pick + mySalt) });
+          maybeReveal();
+        }
+      }
+
+      function maybeScore() {
+        const theirs = reveals.get(round)?.pick;
+        if (!myPick || !theirs) return;
+        for (const [el, p] of [[$("my-hand"), myPick], [$("their-hand"), theirs]]) {
+          el.classList.remove("shake");
+          el.textContent = EMOJI[p];
+          el.classList.remove("reveal");
+          void el.offsetWidth; // restart the animation
+          el.classList.add("reveal");
+        }
+        if (BEATS[myPick] === theirs) score.me++;
+        else if (BEATS[theirs] === myPick) score.them++;
+        const outcome = myPick === theirs ? "Tie — go again!" : BEATS[myPick] === theirs ? "You take the round!" : "They take the round.";
+        status(outcome);
+        renderPips();
+        myPick = null;
+        round++;
+        if (score.me >= TO_WIN || score.them >= TO_WIN) return finish();
+        setTimeout(nextRound, 1400);
+      }
+
+      function nextRound() {
+        for (const el of [$("my-hand"), $("their-hand")]) {
+          el.textContent = "✊";
+          el.classList.add("shake");
+        }
+        setPicking(true);
+        status(`Round ${round} — pick your move`);
+      }
+
+      async function finish() {
+        finished = true;
+        setPicking(false);
+        const won = score.me > score.them;
+        $("status").innerHTML = `<div class="banner">${won ? "You win! 🏆" : "Defeat 💀"}</div>`;
+        await xapps.submit({ score: score.me, data: { rounds: round - 1 } });
+        if (bot) await xapps.submitFor(bot.id, { score: score.them });
+      }
+
+      document.querySelectorAll(".pick").forEach((b) => b.addEventListener("click", () => choose(b.dataset.pick)));
+      window.addEventListener("keydown", (e) => {
+        const key = { r: "rock", p: "paper", s: "scissors", 1: "rock", 2: "paper", 3: "scissors" }[e.key.toLowerCase()];
+        if (key) choose(key);
+      });
+
+      renderPips();
+      setPicking(false);
+      status("Get ready…");
+      xapps.onStart(() => nextRound());
+      await xapps.ready();
+    </script>
+  </body>
+</html>

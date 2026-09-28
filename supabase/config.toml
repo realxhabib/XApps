@@ -1,0 +1,27 @@
+# Supabase CLI config — only needed for `supabase start` (local stack) and
+# `supabase link` / `supabase db push` (deploying migrations to a project).
+# Full reference: https://supabase.com/docs/guides/local-development/cli/config
+project_id = "xapps"
+
+[api]
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+
+[realtime]
+enabled = true
+
+[studio]
+port = 54323
+
+[auth]
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3000/auth/callback"]
+
+# Sign in with X: enable the "X / Twitter (OAuth 2.0)" provider in your
+# project's dashboard (Authentication → Providers). For the local stack, add
+# the provider block for your CLI version here with your X client id/secret.

@@ -1,0 +1,294 @@
+/**
+ * XApps wire protocol.
+ *
+ * Apps run inside a sandboxed iframe on the XApps host. Everything an app can
+ * do (talk to opponents, submit results, ask the host to celebrate…) is a
+ * message on this protocol. Both the app SDK (`connect()`) and the host bridge
+ * (`createHostBridge()`) are built from the types in this file, so it is the
+ * single source of truth for the platform contract.
+ */
+
+export const PROTOCOL_VERSION = 1 as const;
+export const SDK_VERSION = "0.1.0";
+
+export type Json =
+  | string
+  | number
+  | boolean
+  | null
+  | Json[]
+  | { [key: string]: Json };
+
+/* ------------------------------------------------------------------------ */
+/* Launch context                                                           */
+/* ------------------------------------------------------------------------ */
+
+/** How a match is being played. */
+export type MatchMode =
+  /** Everyone is online at the same time, talking through the room. */
+  | "live"
+  /** Players take their turn whenever they like; results are compared later. */
+  | "async"
+  /** Solo run against a bot that the app drives itself. Does not affect rank. */
+  | "practice"
+  /** Developer playground. Anything goes. */
+  | "sandbox";
+
+export type MatchStatus =
+  | "open"
+  | "pending"
+  | "active"
+  | "voting"
+  | "completed"
+  | "cancelled"
+  | "declined"
+  | "expired";
+
+/** How the platform decides the winner once everyone has submitted. */
+export type Scoring = "high" | "low" | "votes";
+
+export interface PlayerInfo {
+  id: string;
+  handle: string;
+  name: string;
+  avatarUrl: string | null;
+  seat: number;
+  /** Bots only appear in practice/sandbox matches. Your app plays for them. */
+  isBot: boolean;
+  /** True once this player has submitted their final score/entry. */
+  submitted: boolean;
+  /** Final score, when known (async opponents who already played, finished matches). */
+  score: number | null;
+}
+
+export interface LaunchContext {
+  app: { id: string; slug: string; name: string };
+  /** The person using this copy of your app. */
+  user: { id: string; handle: string; name: string; avatarUrl: string | null };
+  match: {
+    id: string;
+    mode: MatchMode;
+    status: MatchStatus;
+    scoring: Scoring;
+    /** Shared seed. Use `createRandom(match.seed)` so every client sees the same world. */
+    seed: string;
+    players: PlayerInfo[];
+    /** Seat of the local user inside `players`. */
+    seat: number;
+    settings: { [key: string]: Json };
+  };
+  host: { name: string; version: string; origin: string };
+  locale: string;
+}
+
+export interface Submission {
+  /** Numeric result (points, ms, rounds won…). Required for `high`/`low` scoring. */
+  score?: number;
+  /** Anything your app needs to remember about this entry. */
+  data?: Json;
+  /** What the crowd sees when judging (`votes` scoring) and what feeds show. */
+  display?: SubmissionDisplay;
+}
+
+export type SubmissionDisplay =
+  | { kind: "text"; title?: string; body: string; tone?: string }
+  /** Self-contained SVG markup. Rendered by the host through <img>, so scripts never run. */
+  | { kind: "svg"; svg: string; alt: string }
+  | { kind: "image"; url: string; alt: string };
+
+export interface MatchResult {
+  matchId: string;
+  status: MatchStatus;
+  /** `null` means a draw (or no result yet). */
+  winnerId: string | null;
+  scores: { [playerId: string]: number | null };
+  votes?: { [playerId: string]: number };
+  xp?: { [playerId: string]: number };
+}
+
+export interface SubmitResult {
+  /** `waiting` until every player has submitted (or the crowd has voted). */
+  state: "waiting" | "final";
+  result: MatchResult | null;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Requests: app → host                                                     */
+/* ------------------------------------------------------------------------ */
+
+export type ToastTone = "info" | "success" | "warning" | "danger";
+export type HapticStyle = "light" | "medium" | "heavy" | "success" | "error";
+
+export interface RequestMap {
+  /** The app has rendered and is ready for the match to start. */
+  ready: { params: Record<string, never>; result: { startedAt: number | null } };
+  /** Broadcast an event to every other player in the room. */
+  "room.send": { params: { type: string; payload: Json }; result: null };
+  /** Submit a final result for yourself, or for a bot you are driving (`playerId`). */
+  "match.submit": { params: Submission & { playerId?: string }; result: SubmitResult };
+  /** Give up. The opponent wins. */
+  "match.forfeit": { params: Record<string, never>; result: null };
+  "ui.toast": { params: { message: string; tone?: ToastTone }; result: null };
+  "ui.celebrate": { params: { intensity?: "small" | "big" }; result: null };
+  "ui.haptic": { params: { style?: HapticStyle }; result: null };
+  /** One line of status text shown in the host HUD ("Your turn", "Round 3/5"). */
+  "ui.status": { params: { text: string | null }; result: null };
+  /** Live scoreboard in the host HUD. */
+  "ui.scores": { params: { scores: { [playerId: string]: number | string } }; result: null };
+  /** Highlights whose turn it is in the host HUD. */
+  "ui.turn": { params: { playerId: string | null }; result: null };
+  /** Opens a pre-filled post composer on X. */
+  "social.share": { params: { text: string; url?: string }; result: null };
+  /** Tiny per-user, per-app key/value store (≤ 16 KB per value). */
+  "storage.get": { params: { key: string }; result: Json | null };
+  "storage.set": { params: { key: string; value: Json }; result: null };
+}
+
+export type RequestMethod = keyof RequestMap;
+export type RequestParams<M extends RequestMethod> = RequestMap[M]["params"];
+export type RequestResult<M extends RequestMethod> = RequestMap[M]["result"];
+
+export const REQUEST_METHODS: readonly RequestMethod[] = [
+  "ready",
+  "room.send",
+  "match.submit",
+  "match.forfeit",
+  "ui.toast",
+  "ui.celebrate",
+  "ui.haptic",
+  "ui.status",
+  "ui.scores",
+  "ui.turn",
+  "social.share",
+  "storage.get",
+  "storage.set",
+] as const;
+
+/* ------------------------------------------------------------------------ */
+/* Events: host → app                                                       */
+/* ------------------------------------------------------------------------ */
+
+export interface RoomMessage<P extends Json = Json> {
+  type: string;
+  payload: P;
+  from: string;
+  at: number;
+}
+
+export interface EventMap {
+  /** Everyone is here and the intro finished. Start the clock. */
+  "match.start": { at: number };
+  "room.message": RoomMessage;
+  "room.presence": { online: string[] };
+  /** The match changed (someone submitted, votes came in…). */
+  "match.update": { match: LaunchContext["match"] };
+  /** Final result. The host shows its results screen right after. */
+  "match.end": { result: MatchResult };
+  /** Somebody fired an emoji reaction from the host HUD. */
+  reaction: { from: string; emoji: string };
+}
+
+export type HostEvent = keyof EventMap;
+export type HostEventData<E extends HostEvent> = EventMap[E];
+
+/* ------------------------------------------------------------------------ */
+/* Envelopes                                                                */
+/* ------------------------------------------------------------------------ */
+
+interface Base {
+  xapps: typeof PROTOCOL_VERSION;
+}
+
+export interface HelloMessage extends Base {
+  type: "hello";
+  sdkVersion: string;
+  /** Random per page load, so hosts can tell a reload from a repeated knock. */
+  session: string;
+}
+
+export interface WelcomeMessage extends Base {
+  type: "welcome";
+  context: LaunchContext;
+}
+
+export interface RequestMessage<M extends RequestMethod = RequestMethod> extends Base {
+  type: "request";
+  id: number;
+  method: M;
+  params: RequestParams<M>;
+}
+
+export interface ResponseMessage extends Base {
+  type: "response";
+  id: number;
+  ok: boolean;
+  result?: unknown;
+  error?: { code: string; message: string };
+}
+
+export interface EventMessage<E extends HostEvent = HostEvent> extends Base {
+  type: "event";
+  event: E;
+  data: HostEventData<E>;
+}
+
+export type AppToHost = HelloMessage | RequestMessage;
+export type HostToApp = WelcomeMessage | ResponseMessage | EventMessage;
+export type Envelope = AppToHost | HostToApp;
+
+export function isEnvelope(value: unknown): value is Envelope {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { xapps?: unknown }).xapps === PROTOCOL_VERSION &&
+    typeof (value as { type?: unknown }).type === "string"
+  );
+}
+
+export function isRequestMethod(value: unknown): value is RequestMethod {
+  return typeof value === "string" && (REQUEST_METHODS as readonly string[]).includes(value);
+}
+
+/** Errors thrown by the SDK and returned by hosts carry one of these codes. */
+export type ErrorCode =
+  | "timeout"
+  | "not_connected"
+  | "unknown_method"
+  | "invalid_params"
+  | "forbidden"
+  | "rate_limited"
+  | "internal";
+
+export class XAppsError extends Error {
+  readonly code: ErrorCode | string;
+  constructor(code: ErrorCode | string, message: string) {
+    super(message);
+    this.name = "XAppsError";
+    this.code = code;
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Limits shared by the SDK and hosts                                        */
+/* ------------------------------------------------------------------------ */
+
+export const LIMITS = {
+  /** Max serialized size of a room payload. */
+  roomPayloadBytes: 8 * 1024,
+  /** Max serialized size of a storage value. */
+  storageValueBytes: 16 * 1024,
+  /** Max serialized size of submission data + display. */
+  submissionBytes: 64 * 1024,
+  /** Room messages per second per client (burst). */
+  roomMessagesPerSecond: 30,
+  eventTypeLength: 64,
+  storageKeyLength: 64,
+  toastLength: 140,
+  statusLength: 80,
+  shareTextLength: 280,
+} as const;
+
+export function byteLength(value: unknown): number {
+  const text = JSON.stringify(value ?? null);
+  return typeof TextEncoder !== "undefined" ? new TextEncoder().encode(text).length : text.length;
+}

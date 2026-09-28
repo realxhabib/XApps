@@ -1,0 +1,22 @@
+{
+  "name": "xapps",
+  "version": "0.1.0",
+  "private": true,
+  "description": "XApps — a social app marketplace on X. Challenge anyone to mini games, meme duels, hot takes and more. Build your own with @xapps/sdk.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run build -w @xapps/sdk && npm run dev -w web",
+    "build": "npm run build -w @xapps/sdk && npm run build -w web",
+    "start": "npm run start -w web",
+    "lint": "npm run lint -w web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:e2e": "npm run test:e2e -w web"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}

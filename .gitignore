@@ -1,0 +1,38 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.*
+
+# builds
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# generated SDK bundle copied into the web app
+apps/web/public/sdk/
+
+# testing
+coverage/
+test-results/
+playwright-report/
+blob-report/
+
+# env
+.env
+.env*.local
+!.env.example
+
+# supabase local
+supabase/.branches
+supabase/.temp
+
+# misc
+.DS_Store
+*.pem
+npm-debug.log*
+.vercel
+apps/web/public/examples/
+!.env.example

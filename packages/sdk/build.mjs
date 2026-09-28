@@ -1,0 +1,44 @@
+// Builds the publishable ESM package (dist/*.js + .d.ts) and a drop-in
+// browser bundle (dist/xapps.js, dist/xapps.global.js) for no-build apps.
+import { build } from "esbuild";
+import { execFileSync } from "node:child_process";
+import { rmSync } from "node:fs";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+rmSync("dist", { recursive: true, force: true });
+
+const shared = { bundle: true, target: "es2020", sourcemap: true, logLevel: "warning" };
+
+await build({
+  ...shared,
+  entryPoints: {
+    index: "src/index.ts",
+    react: "src/react.tsx",
+    host: "src/host.ts",
+    protocol: "src/protocol.ts",
+  },
+  outdir: "dist",
+  format: "esm",
+  splitting: true,
+  platform: "neutral",
+  external: ["react", "react/jsx-runtime"],
+  jsx: "automatic",
+});
+
+// Single-file ESM for `import { connect } from "https://host/sdk/v1.js"`.
+await build({ ...shared, entryPoints: ["src/index.ts"], outfile: "dist/xapps.js", format: "esm", minify: true });
+// Classic <script> tag: exposes `window.XApps`.
+await build({
+  ...shared,
+  entryPoints: ["src/index.ts"],
+  outfile: "dist/xapps.global.js",
+  format: "iife",
+  globalName: "XApps",
+  minify: true,
+});
+
+execFileSync(process.execPath, [require.resolve("typescript/bin/tsc"), "-p", "tsconfig.build.json"], {
+  stdio: "inherit",
+});
+console.log("@xapps/sdk built → dist/");
