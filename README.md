@@ -54,6 +54,8 @@ Without Supabase keys, XApps runs in **demo mode**. Everything lives in your bro
    NEXT_PUBLIC_SITE_URL=http://localhost:3000
    ```
 
+**Trending memes (optional).** Add a server-only `XAI_API_KEY` from [console.x.ai](https://console.x.ai) and Meme Duel's *Trending* tab shows images going viral on X, found by Grok's X Search. Grok's X Search bills per post it reads, so the list refreshes every `TRENDING_MEMES_REFRESH_HOURS` (default 6), roughly 20–60 posts per refresh. Without a key, *Trending* shows imgflip's currently popular templates.
+
 If the keys are set but the schema isn't installed yet, the app says so and offers a one-click switch to demo mode.
 
 ## Deploy

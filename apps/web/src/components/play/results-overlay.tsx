@@ -105,7 +105,7 @@ export function ResultsOverlay({
         </motion.p>
         <motion.h2
           className={cn(
-            "mt-2 font-display text-7xl font-extrabold uppercase italic tracking-tighter sm:text-8xl",
+            "mt-2 px-[0.1em] py-[0.05em] font-display text-7xl font-extrabold uppercase italic leading-[1.1] tracking-tighter sm:text-8xl",
             outcome === "win" && "bg-[linear-gradient(120deg,#fff3c4,#ffc93d_40%,#ff9a3d)] bg-clip-text text-transparent drop-shadow-[0_0_40px_rgb(255_201_61/0.45)]",
             outcome === "loss" && "text-ink-300",
             outcome === "draw" && "text-ink-50",

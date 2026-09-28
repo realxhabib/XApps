@@ -154,6 +154,7 @@ export function VersusIntro({
             )}
           </AnimatePresence>
 
+          {/* Gradient text is clipped to its box: the padding and line height keep the glyph tops inside it. */}
           <AnimatePresence mode="popLayout">
             {stage === "count" && (
               <motion.div
@@ -165,7 +166,7 @@ export function VersusIntro({
                 transition={{ type: "spring", stiffness: 380, damping: 20, filter: { duration: 0.25, ease: "easeOut" } }}
               >
                 <span
-                  className="font-display text-[34vmin] font-extrabold leading-none tracking-tighter"
+                  className="px-[0.08em] py-[0.1em] font-display text-[34vmin] font-extrabold leading-[1.1] tracking-tighter"
                   style={{
                     backgroundImage: count === 0 ? "linear-gradient(120deg, #c6ff3d, #1fd1b2)" : `linear-gradient(120deg, #fff, ${to})`,
                     WebkitBackgroundClip: "text",
