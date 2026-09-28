@@ -163,17 +163,116 @@ rotating turns, and setup purpose when the page URL has `?xapps-purpose=setup`.
 
 ---
 
-## Stage 2: Trust (outline, detailed when stage 1 ships)
+## Stage 2: Trust
 
-- Per-app **secret key** (shown once, stored hashed) and **webhook URL** with
-  a separate signing secret.
-- **Server API** (`/api/v1/...`, bearer secret): read a match, write match
-  state, end turns, **report the authoritative result**.
-- Manifest `authority: "client" | "server"`. With `server`, client submits
-  are recorded as claims and only the app server's report settles the match.
-- **Webhooks** (HMAC-SHA256 signed, retried with backoff): `match.created`,
-  `match.started`, `match.state`, `match.submitted`, `match.ended`.
-- `@xapps/sdk/server`: `verifyWebhook()`, typed API client.
+Goal: an app with its own server can be the referee. Players' browsers stay
+untrusted; the app server holds a secret, reads and writes matches through a
+server API, receives signed webhooks, and (when it declares
+`authority: "server"`) is the only one that can settle a match.
+
+### Credentials (per app, owner only)
+
+- **App secret** `xas_` + 48 hex chars. Shown once on creation/rotation;
+  stored as a SHA-256 hash plus an 8-char display prefix. Rotating
+  invalidates the old one immediately.
+- **Webhook URL** (https only; `http://localhost` allowed in demo docs only)
+  and a separate **signing secret** `whsec_` + 48 hex, shown once when set or
+  rotated. Stored server-side only (never readable by clients).
+- **Authority**: `apps.authority text check in ('client','server') default 'client'`.
+
+SQL: table `app_credentials(app_slug pk → apps, secret_hash, secret_prefix,
+webhook_url, webhook_secret, created_at, rotated_at)` with RLS on and no
+client policies; everything goes through RPCs. pgcrypto lives in the
+`extensions` schema on Supabase (`extensions.gen_random_bytes`,
+`extensions.digest`, `extensions.hmac`).
+
+Owner RPCs (`authenticated`, caller must be the app's developer):
+
+| RPC | Returns |
+| --- | --- |
+| `get_app_server_config(p_app)` | `{ secretPrefix, hasSecret, webhookUrl, hasWebhook, authority }` |
+| `rotate_app_secret(p_app)` | the new secret (once) |
+| `set_app_webhook(p_app, p_url)` | new signing secret (once) when the URL is set or changed; `null` when cleared |
+| `rotate_webhook_secret(p_app)` | new signing secret (once) |
+| `set_app_authority(p_app, p_authority)` | void; `server` requires a secret to exist |
+| `list_webhook_deliveries(p_app, p_limit = 50)` | recent deliveries `{ id, event, matchId, createdAt, attempts, deliveredAt, lastStatus, lastError }` |
+| `send_test_webhook(p_app)` | enqueues a `ping` event |
+
+### Server API
+
+App servers call **Next.js routes** with `Authorization: Bearer xas_…`; the
+routes call `SECURITY DEFINER` RPCs that take the secret as a parameter,
+hash it, and check it matches the match's app (constant-time comparison is
+unnecessary on a hash lookup). All return the v2 match JSON (with every
+player's submission visible to the app server, including data).
+
+| Route | RPC | Body |
+| --- | --- | --- |
+| `GET /api/v1/matches/:id` | `app_api_get_match(p_secret, p_match)` | — |
+| `PUT /api/v1/matches/:id/state` | `app_api_set_state(p_secret, p_match, p_state, p_expected_version)` | `{ state, expectedVersion }` → `{ version }`, 409 on conflict |
+| `POST /api/v1/matches/:id/turn` | `app_api_end_turn(p_secret, p_match, p_next)` | `{ next? }` |
+| `POST /api/v1/matches/:id/round` | `app_api_set_round(p_secret, p_match, p_round)` | `{ round }` |
+| `POST /api/v1/matches/:id/result` | `app_api_report_result(p_secret, p_match, p_result)` | `{ scores: { [userId]: number } }` (ranked by the app's scoring) **or** `{ ranks: { [userId]: number } }`, optional `leavers: string[]` |
+
+Errors: 401 bad/missing secret, 403 match belongs to another app, 404 no
+match, 409 state conflict or already settled, 422 invalid body, 501 in demo
+mode (the server API needs Supabase). Responses are JSON
+`{ error: { code, message } }` on failure.
+
+`app_api_report_result` settles the match with the given scores/ranks
+(reusing `settle_match` ranking/XP; ranks win if both are given), works for
+both authorities, and is the **only** way to settle when
+`authority = 'server'`.
+
+### Server authority
+
+With `authority = 'server'`:
+- `submit_entry` still stores the entry (data/display, and `score` as a
+  *claim* shown nowhere as final) and marks the player submitted, but never
+  settles; `SubmitResult.state` stays `waiting`.
+- Crowd-judged (`votes`) apps can't be server-authoritative (22023).
+- Safety valve: if every player has submitted and the server hasn't reported
+  within 24 h, `finalize_due_matches` settles the match as a draw for all
+  (no XP change beyond the draw amount) and emits `match.ended` with
+  `reason: "server_timeout"`.
+
+### Webhooks
+
+Events: `match.created`, `match.started`, `match.state` (debounced: at most
+one pending per match), `match.turn`, `match.submitted`, `match.ended`,
+`ping`. Enqueued by triggers into `webhook_deliveries(id uuid, app_slug,
+event, match_id, payload jsonb, created_at, attempts, next_attempt_at,
+request_id bigint, delivered_at, last_status, last_error)` only for apps with
+a webhook URL. Payload: `{ id, type, createdAt, app, match }` (match = app-view
+match JSON at enqueue time).
+
+Delivery (in the database, no extra server): `deliver_webhooks()` sends due
+deliveries with **pg_net** (`net.http_post`), reconciles earlier attempts from
+`net._http_response` (2xx = delivered; else retry with backoff
+1, 2, 4 … 256 min, give up after 9 attempts), and is scheduled every minute
+with **pg_cron**. The migration enables both extensions when available and
+skips scheduling otherwise (local tests stub `net`/`cron`).
+
+Signature headers: `X-XApps-Event`, `X-XApps-Delivery` (uuid),
+`X-XApps-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(secret, t + "." + body)>`.
+Receivers reject timestamps older than 5 minutes.
+
+### Server SDK (`@xapps/sdk/server`)
+
+- `verifyWebhook(rawBody: string, signatureHeader: string, secret: string, { toleranceSeconds = 300, now? })`
+  → parsed event, or throws `XAppsError("invalid_signature" | "stale_signature")`. Web Crypto only (Node 18+, Deno, Workers, edge).
+- `createServerClient({ secret, baseUrl })` → `getMatch(id)`, `setState(id, state, expectedVersion)`,
+  `updateState(id, fn)` (retry on 409), `endTurn(id, next?)`, `setRound(id, round)`, `reportResult(id, result)`.
+- Types for webhook events.
+
+### Developer portal
+
+Owner-only **Server** panel on the app's page: secret (prefix, rotate →
+shown once with copy + warning), webhook URL + signing secret (shown once),
+authority switch (explains the consequences), a live deliveries log with
+status/attempts, "Send test event", and copy-paste snippets for Node
+(Express/Next route) verifying a webhook and reporting a result. Demo mode
+explains that the server API and webhooks need Supabase.
 
 ## Stage 3: Media & data (outline)
 
