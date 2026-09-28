@@ -137,33 +137,24 @@ function fail(error: PostgrestError | Error | null | undefined, fallback = "Some
   throw new BackendError(message, kind);
 }
 
-type XProvider = "x" | "twitter";
-
 /**
  * Supabase has two separate X providers: "X / Twitter (OAuth 2.0)" (`x`) and the
- * legacy "Twitter" one (`twitter`, OAuth 1.0a). Use whichever is switched on,
- * preferring NEXT_PUBLIC_SUPABASE_X_PROVIDER, so either dashboard setup works.
+ * legacy "Twitter" one (`twitter`, OAuth 1.0a). NEXT_PUBLIC_SUPABASE_X_PROVIDER
+ * picks one explicitly. Otherwise use `twitter` when the auth settings say it's on
+ * (those settings don't report `x` at all), and `x` in every other case.
  */
-async function resolveXProvider(): Promise<XProvider> {
-  const preferred = env.xProvider;
-  let external: Partial<Record<string, boolean>> | undefined;
+async function resolveXProvider(): Promise<"x" | "twitter"> {
+  if (env.xProvider) return env.xProvider;
   try {
     const res = await fetch(`${env.supabaseUrl}/auth/v1/settings`, { headers: { apikey: env.supabaseKey } });
-    if (res.ok) external = ((await res.json()) as { external?: Record<string, boolean> }).external;
+    if (res.ok) {
+      const { external } = (await res.json()) as { external?: Record<string, boolean> };
+      if (external?.twitter && external.x !== true) return "twitter";
+    }
   } catch {
-    // Offline or blocked: let Supabase report the problem on the redirect.
+    // Offline or blocked: fall through to the OAuth 2.0 provider.
   }
-  if (!external) return preferred;
-  const order: XProvider[] = preferred === "twitter" ? ["twitter", "x"] : ["x", "twitter"];
-  const enabled = order.find((p) => external[p]);
-  if (enabled) return enabled;
-  if ("x" in external || "twitter" in external) {
-    throw new BackendError(
-      "Sign in with X is switched off in Supabase. Turn on X / Twitter (OAuth 2.0) under Authentication → Sign In / Providers.",
-      "setup_required",
-    );
-  }
-  return preferred;
+  return "x";
 }
 
 /** The production backend: X sign-in, Postgres + RLS, Realtime rooms. */

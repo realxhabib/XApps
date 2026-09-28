@@ -50,7 +50,7 @@ Without Supabase keys, XApps runs in **demo mode**. Everything lives in your bro
    ```bash
    NEXT_PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co
    NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...   # or NEXT_PUBLIC_SUPABASE_ANON_KEY
-   NEXT_PUBLIC_SUPABASE_X_PROVIDER=x                         # "twitter" for legacy OAuth 1.0a
+   NEXT_PUBLIC_SUPABASE_X_PROVIDER=                          # optional: auto-detects "x" or legacy "twitter"
    NEXT_PUBLIC_SITE_URL=http://localhost:3000
    ```
 
