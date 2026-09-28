@@ -22,6 +22,7 @@ import {
 import { DROP_TEMPLATE_ID } from "./photo-templates";
 import { Countdown, OpponentPill, useBuzz, type OpponentState } from "./pieces";
 import { Pregame } from "./pregame";
+import { remixTemplate, type RemixImage } from "./remix";
 import { parseRound } from "./round";
 import type { EditorSticker } from "./stickers";
 import { buildSubmission } from "./submission";
@@ -59,6 +60,9 @@ export function MemeDuelApp() {
   // Same image on both screens: a drop or explicit template wins, otherwise the match seed decides.
   const round = useMemo(() => parseRound(xapps.match.settings), [xapps]);
   const template = useMemo(() => resolveTemplate(xapps.random.fork("meme-duel:template"), round), [xapps, round]);
+  // The player's own upload replaces the template for their entry only (the bot and opponent keep `template`).
+  const [remix, setRemix] = useState<RemixImage | null>(null);
+  const entryTemplate = useMemo(() => (remix ? remixTemplate(template, remix) : template), [remix, template]);
 
   const [phase, setPhase] = useState<"editing" | "locked">(() => (xapps.me.submitted ? "locked" : "editing"));
   const [captions, setCaptions] = useState<Record<string, string>>({});
@@ -181,7 +185,7 @@ export function MemeDuelApp() {
   const submit = useCallback(async () => {
     if (submitted.current) return;
     submitted.current = true;
-    const entry = sanitizeEntry({ templateId: template.id, captions, stickers, positions }, template);
+    const entry = sanitizeEntry({ templateId: entryTemplate.id, captions, stickers, positions }, entryTemplate);
     const fail = (message: string) => {
       submitted.current = false;
       setLocking(false);
@@ -194,12 +198,12 @@ export function MemeDuelApp() {
     setLocking(true);
     let built: Awaited<ReturnType<typeof buildSubmission>>;
     try {
-      built = await buildSubmission(entry, template, round);
+      built = await buildSubmission(entry, entryTemplate, round, xapps.me.handle);
     } catch {
       fail("Couldn't attach the image — check your connection and try again");
       return;
     }
-    const canvas = canvasOf(template);
+    const canvas = canvasOf(entryTemplate);
     setFinalMeme({ svg: built.svg, alt: built.alt, aspect: canvas.height / canvas.width });
     setLocking(false);
     setPhase("locked");
@@ -210,7 +214,7 @@ export function MemeDuelApp() {
     } catch {
       fail("Couldn't lock in your meme — try again");
     }
-  }, [buzz, captions, liveOpponentId, positions, round, stickers, template, xapps]);
+  }, [buzz, captions, entryTemplate, liveOpponentId, positions, round, stickers, xapps]);
 
   /* --------------------------------- HUD -------------------------------- */
 
@@ -246,7 +250,10 @@ export function MemeDuelApp() {
         ) : phase === "editing" ? (
           <Editor
             key="editor"
-            template={template}
+            template={entryTemplate}
+            baseTemplate={template}
+            remix={remix}
+            onRemix={setRemix}
             round={round}
             captions={captions}
             setCaptions={setCaptions}

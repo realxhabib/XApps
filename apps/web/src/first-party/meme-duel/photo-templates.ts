@@ -6,7 +6,8 @@
  * Images are never loaded directly: always through `memeImageUrl()` (a
  * same-origin proxy), so the canvas can read them when an entry is submitted.
  */
-import { fitCanvas } from "./canvas";
+import { containRect, fitCanvas, type CanvasSize, type Rect } from "./canvas";
+import { MAX_DROP_SLOTS, type DropSlot, type MemeDrop } from "./round";
 import type { CaptionSlot, MemePhoto, MemeTemplate } from "./templates";
 
 type Extra = Partial<CaptionSlot>;
@@ -569,7 +570,7 @@ const DEFS: PhotoDef[] = [
 ];
 
 /** Dark backdrop behind letterboxed images. */
-const PHOTO_BACKGROUND: [string, string] = ["#0b0b10", "#0b0b10"];
+export const PHOTO_BACKGROUND: [string, string] = ["#0b0b10", "#0b0b10"];
 
 function photoTemplate(id: string, name: string, photo: MemePhoto, slots: (h: number) => CaptionSlot[]): MemeTemplate {
   const canvas = fitCanvas(photo.width, photo.height);
@@ -594,13 +595,92 @@ export function getPhotoTemplate(id: string): MemeTemplate | undefined {
 
 export const DROP_TEMPLATE_ID = "drop";
 
-/** A template made on the fly from an image the challenger dropped: classic top + bottom text. */
-export function dropTemplate(drop: MemePhoto): MemeTemplate {
-  const name = drop.credit?.handle ? `@${drop.credit.handle.replace(/^@/, "")}'s drop` : "The drop";
-  return photoTemplate(DROP_TEMPLATE_ID, name, drop, (h) => [
+/** The name shown for a drop: the meme format's name, else whose image it is. */
+export function dropName(drop: Pick<MemeDrop, "name" | "credit">): string {
+  const name = drop.name?.replace(/\s+/g, " ").trim();
+  if (name) return name;
+  return drop.credit?.handle ? `@${drop.credit.handle.replace(/^@/, "")}'s drop` : "The drop";
+}
+
+/**
+ * A template made on the fly from an image the challenger dropped: its placed
+ * caption boxes when it has them (trending templates), else classic top + bottom text.
+ */
+export function dropTemplate(drop: MemePhoto & Pick<MemeDrop, "name" | "slots">): MemeTemplate {
+  const photo: MemePhoto = { src: drop.src, width: drop.width, height: drop.height, credit: drop.credit };
+  const placed = drop.slots?.slice(0, MAX_DROP_SLOTS) ?? [];
+  if (placed.length) {
+    const canvas = fitCanvas(drop.width, drop.height);
+    const image = containRect(canvas, drop.width, drop.height);
+    return photoTemplate(DROP_TEMPLATE_ID, dropName(drop), photo, () =>
+      placed.map((slot, i) => dropSlotToCaption(slot, canvas, image, i)),
+    );
+  }
+  return photoTemplate(DROP_TEMPLATE_ID, dropName(drop), photo, (h) => [
     topText("top text", { size: h < 400 ? 38 : 46 }),
     bottomText(h, "bottom text", { size: h < 400 ? 38 : 46 }),
   ]);
+}
+
+/** Line box height per unit of font size, plus the tag's vertical padding (see render.ts). */
+const SLOT_METRICS = {
+  impact: { line: 1.08, padY: 0.08, padX: 0.1, maxSize: 46 },
+  label: { line: 1.22, padY: 0.56, padX: 1, maxSize: 30 },
+} as const;
+/** Characters a caption box should comfortably hold before it has to shrink. */
+const COMFORTABLE_CHARS = 20;
+const MIN_SLOT_SIZE = 14;
+/** Rough average advance (em) of bold caps/lowercase, for estimating capacity. */
+const AVG_EM = 0.64;
+
+/**
+ * A caption box placed on the image (fractions of the image) as a caption slot
+ * in canvas units: centered in the box, with the biggest font and fewest lines
+ * that still hold a normal caption. The slot's whole frame (and a label's tag)
+ * always stays on the canvas, even for tiny or edge-hugging boxes.
+ */
+export function dropSlotToCaption(slot: DropSlot, canvas: CanvasSize, image: Rect, index = 0): CaptionSlot {
+  const m = SLOT_METRICS[slot.style];
+  const bx = image.x + slot.x * image.width;
+  const by = image.y + slot.y * image.height;
+  const bw = Math.max(1, slot.w * image.width);
+  const bh = Math.max(1, slot.h * image.height);
+
+  const options = [1, 2, 3, 4].map((lines) => {
+    const size = Math.min(m.maxSize, bh / (lines * m.line + m.padY));
+    const textWidth = bw - size * m.padX;
+    return { lines, size, capacity: (lines * Math.max(0, textWidth)) / (Math.max(1, size) * AVG_EM) };
+  });
+  const legible = options.filter((o) => o.size >= MIN_SLOT_SIZE);
+  const best =
+    legible.find((o) => o.capacity >= COMFORTABLE_CHARS) ??
+    legible.reduce<(typeof options)[number] | undefined>((a, o) => (!a || o.capacity > a.capacity ? o : a), undefined) ??
+    { lines: 1, size: MIN_SLOT_SIZE, capacity: (bw - MIN_SLOT_SIZE * m.padX) / (MIN_SLOT_SIZE * AVG_EM) };
+
+  const size = Math.max(MIN_SLOT_SIZE, Math.floor(best.size));
+  const padX = (size * m.padX) / 2;
+  const padY = (size * m.padY) / 2;
+  // The text column: the box minus a tag's padding, never narrower than a few letters or wider than the canvas.
+  const width = Math.round(Math.min(canvas.width - 8 - padX * 2, Math.max(size * 3, bw - padX * 2)));
+  const height = size * m.line * best.lines;
+  const halfW = width / 2 + padX;
+  const halfH = height / 2 + padY + (slot.style === "label" ? 4 : 0);
+  const fit = (center: number, half: number, max: number) => (half * 2 >= max ? max / 2 : Math.min(max - half, Math.max(half, center)));
+  const r = (v: number) => Math.round(v * 10) / 10;
+  return {
+    id: slot.id,
+    label: slot.label || `Caption ${index + 1}`,
+    placeholder: slot.label || `caption ${index + 1}`,
+    x: r(fit(bx + bw / 2, halfW, canvas.width)),
+    y: r(fit(by + bh / 2, halfH, canvas.height)),
+    width,
+    maxLines: best.lines,
+    size,
+    align: "middle",
+    valign: "middle",
+    style: slot.style,
+    maxLength: Math.round(Math.min(70, Math.max(24, best.capacity * 1.6))),
+  };
 }
 
 /* ---------------------------------------------------------------------- */
@@ -827,3 +907,57 @@ export const DROP_BOT_CAPTIONS: { top: string; bottom: string }[] = [
   tb("this is what", "peak performance looks like"),
   tb("me explaining", "why I need just one more"),
 ];
+
+/**
+ * Works on any image with placed boxes: caption sets by box count, read in
+ * box order (left→right / top→bottom is how people place them). Short, so they
+ * fit small boxes; generic, so they land on whatever the format is.
+ */
+export const DROP_SLOT_BOT_CAPTIONS: Record<number, string[][]> = {
+  1: [
+    ["me pretending to be busy"],
+    ["my last brain cell"],
+    ["the group chat at 3am"],
+    ["me after one (1) coffee"],
+    ["my weekend plans"],
+  ],
+  2: [
+    ["me", "my responsibilities"],
+    ["what I ordered", "what showed up"],
+    ["monday me", "friday me"],
+    ["my plans", "my bank account"],
+    ["a quick nap", "waking up in 2031"],
+    ["the tutorial", "my attempt"],
+  ],
+  3: [
+    ["me", "a brand new hobby", "my 12 unfinished hobbies"],
+    ["the plan", "the backup plan", "vibes"],
+    ["my diet", "a free donut", "me"],
+    ["me", "one more episode", "my sleep schedule"],
+    ["my code", "one tiny fix", "everything else"],
+  ],
+  4: [
+    ["wake up", "check phone", "it's noon", "why am I tired"],
+    ["me", "the snooze button", "my alarm", "my boss"],
+    ["new idea", "hype", "one step", "newer idea"],
+    ["coffee", "more coffee", "panic", "nap"],
+  ],
+  5: [
+    ["monday", "tuesday", "wednesday", "thursday", "friday (finally)"],
+    ["plan", "overthink", "procrastinate", "panic", "somehow done"],
+    ["me", "my wallet", "a sale", "my closet", "another sale"],
+  ],
+  6: [
+    ["mon", "tue", "wed", "thu", "fri", "the weekend"],
+    ["alarm", "snooze", "snooze", "snooze", "late", "blame traffic"],
+    ["me", "my friends", "the plan", "the group chat", "nobody", "the vibes"],
+  ],
+};
+
+/** The bot's caption bank for a drop: top/bottom lines, or sets matching its placed boxes. */
+export function dropBotCaptions(template: MemeTemplate): Record<string, string>[] {
+  const ids = template.slots.map((s) => s.id);
+  if (ids.length === 2 && ids[0] === "top" && ids[1] === "bottom") return DROP_BOT_CAPTIONS;
+  const sets = DROP_SLOT_BOT_CAPTIONS[Math.min(MAX_DROP_SLOTS, Math.max(1, ids.length))] ?? [];
+  return sets.map((set) => Object.fromEntries(ids.map((id, i) => [id, set[i] ?? set[set.length - 1] ?? ""])));
+}

@@ -16,6 +16,8 @@ import {
   type RefObject,
   type SetStateAction,
 } from "react";
+import { useXApps } from "@xapps/sdk/react";
+import { memeDownloadUrl, memeImageUrl } from "@/lib/meme-image";
 import { spring } from "@/lib/motion";
 import { play } from "@/lib/sfx";
 import { cn } from "@/lib/utils";
@@ -35,6 +37,8 @@ import {
 } from "./logic";
 import { DROP_TEMPLATE_ID } from "./photo-templates";
 import { CardBack, useBuzz } from "./pieces";
+import { RemixBar } from "./remix-bar";
+import { RemixError, firstImageFile, readRemixFile, remixProblemMessage, type RemixImage } from "./remix";
 import { renderMemeSvg } from "./render";
 import type { MemeRound } from "./round";
 import { StickerLayer, TrashZone, type EditorSticker } from "./stickers";
@@ -60,7 +64,7 @@ function nextStickerId(): string {
  * per unit of width) always fits without page scroll. --extra is the topic row.
  */
 const EDITOR_CSS = `
-.mdl-editor { --cvw: min(calc(100vw - 32px), calc(max(164px, calc(100dvh - 276px - var(--extra) - var(--slots) * 42px)) / var(--ar)), 560px); --r: 20px; }
+.mdl-editor { --cvw: min(calc(100vw - 32px), calc(max(164px, calc(100dvh - 276px - 40px - var(--extra) - var(--slots) * 42px)) / var(--ar)), 560px); --r: 20px; }
 @media (min-width: 48rem) {
   .mdl-editor { --cvw: min(calc((100dvh - 172px - var(--extra)) / var(--ar)), calc(100vw - 468px), 640px); --r: 26px; }
 }
@@ -68,8 +72,34 @@ const EDITOR_CSS = `
 
 type PhotoState = "loading" | "ready" | "error";
 
+/**
+ * Opens the round's blank image for remixing elsewhere. Top-level, the
+ * attachment URL downloads it. Inside the host's sandboxed iframe (no
+ * allow-downloads) Chromium silently drops any download, popups included, so
+ * there we open the image itself in a new tab to save from there.
+ * Returns false when there's nothing to download (data: images).
+ */
+function openBlank(src: string): "download" | "tab" | false {
+  const download = memeDownloadUrl(src);
+  if (!download) return false;
+  let framed = true;
+  try {
+    framed = window.self !== window.top;
+  } catch {
+    framed = true;
+  }
+  window.open(framed ? memeImageUrl(src) : download, "_blank", "noopener");
+  return framed ? "tab" : "download";
+}
+
 export interface EditorProps {
+  /** What this player is editing: the round's template, or their remix of it. */
   template: MemeTemplate;
+  /** The round's template (what both players got). */
+  baseTemplate: MemeTemplate;
+  /** The player's uploaded image, when they're remixing. */
+  remix: RemixImage | null;
+  onRemix: (image: RemixImage | null) => void;
   /** Topic and drop credit. */
   round: MemeRound;
   captions: Record<string, string>;
@@ -92,6 +122,9 @@ export interface EditorProps {
 
 export function Editor({
   template,
+  baseTemplate,
+  remix,
+  onRemix,
   round,
   captions,
   setCaptions,
@@ -108,19 +141,32 @@ export function Editor({
 }: EditorProps) {
   const reduced = useReducedMotion() ?? false;
   const buzz = useBuzz();
+  const xapps = useXApps();
   const canvas = canvasOf(template);
   const movable = hasMovableCaptions(template);
   const photo = template.photo;
-  const [photoState, setPhotoState] = useState<PhotoState>(photo ? "loading" : "ready");
+  const remixed = Boolean(remix && template.remixOf);
   const [photoAttempt, setPhotoAttempt] = useState(0);
+  // Load state per image: switching to/from a remix starts over at "loading".
+  const photoKey = `${remix?.id ?? "base"}:${photoAttempt}`;
+  const [photoStatus, setPhotoStatus] = useState<{ key: string; state: PhotoState }>({ key: "", state: "loading" });
+  const photoState: PhotoState = !photo ? "ready" : photoStatus.key === photoKey ? photoStatus.state : "loading";
+  const setPhotoState = (state: PhotoState) => setPhotoStatus({ key: photoKey, state });
   const hasText = hasCaption({ templateId: template.id, captions }, template);
-  const canSubmit = hasText && photoState === "ready" && !locking;
+  // A remix is a finished meme: it can go in without a caption.
+  const canSubmit = (hasText || remixed) && photoState === "ready" && !locking;
+  const [reading, setReading] = useState(false);
+  /** The "Your remix" badge shows briefly after an upload (it would cover their meme otherwise). */
+  const [badge, setBadge] = useState<number | null>(null);
+  const [fileOver, setFileOver] = useState(false);
+  const blankSrc = baseTemplate.photo?.src;
+  const canDownload = Boolean(blankSrc && memeDownloadUrl(blankSrc));
   const [captionLayer, setCaptionLayer] = useState<HTMLDivElement | null>(null);
   const [guide, setGuide] = useState(false);
   const topic = round.topic;
   const credit = photo?.credit;
   const hasInfoRow = Boolean(topic || credit);
-  const isDrop = template.id === DROP_TEMPLATE_ID;
+  const isDrop = baseTemplate.id === DROP_TEMPLATE_ID;
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [removing, setRemoving] = useState<ReadonlySet<string>>(() => new Set());
@@ -204,6 +250,75 @@ export function Editor({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [canSubmit, onSubmit]);
+
+  /* ------------------------------- remix -------------------------------- */
+
+  const takeFile = useCallback(
+    async (file: File) => {
+      if (locking) return;
+      setReading(true);
+      try {
+        const image = await readRemixFile(file);
+        onRemix(image);
+        setBadge(image.id);
+        setSelectedId(null);
+        setFocusedSlot(null);
+        play("whoosh");
+        buzz("success");
+        onActivity();
+      } catch (err) {
+        play("error");
+        buzz("error");
+        xapps.ui.toast(remixProblemMessage(err instanceof RemixError ? err.problem : "decode"), "danger").catch(() => {});
+      } finally {
+        setReading(false);
+      }
+    },
+    [buzz, locking, onActivity, onRemix, xapps],
+  );
+
+  const backToTemplate = () => {
+    onRemix(null);
+    setFocusedSlot(null);
+    play("draw");
+    buzz("light");
+    onActivity();
+  };
+
+  const downloadBlank = () => {
+    if (!blankSrc) return;
+    const how = openBlank(blankSrc);
+    if (!how) return;
+    play("tick");
+    buzz("light");
+    if (how === "tab") xapps.ui.toast("Opened the blank in a new tab — save it from there", "info").catch(() => {});
+  };
+
+  useEffect(() => {
+    if (badge === null) return;
+    const timer = setTimeout(() => setBadge(null), 2600);
+    return () => clearTimeout(timer);
+  }, [badge]);
+
+  // Paste an image anywhere in the editor to remix with it (text pastes are left alone).
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const file = firstImageFile(e.clipboardData?.files);
+      if (!file) return;
+      e.preventDefault();
+      void takeFile(file);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [takeFile]);
+
+  // The canvas springs to the new image's shape when a remix comes or goes.
+  const aspect = useSpring(canvas.height / canvas.width, { stiffness: 170, damping: 24 });
+  useEffect(() => {
+    const next = canvas.height / canvas.width;
+    if (reduced) aspect.jump(next);
+    else aspect.set(next);
+  }, [aspect, canvas.height, canvas.width, reduced]);
 
   /* ------------------------------ captions ------------------------------ */
 
@@ -385,13 +500,35 @@ export function Editor({
       style={
         {
           "--slots": template.slots.length,
-          "--ar": canvas.height / canvas.width,
+          "--ar": aspect,
           "--extra": hasInfoRow ? "40px" : "0px",
         } as CSSProperties
       }
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0, transition: { duration: 0.08, delay: 0.24 } }}
+      // Drop an image file anywhere on the editor to remix with it.
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes("Files") || locking) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+        if (!fileOver) setFileOver(true);
+      }}
+      onDragLeave={(e) => {
+        if (e.relatedTarget && e.currentTarget.contains(e.relatedTarget as Node)) return;
+        setFileOver(false);
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        setFileOver(false);
+        const file = firstImageFile(e.dataTransfer.files);
+        if (file) void takeFile(file);
+        else {
+          play("error");
+          xapps.ui.toast(remixProblemMessage("type"), "danger").catch(() => {});
+        }
+      }}
     >
       <style>{EDITOR_CSS}</style>
 
@@ -405,13 +542,24 @@ export function Editor({
       >
         <motion.div
           className="flex min-w-0 shrink items-center gap-2 rounded-full bg-white/[0.05] p-1 ring-1 ring-white/10 sm:pr-3"
-          title={template.name}
+          title={remixed ? `Your remix of ${baseTemplate.name}` : baseTemplate.name}
           initial={{ scale: 0.6, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           transition={{ ...spring.wobbly, delay: 0.55 }}
         >
-          <span className="grid size-7 shrink-0 place-items-center rounded-full bg-[linear-gradient(135deg,var(--accent-from),var(--accent-to))] text-sm">🖼️</span>
-          <span className="hidden truncate font-display text-sm font-bold tracking-tight sm:inline">{template.name}</span>
+          <motion.span
+            key={remixed ? "remix" : "template"}
+            className="grid size-7 shrink-0 place-items-center rounded-full bg-[linear-gradient(135deg,var(--accent-from),var(--accent-to))] text-sm"
+            initial={reduced ? false : { rotate: -90, scale: 0.4 }}
+            animate={{ rotate: 0, scale: 1 }}
+            transition={spring.wobbly}
+          >
+            {remixed ? "🎨" : "🖼️"}
+          </motion.span>
+          <span className="hidden truncate font-display text-sm font-bold tracking-tight sm:inline">
+            {remixed && <span className="mr-1.5 text-[var(--accent-from)]">Remix ·</span>}
+            {baseTemplate.name}
+          </span>
         </motion.div>
         <div className="flex min-w-0 flex-1 justify-center">{opponent}</div>
         <div className="shrink-0">{timer}</div>
@@ -426,6 +574,7 @@ export function Editor({
             ref={stageRef}
             className="relative z-20 touch-none select-none"
             style={{ width: "var(--cvw)", height: "calc(var(--cvw) * var(--ar))", perspective: 1100 }}
+            data-remixed={remixed || undefined}
             onPointerMove={onStageMove}
             onPointerLeave={onStageLeave}
           >
@@ -453,7 +602,7 @@ export function Editor({
                 >
                   {photo ? (
                     <PhotoBase
-                      key={photoAttempt}
+                      key={photoKey}
                       photo={photo}
                       canvas={canvas}
                       attempt={photoAttempt}
@@ -490,12 +639,28 @@ export function Editor({
                     >
                       <div className="max-w-[86%] rounded-2xl bg-ink-950/85 px-[max(12px,4cqw)] py-[max(6px,1.8cqw)] text-center shadow-[0_20px_50px_-12px_rgb(0_0_0/0.7)] ring-1 ring-white/15 backdrop-blur-md">
                         <p className="text-[clamp(8px,1.9cqw,10px)] font-bold uppercase tracking-[0.22em] text-[var(--accent-from)]">
-                          {isDrop ? "Your image" : "Your template"}
+                          {isDrop && !round.drop?.name ? "Your image" : "Your template"}
                         </p>
                         <p className="whitespace-nowrap font-display text-[clamp(14px,5.2cqw,26px)] leading-tight font-extrabold tracking-tight">
-                          {template.name}
+                          {baseTemplate.name}
                         </p>
                       </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                <AnimatePresence>
+                  {remixed && badge === remix?.id && (
+                    <motion.div
+                      key={`remix-${remix?.id}`}
+                      aria-hidden
+                      className="pointer-events-none absolute left-1/2 top-[40%] z-10 flex -translate-x-1/2 items-center gap-1 rounded-full bg-ink-950/80 py-1 pl-1.5 pr-2.5 text-[11px] font-bold text-white shadow-lg ring-1 ring-white/15 backdrop-blur-md"
+                      initial={reduced ? { opacity: 0 } : { opacity: 0, scale: 0.5, rotate: -8 }}
+                      animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                      exit={{ opacity: 0, scale: 0.8 }}
+                      transition={spring.wobbly}
+                    >
+                      <span>🎨</span> Your remix
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -549,7 +714,8 @@ export function Editor({
                 <StickerLayer
                   underlay={
                     movable && captionLayer && photoState === "ready"
-                      ? template.slots.map((slot, i) => (
+                      ? template.slots.map((slot, i) =>
+                          remixed && !captions[slot.id]?.trim() ? null : (
                           <MovableCaption
                             key={slot.id}
                             slot={slot}
@@ -564,7 +730,8 @@ export function Editor({
                             onMove={(next) => moveCaption(slot.id, next)}
                             onGuide={setGuide}
                           />
-                        ))
+                        ),
+                        )
                       : null
                   }
                   stickers={stickers}
@@ -582,6 +749,32 @@ export function Editor({
                   onCanvasTap={onCanvasTap}
                 />
               </motion.div>
+
+              <AnimatePresence>
+                {fileOver && (
+                  <motion.div
+                    key="file-over"
+                    aria-hidden
+                    className="pointer-events-none absolute inset-0 z-40 grid place-items-center rounded-[var(--r)] border-2 border-dashed border-[var(--accent-from)] bg-ink-950/75 backdrop-blur-sm"
+                    initial={{ opacity: 0, scale: 1.03 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 1.02 }}
+                    transition={spring.snappy}
+                  >
+                    <div className="flex flex-col items-center gap-1.5 text-center">
+                      <motion.span
+                        className="text-4xl"
+                        animate={reduced ? undefined : { y: [0, -6, 0] }}
+                        transition={{ duration: 1.1, repeat: Infinity, ease: "easeInOut" }}
+                      >
+                        🎨
+                      </motion.span>
+                      <p className="font-display text-lg font-extrabold tracking-tight">Drop to remix</p>
+                      <p className="text-xs text-ink-300">Your image replaces the template for your entry</p>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               {/* Above the stickers' hit layer so Retry is clickable. */}
               <PhotoError
@@ -649,7 +842,11 @@ export function Editor({
             <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-ink-300">Caption battle</p>
             <h2 className="mt-1 font-display text-2xl font-extrabold tracking-tight">Make the crowd laugh</h2>
             <p className="mt-1 text-sm text-ink-300">
-              {isDrop ? "Same image for both of you." : "Same template for both of you."}
+              {remixed
+                ? "You're remixing: your image is the meme, your opponent keeps the template."
+                : isDrop
+                  ? "Same image for both of you."
+                  : "Same template for both of you."}
               {topic ? " Stick to the topic." : ""} Funniest meme takes the Arena vote.
             </p>
             <p className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] px-2.5 py-1 text-[11px] font-semibold text-ink-200 ring-1 ring-white/10">
@@ -683,19 +880,30 @@ export function Editor({
               />
             ))}
             <p className="mdl-short-hide hidden text-xs leading-relaxed text-ink-400 md:block">
-              {movable
-                ? "Tip: drag captions anywhere on the image (double-click one to put it back). "
-                : "Tip: tap the meme to jump to a caption. "}
+              {remixed
+                ? "Tip: your upload is the meme — add stickers or an extra caption if you like. "
+                : movable
+                  ? "Tip: drag captions anywhere on the image (double-click one to put it back). You can also paste or drop your own image to remix. "
+                  : "Tip: tap the meme to jump to a caption. "}
               Drag stickers anywhere, use the ↻ handle (or pinch / scroll) to spin and resize, and drop them in the 🗑️ to remove.
             </p>
           </div>
+          <RemixBar
+            canDownload={canDownload}
+            remix={remixed ? remix : null}
+            reading={reading}
+            disabled={locking}
+            onDownload={downloadBlank}
+            onFile={(file) => void takeFile(file)}
+            onReset={backToTemplate}
+          />
           <SubmitButton
             enabled={canSubmit}
             locking={locking}
             label={
               locking
                 ? "Locking in…"
-                : !hasText
+                : !hasText && !remixed
                   ? "Write a caption to submit"
                   : photoState === "loading"
                     ? "Loading the image…"

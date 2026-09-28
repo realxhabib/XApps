@@ -21,6 +21,11 @@ export function photoUrl(src: string, attempt = 0): string {
 const sources = new Map<string, Promise<HTMLImageElement>>();
 const encodings = new Map<string, string>();
 
+/** Cache key for an image: remix uploads are long data: URLs, so key those by a short fingerprint. */
+function cacheKey(src: string): string {
+  return src.startsWith("data:") ? `data:${src.length}:${src.slice(-48)}` : src;
+}
+
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -33,12 +38,13 @@ function loadImage(url: string): Promise<HTMLImageElement> {
 
 /** The decoded image for a photo (cached; a failure is forgotten so the next call retries). */
 export function photoSource(photo: MemePhoto, attempt = 0): Promise<HTMLImageElement> {
-  const cached = sources.get(photo.src);
+  const key = cacheKey(photo.src);
+  const cached = sources.get(key);
   if (cached) return cached;
   const promise = loadImage(photoUrl(photo.src, attempt));
-  sources.set(photo.src, promise);
+  sources.set(key, promise);
   promise.catch(() => {
-    if (sources.get(photo.src) === promise) sources.delete(photo.src);
+    if (sources.get(key) === promise) sources.delete(key);
   });
   return promise;
 }
@@ -46,14 +52,14 @@ export function photoSource(photo: MemePhoto, attempt = 0): Promise<HTMLImageEle
 /** The editor already loaded this image: reuse its element instead of fetching again. */
 export function primePhotoSource(photo: MemePhoto, img: HTMLImageElement): void {
   if (!img.complete || img.naturalWidth === 0) return;
-  const cached = sources.get(photo.src);
-  if (!cached) sources.set(photo.src, Promise.resolve(img));
+  const key = cacheKey(photo.src);
+  if (!sources.has(key)) sources.set(key, Promise.resolve(img));
 }
 
 /** JPEG data URL of the image at one ladder step (cached). */
 export function encodePhoto(img: HTMLImageElement, src: string, step: EncodeStep): string {
   const size = scaleToFit(img.naturalWidth, img.naturalHeight, step.side);
-  const key = `${src}|${size.width}x${size.height}|${step.quality}`;
+  const key = `${cacheKey(src)}|${size.width}x${size.height}|${step.quality}`;
   const hit = encodings.get(key);
   if (hit) return hit;
   const canvas = document.createElement("canvas");
@@ -102,9 +108,16 @@ export interface BuiltSubmission {
 /**
  * The entry as submitted: `data` stays small (ids, captions, stickers,
  * positions) and `display` is a self-contained SVG with the photo embedded.
+ * A remix embeds the player's upload the same way (never in `data`).
+ * `handle` is the author's, for a remix's alt text.
  */
-export async function buildSubmission(entry: MemeEntry, template: MemeTemplate, round: MemeRound): Promise<BuiltSubmission> {
-  const alt = entryAlt(entry, template, round.topic);
+export async function buildSubmission(
+  entry: MemeEntry,
+  template: MemeTemplate,
+  round: MemeRound,
+  handle?: string,
+): Promise<BuiltSubmission> {
+  const alt = entryAlt(entry, template, round.topic, handle);
   const data = entryToJson(entry, template, round);
   const make = (imageHref?: string) => {
     const svg = renderMemeSvg(entry, { template, imageHref, title: alt });

@@ -77,6 +77,11 @@ export interface MemeTemplate {
   canvas?: { width: number; height: number };
   /** Photo templates and drops: the image filling the canvas. Their captions can be dragged around. */
   photo?: MemePhoto;
+  /**
+   * A player's remix: their own uploaded image replaces the round's template
+   * for their entry only. This is the round's template it stands in for.
+   */
+  remixOf?: MemeTemplate;
 }
 
 /** The canvas of the original templates. Use `canvasOf(template)` for anything that may be a photo. */

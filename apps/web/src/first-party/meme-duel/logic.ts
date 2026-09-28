@@ -3,10 +3,10 @@
  * and small helpers. No React, no SDK calls — everything here is unit-tested.
  */
 import {
-  DROP_BOT_CAPTIONS,
   DROP_TEMPLATE_ID,
   PHOTO_BOT_CAPTIONS,
   PHOTO_TEMPLATES,
+  dropBotCaptions,
   dropTemplate,
   isPhotoTemplateId,
 } from "./photo-templates";
@@ -323,15 +323,21 @@ export function hasCaption(entry: Pick<MemeEntry, "templateId" | "captions">, te
 
 /**
  * Alt text for the Arena: the captions in slot order ("POV: …" keeps its
- * prefix), led by the round's topic when there is one.
+ * prefix), led by the round's topic when there is one. A remix says whose it
+ * is and what it remixes ("@me's remix of Two Buttons — Topic: …").
  */
-export function entryAlt(entry: MemeEntry, template = getTemplate(entry.templateId), topic?: string): string {
+export function entryAlt(entry: MemeEntry, template = getTemplate(entry.templateId), topic?: string, handle?: string): string {
   const parts = template.slots
     .map((slot) => {
       const text = sanitizeCaption(entry.captions[slot.id], slot.maxLength);
       return text ? (slot.prefix ? `${slot.prefix} ${text}` : text) : "";
     })
     .filter(Boolean);
+  if (template.remixOf) {
+    const who = handle ? `@${handle.replace(/^@/, "")}'s` : "A";
+    const caption = parts.length ? `: ${parts.join(" / ")}` : "";
+    return `${who} remix of ${template.remixOf.name}${caption}${topic ? ` — Topic: ${topic}` : ""}`;
+  }
   const text = parts.length ? parts.join(" / ") : `${template.name} meme`;
   return topic ? `Topic: ${topic} — ${text}` : text;
 }
@@ -342,7 +348,9 @@ export type EntryJson = {
   stickers: { emoji: string; x: number; y: number; scale: number; rotate: number }[];
   positions?: { [slot: string]: { x: number; y: number } };
   /** Drops: a reference to the image (never the image itself, it's embedded in the display). */
-  drop?: { src: string | null; width: number; height: number };
+  drop?: { src: string | null; width: number; height: number; name?: string };
+  /** The player uploaded their own image (embedded in the display only); `templateId`/`drop` say what it remixes. */
+  remix?: true;
   topic?: string;
 };
 
@@ -354,22 +362,26 @@ const DROP_REF_MAX = 512;
  * template and round to record a drop reference and the topic.
  */
 export function entryToJson(entry: MemeEntry, template?: MemeTemplate, round?: MemeRound): EntryJson {
+  // A remix records the round's template it stands in for, never its own (uploaded) image.
+  const base = template?.remixOf ?? template;
   const json: EntryJson = {
-    templateId: entry.templateId,
+    templateId: template?.remixOf ? template.remixOf.id : entry.templateId,
     captions: { ...entry.captions },
     stickers: entry.stickers.map((s) => ({ emoji: s.emoji, x: s.x, y: s.y, scale: s.scale, rotate: s.rotate })),
   };
   if (entry.positions && Object.keys(entry.positions).length) {
     json.positions = Object.fromEntries(Object.entries(entry.positions).map(([id, p]) => [id, { x: p.x, y: p.y }]));
   }
-  if (template?.id === DROP_TEMPLATE_ID && template.photo) {
-    const src = template.photo.src;
+  if (base?.id === DROP_TEMPLATE_ID && base.photo) {
+    const src = base.photo.src;
     json.drop = {
       src: src.startsWith("https://") && src.length <= DROP_REF_MAX ? src : null,
-      width: template.photo.width,
-      height: template.photo.height,
+      width: base.photo.width,
+      height: base.photo.height,
+      ...(round?.drop?.name ? { name: round.drop.name } : {}),
     };
   }
+  if (template?.remixOf) json.remix = true;
   if (round?.topic) json.topic = round.topic;
   return json;
 }
@@ -516,7 +528,7 @@ export function pickFrom<T>(items: readonly T[], rand: Rand): T {
 
 /** The bot's caption bank for a template: originals, photo templates, or the generic pool for drops. */
 export function botCaptionsFor(template: MemeTemplate): readonly Record<string, string>[] {
-  if (template.id === DROP_TEMPLATE_ID) return DROP_BOT_CAPTIONS;
+  if (template.id === DROP_TEMPLATE_ID) return dropBotCaptions(template);
   return BOT_CAPTIONS[template.id] ?? PHOTO_BOT_CAPTIONS[template.id] ?? [];
 }
 
