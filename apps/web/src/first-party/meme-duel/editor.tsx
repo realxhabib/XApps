@@ -43,10 +43,11 @@ function nextStickerId(): string {
 
 /** Layout sizes that depend on the viewport: the canvas (--cv) always fits without page scroll. */
 const EDITOR_CSS = `
-.mdl-editor { --cv: min(calc(100vw - 32px), max(164px, calc(100dvh - 262px - var(--slots) * 62px)), 560px); --r: 20px; }
+.mdl-editor { --cv: min(calc(100vw - 32px), max(164px, calc(100dvh - 276px - var(--slots) * 42px)), 560px); --r: 20px; }
 @media (min-width: 48rem) {
   .mdl-editor { --cv: min(calc(100dvh - 172px), calc(100vw - 468px), 640px); --r: 26px; }
-}`;
+}
+@media (max-height: 600px) { .mdl-short-hide { display: none !important; } }`;
 
 export interface EditorProps {
   template: MemeTemplate;
@@ -372,7 +373,7 @@ export function Editor({
             >
               {/* Front: the live meme */}
               <motion.div
-                className="absolute inset-0"
+                className="@container absolute inset-0"
                 style={{ backfaceVisibility: "hidden", rotateX: tiltX, rotateY: tiltY, transformStyle: "preserve-3d" }}
               >
                 <div
@@ -401,9 +402,11 @@ export function Editor({
                       animate={{ opacity: 1, scale: 1, rotate: -3, transition: { ...spring.wobbly, delay: reduced ? 0 : 0.8 } }}
                       exit={{ opacity: 0, y: -24, scale: 0.85, transition: { duration: 0.25 } }}
                     >
-                      <div className="rounded-2xl bg-ink-950/85 px-5 py-2.5 text-center shadow-[0_20px_50px_-12px_rgb(0_0_0/0.7)] ring-1 ring-white/15 backdrop-blur-md">
-                        <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-[var(--accent-from)]">Your template</p>
-                        <p className="font-display text-2xl font-extrabold tracking-tight">{template.name}</p>
+                      <div className="max-w-[86%] rounded-2xl bg-ink-950/85 px-[max(12px,4cqw)] py-[max(6px,1.8cqw)] text-center shadow-[0_20px_50px_-12px_rgb(0_0_0/0.7)] ring-1 ring-white/15 backdrop-blur-md">
+                        <p className="text-[clamp(8px,1.9cqw,10px)] font-bold uppercase tracking-[0.22em] text-[var(--accent-from)]">Your template</p>
+                        <p className="whitespace-nowrap font-display text-[clamp(14px,5.2cqw,26px)] leading-tight font-extrabold tracking-tight">
+                          {template.name}
+                        </p>
                       </div>
                     </motion.div>
                   )}
@@ -511,7 +514,7 @@ export function Editor({
           exit={{ opacity: 0, x: 24, transition: { duration: 0.18 } }}
           transition={{ ...spring.soft, delay: 0.3 }}
         >
-          <div className="hidden md:block">
+          <div className="mdl-short-hide hidden md:block">
             <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-ink-300">Caption battle</p>
             <h2 className="mt-1 font-display text-2xl font-extrabold tracking-tight">Make the crowd laugh</h2>
             <p className="mt-1 text-sm text-ink-300">Same template for both of you. Funniest meme takes the Arena vote.</p>
@@ -520,7 +523,7 @@ export function Editor({
               {modeHint}
             </p>
           </div>
-          <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-1 pb-1 pt-1">
+          <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-1 pb-4 pt-1 [mask-image:linear-gradient(180deg,#000_calc(100%-18px),transparent)]">
             {template.slots.map((slot, i) => (
               <CaptionField
                 key={slot.id}
@@ -545,7 +548,7 @@ export function Editor({
                 }}
               />
             ))}
-            <p className="hidden text-xs leading-relaxed text-ink-400 md:block">
+            <p className="mdl-short-hide hidden text-xs leading-relaxed text-ink-400 md:block">
               Tip: tap the meme to jump to a caption. Drag stickers anywhere, use the ↻ handle (or pinch / scroll) to spin and
               resize, and drop them in the 🗑️ to remove.
             </p>

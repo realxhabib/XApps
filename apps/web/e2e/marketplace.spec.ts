@@ -1,15 +1,15 @@
 import { expect, test } from "@playwright/test";
-import { signIn, useDemo } from "./helpers";
+import { signIn, enableDemo } from "./helpers";
 
 test("home shows the hero and featured apps", async ({ page }) => {
-  await useDemo(page);
+  await enableDemo(page);
   await page.goto("/");
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Challenge");
   await expect(page.getByRole("link", { name: /Meme Duel/ }).first()).toBeVisible();
 });
 
 test("marketplace filters by category", async ({ page }) => {
-  await useDemo(page);
+  await enableDemo(page);
   await page.goto("/apps");
   await page.getByRole("tab", { name: /Trivia/ }).click();
   await expect(page.getByRole("link", { name: /Emoji Decode/ })).toBeVisible();

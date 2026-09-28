@@ -90,6 +90,10 @@ export function Sandbox() {
   const startedAt = useRef<number | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const storage = useRef(new Map<string, Json>());
+  // Sources of truth for protocol handlers, which can fire back-to-back
+  // before React re-renders (both seats saying ready at once, for example).
+  const readyRef = useRef<boolean[]>([false, false]);
+  const entriesRef = useRef<Record<string, Entry>>({});
 
   const players: Seat[] = useMemo(() => (run?.mode === "practice" ? [HUMANS[0]!, BOT] : HUMANS), [run?.mode]);
   const humanSeats = run?.mode === "practice" ? 1 : 2;
@@ -110,18 +114,19 @@ export function Sandbox() {
     setSeats((all) => all.map((s, i) => (i === seat ? { ...s, ...patch } : s)));
 
   // Mutable mirrors so bridge handlers always see fresh values.
-  const state = useRef({ seats, entries, result, players, run });
+  const state = useRef({ players, run });
   useEffect(() => {
-    state.current = { seats, entries, result, players, run };
+    state.current = { players, run };
   });
 
   const launchMatch = useCallback(
     (seatIndex: number): LaunchContext["match"] => {
-      const { entries: e, players: ps, run: r } = state.current;
+      const { players: ps, run: r } = state.current;
+      const e = entriesRef.current;
       return {
         id: `sandbox-${r?.key ?? 0}`,
         mode: r?.mode ?? "live",
-        status: state.current.result ? "completed" : "active",
+        status: "active",
         scoring: r?.scoring ?? "high",
         seed: r?.seed ?? "sandbox",
         seat: seatIndex,
@@ -143,7 +148,8 @@ export function Sandbox() {
 
   const finish = useCallback(
     (winnerId: string | null, votes?: Record<string, number>) => {
-      const { entries: e, players: ps } = state.current;
+      const { players: ps } = state.current;
+      const e = entriesRef.current;
       const scores: Record<string, number | null> = {};
       ps.forEach((p) => (scores[p.id] = e[p.id]?.score ?? null));
       const final: MatchResult = { matchId: `sandbox-${state.current.run?.key}`, status: "completed", winnerId, scores, votes };
@@ -156,8 +162,7 @@ export function Sandbox() {
   );
 
   const maybeStart = useCallback(() => {
-    const { seats: s } = state.current;
-    const everyone = s.slice(0, humanSeats).every((x) => x.ready);
+    const everyone = readyRef.current.slice(0, humanSeats).every(Boolean);
     if (!everyone || startedAt.current !== null) return;
     startedAt.current = -1;
     append({ seat: "host", kind: "info", name: "everyone ready → starting in 1s" });
@@ -184,8 +189,8 @@ export function Sandbox() {
       const others = players.filter((p) => p.id !== me.id);
       const handlers: HostHandlers = {
         ready: () => {
+          readyRef.current[seat] = true;
           patchSeat(seat, { ready: true });
-          state.current.seats = state.current.seats.map((s, i) => (i === seat ? { ...s, ready: true } : s));
           setTimeout(maybeStart, 0);
           return { startedAt: startedAt.current && startedAt.current > 0 ? startedAt.current : null };
         },
@@ -202,10 +207,10 @@ export function Sandbox() {
           const player = players.find((p) => p.id === target);
           if (!player) throw new Error(`Unknown player ${target}`);
           if (target !== me.id && !player.isBot) throw new Error("You can only submit for yourself or a bot");
-          if (state.current.entries[target]) throw new Error("Already submitted");
+          if (entriesRef.current[target]) throw new Error("Already submitted");
           if (run.scoring !== "votes" && typeof entry.score !== "number") throw new Error("A score is required for this scoring mode");
-          const next = { ...state.current.entries, [target]: entry };
-          state.current.entries = next;
+          const next = { ...entriesRef.current, [target]: entry };
+          entriesRef.current = next;
           setEntries(next);
           for (let i = 0; i < humanSeats; i++) emit(i, "match.update", { match: launchMatch(i) });
           const all = players.every((p) => next[p.id]);
@@ -275,7 +280,8 @@ export function Sandbox() {
   const launch = () => {
     setSeats([blankSeat(), blankSeat()]);
     setEntries({});
-    state.current.entries = {};
+    entriesRef.current = {};
+    readyRef.current = [false, false];
     setResult(null);
     setLog([]);
     storage.current.clear();

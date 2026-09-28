@@ -183,6 +183,7 @@ function StickerItem({
   const gesture = useRef<Gesture | null>(null);
   const pointers = useRef(new Map<number, Point>());
   const overTrash = useRef(false);
+  const dragReported = useRef(false);
   const stopSession = useRef<(() => void) | null>(null);
   const hitRef = useRef<HTMLDivElement | null>(null);
   const last = useRef({ x: sticker.x, y: sticker.y, scale: sticker.scale, rotate: sticker.rotate });
@@ -249,23 +250,38 @@ function StickerItem({
     void animate(scl, 0, t).then(() => onRemoved(id));
   }, [buzz, chromeLayer, getTrashRect, id, nx, ny, onRemoved, reduced, rot, scl]);
 
+  /** Tell the editor a one-finger drag is (or isn't) underway: it shows the trash and unclips the glyphs. */
+  const reportDrag = useCallback(
+    (next: boolean) => {
+      if (dragReported.current === next) return;
+      dragReported.current = next;
+      onDragChange(next);
+      if (!next && overTrash.current) {
+        overTrash.current = false;
+        setBinning(false);
+        onTrashHover(false);
+      }
+    },
+    [onDragChange, onTrashHover],
+  );
+
   const finish = useCallback(() => {
     const g = gesture.current;
     gesture.current = null;
     interacting.current = false;
     setLifted(false);
     markGesture();
-    const wasDragging = g?.kind === "drag" ? g.moved : g?.kind === "pinch";
-    if (wasDragging) onDragChange(false);
-    if (overTrash.current) {
-      overTrash.current = false;
+    const binned = overTrash.current;
+    overTrash.current = false;
+    reportDrag(false);
+    if (binned) {
       setBinning(false);
       onTrashHover(false);
       binIt();
       return;
     }
     if (g && (g.kind !== "drag" || g.moved)) commit();
-  }, [binIt, commit, markGesture, onDragChange, onTrashHover]);
+  }, [binIt, commit, markGesture, onTrashHover, reportDrag]);
 
   /**
    * Window-level pointer tracking for one gesture: it keeps working when the
@@ -286,7 +302,8 @@ function StickerItem({
         if (!g || g.kind === "handle" || pointers.current.size !== 1) return;
         pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
         const [a, b] = [...pointers.current.values()] as [Point, Point];
-        if (g.kind === "drag" && !g.moved) onDragChange(true);
+        // Pinching is not dragging: no trash can, and the sticker stays put.
+        reportDrag(false);
         gesture.current = { kind: "pinch", a0: a, b0: b, scale: scl.get(), rotate: rot.get() };
         e.preventDefault();
       };
@@ -302,8 +319,8 @@ function StickerItem({
           if (!g.moved) {
             if (Math.hypot(dx, dy) < 4) return;
             g.moved = true;
-            onDragChange(true);
           }
+          reportDrag(true);
           // Free to leave the canvas (the trash lives below it); clamped on release.
           nx.set(clamp(g.from.x + dx / g.width, -0.2, 1.2));
           ny.set(clamp(g.from.y + dy / g.height, -0.2, 1.45));
@@ -354,7 +371,7 @@ function StickerItem({
       window.addEventListener("pointercancel", onUp);
       stopSession.current = stop;
     },
-    [buzz, chromeLayer, finish, getTrashRect, markGesture, nx, ny, onDragChange, onTrashHover, rot, scl],
+    [buzz, chromeLayer, finish, getTrashRect, markGesture, nx, ny, onTrashHover, reportDrag, rot, scl],
   );
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {

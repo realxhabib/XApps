@@ -24,12 +24,14 @@ test("sandbox plays both seats of the example app", async ({ page }) => {
   await page.getByRole("button", { name: "Launch" }).click();
   const one = page.frameLocator('iframe[title="Seat 1"]');
   const two = page.frameLocator('iframe[title="Seat 2"]');
-  for (let round = 0; round < 3; round++) {
-    await one.getByRole("button", { name: "Rock" }).click({ timeout: 15_000 }).catch(() => undefined);
-    await two.getByRole("button", { name: "Scissors" }).click({ timeout: 15_000 }).catch(() => undefined);
-    await page.waitForTimeout(1800);
+  const winner = page.getByText("@player_one wins");
+  await expect(one.getByRole("button", { name: "Rock" })).toBeEnabled({ timeout: 30_000 });
+  for (let round = 0; round < 6 && !(await winner.isVisible()); round++) {
+    await one.getByRole("button", { name: "Rock" }).click({ timeout: 8_000 }).catch(() => undefined);
+    await two.getByRole("button", { name: "Scissors" }).click({ timeout: 8_000 }).catch(() => undefined);
+    await page.waitForTimeout(1_500);
   }
-  await expect(page.getByText("@player_one wins")).toBeVisible();
+  await expect(winner).toBeVisible();
 });
 
 test("two players duel live across tabs", async ({ context }) => {
@@ -67,12 +69,14 @@ test("two players duel live across tabs", async ({ context }) => {
   const a = alice.frameLocator("iframe");
   const b = bob.frameLocator("iframe");
   await expect(a.getByRole("button", { name: "Paper" })).toBeEnabled({ timeout: 30_000 });
-  for (let round = 0; round < 4; round++) {
-    if (await alice.getByRole("dialog").count()) break;
-    await a.getByRole("button", { name: "Paper" }).click({ timeout: 10_000 });
-    await b.getByRole("button", { name: "Rock" }).click({ timeout: 10_000 });
-    await alice.waitForTimeout(2000);
+  const victory = alice.getByRole("dialog", { name: /Victory/ });
+  // After the deciding round the results overlay takes a moment, so tolerate
+  // clicks on the (now disabled) buttons in the meantime.
+  for (let round = 0; round < 6 && !(await victory.isVisible()); round++) {
+    await a.getByRole("button", { name: "Paper" }).click({ timeout: 6_000 }).catch(() => undefined);
+    await b.getByRole("button", { name: "Rock" }).click({ timeout: 6_000 }).catch(() => undefined);
+    await alice.waitForTimeout(1_500);
   }
-  await expect(alice.getByRole("dialog", { name: /Victory/ })).toBeVisible({ timeout: 15_000 });
+  await expect(victory).toBeVisible({ timeout: 15_000 });
   await expect(bob.getByRole("dialog", { name: /Defeat/ })).toBeVisible({ timeout: 15_000 });
 });

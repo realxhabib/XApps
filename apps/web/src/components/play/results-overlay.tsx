@@ -67,7 +67,7 @@ export function ResultsOverlay({
 
   return (
     <motion.div
-      className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto px-4 py-10"
+      className="fixed inset-0 z-[60] flex overflow-y-auto px-4 py-10"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -76,7 +76,7 @@ export function ResultsOverlay({
       aria-label={`${TITLES[outcome]} — ${app.name}`}
     >
       <motion.div
-        className="absolute inset-0 bg-ink-950/80 backdrop-blur-2xl"
+        className="fixed inset-0 bg-ink-950/80 backdrop-blur-2xl"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
       />
@@ -93,7 +93,8 @@ export function ResultsOverlay({
         </div>
       )}
 
-      <div className="relative w-full max-w-2xl text-center">
+      {/* m-auto centers when it fits and scrolls from the top when it doesn't */}
+      <div className="relative m-auto w-full max-w-2xl text-center">
         <motion.p
           className="text-xs font-bold uppercase tracking-[0.3em] text-ink-300"
           initial={{ opacity: 0, y: 10 }}
