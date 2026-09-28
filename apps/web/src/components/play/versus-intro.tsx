@@ -154,7 +154,7 @@ export function VersusIntro({
             )}
           </AnimatePresence>
 
-          {/* Gradient text is clipped to its box: the padding and line height keep the glyph tops inside it. */}
+          {/* Full-width digits: the condensed cut gives 2 and 3 flat, notched tops that read as clipped. */}
           <AnimatePresence mode="popLayout">
             {stage === "count" && (
               <motion.div
@@ -172,7 +172,6 @@ export function VersusIntro({
                     WebkitBackgroundClip: "text",
                     backgroundClip: "text",
                     color: "transparent",
-                    fontVariationSettings: "'wdth' 80",
                   }}
                 >
                   {count === 0 ? "GO!" : count}
