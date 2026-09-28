@@ -19,16 +19,32 @@ function safeNext(value: string | null): string {
   return value && value.startsWith("/") && !value.startsWith("//") ? value : "/";
 }
 
-const HINTS: Record<string, string> = {
+const MESSAGES: Record<string, string> = {
   "not-configured": "Supabase isn't configured on this deployment yet.",
   "missing-code": "X didn't send back a sign-in code. Please try again.",
 };
+
+/** Plain-language fixes for the errors Supabase and X send back most often. */
+const HINTS: [RegExp, string][] = [
+  [/provider is not enabled|unsupported provider/i, "Turn on X / Twitter (OAuth 2.0) in Supabase → Authentication → Sign In / Providers."],
+  [
+    /code verifier|flow state|both auth code/i,
+    "Sign-in finished on a different address than it started on. Use one address for the site, and add <that address>/auth/callback to Supabase → Authentication → URL Configuration → Redirect URLs.",
+  ],
+  [
+    /exchange external code|invalid_client|unauthorized_client|invalid_request/i,
+    "Supabase couldn't finish sign-in with X. Check the Client ID and Client Secret for the X provider in Supabase. On the X developer portal, the app needs OAuth 2.0 as a Web App, with https://<project-ref>.supabase.co/auth/v1/callback as a callback URL.",
+  ],
+  [/email/i, "X didn't share an email address. In the X developer portal, open the app's User authentication settings and turn on Request email from users."],
+  [/access_denied|denied|cancel/i, "Sign-in was cancelled on X."],
+];
 
 export function Login() {
   const router = useRouter();
   const params = useSearchParams();
   const next = safeNext(params.get("next"));
   const error = params.get("error");
+  const hint = error ? HINTS.find(([pattern]) => pattern.test(error))?.[1] : undefined;
   const backend = useBackend();
   const { viewer } = useViewer();
   const [pending, setPending] = useState(false);
@@ -82,10 +98,8 @@ export function Login() {
           <div className="relative mt-5 flex items-start gap-2 rounded-2xl border border-danger/30 bg-danger/10 p-3 text-left text-sm text-[#ffb3ba]">
             <TriangleAlert className="mt-0.5 size-4 shrink-0" />
             <span>
-              {HINTS[error] ?? error}
-              {/provider is not enabled|unsupported provider/i.test(error) && (
-                <> — enable the <b>X / Twitter (OAuth 2.0)</b> provider in Supabase → Authentication → Providers.</>
-              )}
+              {MESSAGES[error] ?? error}
+              {hint && <span className="mt-1 block text-ink-200">{hint}</span>}
             </span>
           </div>
         )}

@@ -137,6 +137,35 @@ function fail(error: PostgrestError | Error | null | undefined, fallback = "Some
   throw new BackendError(message, kind);
 }
 
+type XProvider = "x" | "twitter";
+
+/**
+ * Supabase has two separate X providers: "X / Twitter (OAuth 2.0)" (`x`) and the
+ * legacy "Twitter" one (`twitter`, OAuth 1.0a). Use whichever is switched on,
+ * preferring NEXT_PUBLIC_SUPABASE_X_PROVIDER, so either dashboard setup works.
+ */
+async function resolveXProvider(): Promise<XProvider> {
+  const preferred = env.xProvider;
+  let external: Partial<Record<string, boolean>> | undefined;
+  try {
+    const res = await fetch(`${env.supabaseUrl}/auth/v1/settings`, { headers: { apikey: env.supabaseKey } });
+    if (res.ok) external = ((await res.json()) as { external?: Record<string, boolean> }).external;
+  } catch {
+    // Offline or blocked: let Supabase report the problem on the redirect.
+  }
+  if (!external) return preferred;
+  const order: XProvider[] = preferred === "twitter" ? ["twitter", "x"] : ["x", "twitter"];
+  const enabled = order.find((p) => external[p]);
+  if (enabled) return enabled;
+  if ("x" in external || "twitter" in external) {
+    throw new BackendError(
+      "Sign in with X is switched off in Supabase. Turn on X / Twitter (OAuth 2.0) under Authentication → Sign In / Providers.",
+      "setup_required",
+    );
+  }
+  return preferred;
+}
+
 /** The production backend: X sign-in, Postgres + RLS, Realtime rooms. */
 export class SupabaseBackend implements Backend {
   readonly kind = "supabase" as const;
@@ -187,10 +216,11 @@ export class SupabaseBackend implements Backend {
   }
 
   async signInWithX(next = "/"): Promise<void> {
-    const origin = env.siteUrl || window.location.origin;
+    const provider = await resolveXProvider();
+    // Always come back to the address sign-in started on: the PKCE verifier cookie lives there.
     const { error } = await this.sb.auth.signInWithOAuth({
-      provider: env.xProvider,
-      options: { redirectTo: `${origin}/auth/callback?next=${encodeURIComponent(next)}` },
+      provider,
+      options: { redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}` },
     });
     if (error) fail(error);
   }
