@@ -33,3 +33,9 @@ export function memeImageUrl(src: string): string {
   if (src.startsWith("data:image/")) return src;
   return `/api/meme-image?src=${encodeURIComponent(src)}`;
 }
+
+/** A link that downloads the original image (for remixing in another editor). Null for data URLs. */
+export function memeDownloadUrl(src: string): string | null {
+  if (src.startsWith("data:")) return null;
+  return `/api/meme-image?src=${encodeURIComponent(src)}&download=1`;
+}

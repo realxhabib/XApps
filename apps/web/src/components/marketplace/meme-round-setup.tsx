@@ -2,7 +2,7 @@
 
 import { AnimatePresence, motion } from "motion/react";
 import { useQuery } from "@tanstack/react-query";
-import { Check, Dices, Flame, ImagePlus, LayoutGrid, Shuffle, Upload, X as Close } from "lucide-react";
+import { Check, Dices, Download, Flame, ImagePlus, LayoutGrid, Shuffle, Upload, X as Close } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
 import { Segmented } from "@/components/ui/segmented";
 import { Spinner } from "@/components/ui/spinner";
@@ -10,7 +10,7 @@ import { XLogo } from "@/components/ui/x-logo";
 import { PHOTO_TEMPLATES } from "@/first-party/meme-duel/photo-templates";
 import { TOPIC_MAX, type MemeDrop } from "@/first-party/meme-duel/round";
 import { haptic } from "@/lib/haptics";
-import { memeImageUrl } from "@/lib/meme-image";
+import { memeDownloadUrl, memeImageUrl } from "@/lib/meme-image";
 import type { TrendingMeme, TrendingMemes } from "@/lib/trending-memes";
 import { BLUR_TWEEN, spring } from "@/lib/motion";
 import { play } from "@/lib/sfx";
@@ -43,7 +43,16 @@ export function memeSetupReady(setup: MemeSetup): boolean {
 export function trendingToRound(meme: TrendingMeme): { templateId: string } | { drop: MemeDrop } {
   const templateId = meme.imgflipId ? `imgflip-${meme.imgflipId}` : null;
   if (templateId && PHOTO_TEMPLATES.some((t) => t.id === templateId)) return { templateId };
-  return { drop: { src: meme.src, width: meme.width, height: meme.height, credit: meme.credit } };
+  return {
+    drop: {
+      src: meme.src,
+      width: meme.width,
+      height: meme.height,
+      credit: meme.credit,
+      name: meme.title,
+      ...(meme.slots?.length ? { slots: meme.slots } : {}),
+    },
+  };
 }
 
 const TOPICS = [
@@ -225,6 +234,8 @@ function TrendingPicker({ selected, onSelect }: { selected: string | null; onSel
     staleTime: 10 * 60_000,
   });
 
+  const picked = trending.data?.memes.find((m) => m.id === selected) ?? null;
+
   if (trending.isPending) {
     return (
       <div className="-mx-4 flex gap-2.5 overflow-hidden px-4" aria-busy>
@@ -299,15 +310,55 @@ function TrendingPicker({ selected, onSelect }: { selected: string | null; onSel
                 </AnimatePresence>
               </span>
               <span className={cn("mt-1.5 line-clamp-2 block text-[11px] leading-tight", active ? "text-ink-50" : "text-ink-400")}>
-                {meme.credit ? `@${meme.credit.handle}` : meme.title}
+                {meme.title}
               </span>
             </motion.button>
           );
         })}
       </div>
-      <p className="mt-1.5 text-[11px] text-ink-500">
-        {trending.data.source === "grok" ? "Going viral on X right now, found by Grok." : "Most-captioned templates right now."}
-      </p>
+      <AnimatePresence mode="wait" initial={false}>
+        {picked ? (
+          <motion.div
+            key={picked.id}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={spring.snappy}
+            className="mt-2 flex items-start gap-3 rounded-2xl bg-white/[0.04] px-3 py-2.5"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold">{picked.title}</p>
+              <p className="line-clamp-2 text-xs text-ink-400">
+                {picked.why ?? "You both caption the original template."}
+                {picked.examples?.[0] && (
+                  <>
+                    {" "}
+                    <a href={picked.examples[0]} target="_blank" rel="noreferrer" className="font-medium text-nova-300 hover:underline">
+                      See it on X
+                    </a>
+                  </>
+                )}
+              </p>
+            </div>
+            {memeDownloadUrl(picked.src) && (
+              <a
+                href={memeDownloadUrl(picked.src)!}
+                download
+                className="flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-white/10 px-3 text-xs font-semibold transition hover:bg-white/15"
+                title="Download the blank template to remix it anywhere"
+              >
+                <Download className="size-3.5" /> Blank
+              </a>
+            )}
+          </motion.div>
+        ) : (
+          <motion.p key="hint" className="mt-1.5 text-[11px] text-ink-500" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            {trending.data.source === "grok"
+              ? "Formats going viral on X right now, found by Grok. You'll caption the blank original."
+              : "Most-captioned templates right now."}
+          </motion.p>
+        )}
+      </AnimatePresence>
     </>
   );
 }

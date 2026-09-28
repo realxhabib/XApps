@@ -25,8 +25,11 @@ export async function GET(request: NextRequest) {
   const body = await upstream.arrayBuffer();
   if (body.byteLength > MAX_BYTES) return new Response("Image too large", { status: 413 });
 
+  const download = request.nextUrl.searchParams.get("download") === "1";
+  const ext = type.includes("png") ? "png" : type.includes("gif") ? "gif" : type.includes("webp") ? "webp" : "jpg";
   return new Response(body, {
     headers: {
+      ...(download ? { "Content-Disposition": `attachment; filename="meme-template.${ext}"` } : {}),
       "Content-Type": type,
       "Cache-Control": "public, max-age=86400, s-maxage=604800, stale-while-revalidate=604800",
       "X-Content-Type-Options": "nosniff",
