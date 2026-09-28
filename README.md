@@ -13,7 +13,7 @@ Anyone can build and list their own app with the `@xapps/sdk`.
 
 | Default app | Format | Scoring |
 | --- | --- | --- |
-| 🖼️ Meme Duel | Caption the same template, drag stickers, and let the crowd vote | votes |
+| 🖼️ Meme Duel | Caption the same real meme template, or an image the challenger drops (upload or an X post's photo), optionally on a topic; add stickers and let the crowd vote | votes |
 | ⚡ Reflexes | Best-of-five reflex duel, with reaction times measured on each device | rounds won |
 | 🔥 Hot Takes | You're assigned a side; argue it in 280 characters, and the crowd picks the better argument | votes |
 | 🔴 Four in a Row | Classic connect-four with physics and a minimax bot | win/draw/loss |
@@ -36,7 +36,7 @@ Without Supabase keys, XApps runs in **demo mode**. Everything lives in your bro
 ## Going live: Supabase + Sign in with X
 
 1. **Create a Supabase project.**
-2. **Install the schema.** Run [`supabase/migrations/20260928000000_xapps_core.sql`](supabase/migrations/20260928000000_xapps_core.sql) in the SQL editor. Or use the CLI: `npx supabase link --project-ref <ref> && npx supabase db push`. This creates the tables, row-level security, the match/vote/XP RPCs, realtime room authorization, and seeds the default apps plus the practice bot.
+2. **Install the schema.** Run every file in [`supabase/migrations/`](supabase/migrations) in the SQL editor, oldest first. Or use the CLI: `npx supabase link --project-ref <ref> && npx supabase db push`. This creates the tables, row-level security, the match/vote/XP RPCs, realtime room authorization, the `meme-drops` storage bucket for dropped images, and seeds the default apps plus the practice bot. When you pull new migrations later, run just the new files.
 3. **Create an X app** in the [X developer portal](https://developer.x.com):
    - Turn on **OAuth 2.0** and choose the type *Web App*.
    - Set the callback URL to `https://<project-ref>.supabase.co/auth/v1/callback`.

@@ -73,6 +73,16 @@ function appFor(db: DemoDb, slug: string): AppManifest | null {
   return db.apps[slug] ?? null;
 }
 
+/** Mirrors create_challenge: an object, `quick` reserved. Demo allows room for a data-URL image. */
+function challengeSettings(settings: CreateChallengeInput["settings"]): { [key: string]: Json } {
+  if (!settings) return {};
+  if (typeof settings !== "object" || Array.isArray(settings)) throw new BackendError("Challenge settings must be an object", "invalid");
+  if (JSON.stringify(settings).length > 700_000) throw new BackendError("Challenge settings are too large", "invalid");
+  const rest = { ...settings };
+  delete rest.quick;
+  return rest;
+}
+
 function newPlayer(userId: string, seat: number, extra: Partial<PlayerRow> = {}): PlayerRow {
   return {
     userId,
@@ -320,6 +330,7 @@ export class DemoBackend implements Backend {
       if (!app) throw new BackendError("App not found", "not_found");
       if (!app.modes.includes(input.mode)) throw new BackendError(`${app.name} doesn't support ${input.mode} play`, "invalid");
       const row = this.baseMatch(app, input.mode, viewer.id);
+      row.settings = challengeSettings(input.settings);
       row.players.push(newPlayer(viewer.id, 0));
 
       if (input.opponentHandle) {
@@ -337,6 +348,18 @@ export class DemoBackend implements Backend {
       }
       db.matches[row.id] = row;
       return hydrate(db, row);
+    });
+  }
+
+  async uploadImage(image: Blob): Promise<string> {
+    this.requireViewer();
+    // Everything lives in localStorage here, so keep dropped images as small data URLs.
+    if (image.size > 400_000) throw new BackendError("That image is too big for demo mode", "invalid");
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new BackendError("Couldn't read that image", "invalid"));
+      reader.readAsDataURL(image);
     });
   }
 

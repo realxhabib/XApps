@@ -88,7 +88,7 @@ export function Dialog({
             aria-modal="true"
             aria-labelledby={title ? titleId : undefined}
             className={cn(
-              "glass-strong relative z-10 w-full max-w-lg overflow-hidden rounded-t-[2rem] p-6 pb-8 shadow-2xl sm:rounded-[2rem] sm:pb-6",
+              "glass-strong relative z-10 max-h-[92dvh] w-full max-w-lg overflow-y-auto overscroll-contain rounded-t-[2rem] p-6 pb-8 shadow-2xl sm:rounded-[2rem] sm:pb-6",
               className,
             )}
             initial={{ opacity: 0, y: 60, scale: 0.96 }}

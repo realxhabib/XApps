@@ -334,7 +334,27 @@ export class SupabaseBackend implements Backend {
       p_app: input.appSlug,
       p_mode: input.mode,
       p_opponent: input.opponentHandle ?? null,
+      p_settings: input.settings ?? {},
     });
+  }
+
+  async uploadImage(image: Blob): Promise<string> {
+    const { data: auth } = await this.sb.auth.getUser();
+    if (!auth.user) throw new BackendError("Sign in to upload", "unauthenticated");
+    const ext = image.type === "image/png" ? "png" : image.type === "image/webp" ? "webp" : image.type === "image/gif" ? "gif" : "jpg";
+    const path = `${auth.user.id}/${crypto.randomUUID()}.${ext}`;
+    const { error } = await this.sb.storage.from("meme-drops").upload(path, image, {
+      contentType: image.type || "image/jpeg",
+      cacheControl: "31536000",
+      upsert: false,
+    });
+    if (error) {
+      if (/bucket not found/i.test(error.message)) {
+        throw new BackendError("Image uploads need the latest database migration (supabase/migrations).", "setup_required");
+      }
+      throw new BackendError(error.message, "internal");
+    }
+    return this.sb.storage.from("meme-drops").getPublicUrl(path).data.publicUrl;
   }
 
   quickMatch(appSlug: string): Promise<Match> {

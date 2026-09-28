@@ -49,6 +49,6 @@ export async function proxy(request: NextRequest) {
 export const config = {
   matcher: [
     // Skip static assets, the SDK bundle, examples and first-party app frames.
-    "/((?!_next/static|_next/image|favicon.ico|icon.svg|sdk/|examples/|embed/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|js|map)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|icon.svg|sdk/|examples/|embed/|api/meme-image|api/x-media|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|js|map)$).*)",
   ],
 };

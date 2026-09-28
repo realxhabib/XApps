@@ -561,6 +561,8 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
               appSlug: app.slug,
               mode: match.mode === "async" ? "async" : "live",
               opponentHandle: opp.profile.handle,
+              // Same setup (template, dropped image, topic) for the rematch.
+              settings: rematchSettings(match.settings),
             });
       router.replace(`/play/${next.id}`);
     } catch (error) {
@@ -731,4 +733,10 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
       </Dialog>
     </div>
   );
+}
+
+function rematchSettings(settings: Match["settings"]): Match["settings"] {
+  const rest = { ...settings };
+  delete rest.quick;
+  return rest;
 }

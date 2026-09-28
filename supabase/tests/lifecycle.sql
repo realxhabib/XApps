@@ -275,5 +275,44 @@ exception when insufficient_privilege then
   null;
 end $$;
 
+-- ---------------------------------------------------------------- Challenge settings + meme drops
+select set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', false);
+insert into ctx values ('drop', (select public.create_challenge('meme-duel', 'async', null,
+  '{"topic":"Monday mornings","drop":{"src":"https://x.supabase.co/storage/v1/object/public/meme-drops/a.jpg","width":800,"height":600},"quick":true}')::text));
+do $$
+declare m jsonb := public.get_match((select v from ctx where k = 'drop')::uuid);
+begin
+  assert m->'settings'->>'topic' = 'Monday mornings', 'settings stored';
+  assert (m->'settings'->'drop'->>'width')::int = 800, 'drop stored';
+  assert not (m->'settings' ? 'quick'), 'reserved keys stripped';
+end $$;
+do $$
+begin
+  perform public.create_challenge('meme-duel', 'async', null, '"nope"');
+  raise exception 'expected failure';
+exception when invalid_parameter_value then
+  null;
+end $$;
+do $$
+begin
+  perform public.create_challenge('meme-duel', 'async', null, jsonb_build_object('topic', repeat('x', 5000)));
+  raise exception 'expected failure';
+exception when invalid_parameter_value then
+  null;
+end $$;
+-- Uploads only land in your own folder
+insert into storage.objects (bucket_id, name) values ('meme-drops', '11111111-1111-4111-8111-111111111111/one.jpg');
+do $$
+begin
+  insert into storage.objects (bucket_id, name) values ('meme-drops', '22222222-2222-4222-8222-222222222222/nope.jpg');
+  raise exception 'expected failure';
+exception when insufficient_privilege then
+  null;
+end $$;
+
 reset role;
+do $$
+begin
+  assert (select name from public.apps where slug = 'quick-draw') = 'Reflexes', 'Reflexes rename';
+end $$;
 \echo 'All database lifecycle checks passed ✔'

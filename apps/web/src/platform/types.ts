@@ -128,6 +128,8 @@ export interface CreateChallengeInput {
   mode: Exclude<PlayableMode, "practice">;
   /** Invite a specific person; leave empty for an open challenge link. */
   opponentHandle?: string | null;
+  /** How the challenger set up the round; the app reads it as `match.settings` (max 4 KB). */
+  settings?: { [key: string]: Json };
 }
 
 export interface RegisterAppInput {
