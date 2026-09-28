@@ -2,18 +2,32 @@
  * Pure Meme Duel logic: entry validation/sanitizing, sticker math, bot entries
  * and small helpers. No React, no SDK calls — everything here is unit-tested.
  */
-import { slotFrame, STICKER_SIZE } from "./render";
+import {
+  DROP_BOT_CAPTIONS,
+  DROP_TEMPLATE_ID,
+  PHOTO_BOT_CAPTIONS,
+  PHOTO_TEMPLATES,
+  dropTemplate,
+  isPhotoTemplateId,
+} from "./photo-templates";
+import { positionedSlot, slotCenter, slotFrame, STICKER_SIZE } from "./render";
+import { parseRound, type MemeRound } from "./round";
 import {
   BOT_CAPTIONS,
   CANVAS,
   MEME_TEMPLATES,
   STICKERS,
+  canvasOf,
   getTemplate,
+  type CaptionPosition,
   type CaptionSlot,
   type MemeEntry,
   type MemeTemplate,
   type StickerPlacement,
 } from "./templates";
+
+type CanvasSize = { width: number; height: number };
+type Positions = Record<string, CaptionPosition> | undefined;
 
 /** A source of uniform floats in [0, 1) — `Math.random` or a seeded stream. */
 export type Rand = () => number;
@@ -188,23 +202,99 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** An original or photo template id (drops aren't in the catalog). */
 export function isTemplateId(value: unknown): value is string {
-  return typeof value === "string" && MEME_TEMPLATES.some((t) => t.id === value);
+  return typeof value === "string" && (MEME_TEMPLATES.some((t) => t.id === value) || isPhotoTemplateId(value));
 }
+
+/** Photo templates and drops let players drag their captions around. */
+export function hasMovableCaptions(template: MemeTemplate): boolean {
+  return !!template.photo;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Caption positions                                                      */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * Where a caption's center may go (0..1 of the canvas): its whole frame stays
+ * on the canvas. A frame wider/taller than the canvas is pinned to the middle.
+ */
+export function captionRange(slot: CaptionSlot, canvas: CanvasSize): { minX: number; maxX: number; minY: number; maxY: number } {
+  const f = slotFrame(slot);
+  const halfW = f.width / 2 / canvas.width;
+  const halfH = f.height / 2 / canvas.height;
+  const [minX, maxX] = halfW >= 0.5 ? [0.5, 0.5] : [halfW, 1 - halfW];
+  const [minY, maxY] = halfH >= 0.5 ? [0.5, 0.5] : [halfH, 1 - halfH];
+  return { minX, maxX, minY, maxY };
+}
+
+/** A caption's default position (0..1): the center of the frame the template gave it. */
+export function defaultCaptionPosition(slot: CaptionSlot, canvas: CanvasSize): CaptionPosition {
+  const c = slotCenter(slot);
+  return { x: round4(c.x / canvas.width), y: round4(c.y / canvas.height) };
+}
+
+/** Clamps a dragged caption onto the canvas. Non-finite input means "not moved" (undefined). */
+export function clampCaptionPosition(slot: CaptionSlot, canvas: CanvasSize, raw: unknown): CaptionPosition | undefined {
+  if (!isRecord(raw)) return undefined;
+  const { x, y } = raw;
+  if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) return undefined;
+  const r = captionRange(slot, canvas);
+  return { x: round4(clamp(x, r.minX, r.maxX)), y: round4(clamp(y, r.minY, r.maxY)) };
+}
+
+/**
+ * Keeps only positions for this template's slots, clamped and rounded.
+ * Captions left at (or snapped back to) their default spot are dropped.
+ */
+export function sanitizePositions(raw: unknown, template: MemeTemplate): Record<string, CaptionPosition> {
+  const out: Record<string, CaptionPosition> = {};
+  if (!hasMovableCaptions(template) || !isRecord(raw)) return out;
+  const canvas = canvasOf(template);
+  for (const slot of template.slots) {
+    const pos = clampCaptionPosition(slot, canvas, raw[slot.id]);
+    if (!pos) continue;
+    const home = clampCaptionPosition(slot, canvas, defaultCaptionPosition(slot, canvas)) as CaptionPosition;
+    if (Math.abs(pos.x - home.x) < 0.001 && Math.abs(pos.y - home.y) < 0.001) continue;
+    out[slot.id] = pos;
+  }
+  return out;
+}
+
+/** The slot as drawn: moved to the player's position when there is one. */
+export function slotWithPosition(template: MemeTemplate, slot: CaptionSlot, positions?: Positions): CaptionSlot {
+  return positions && hasMovableCaptions(template) ? positionedSlot(slot, canvasOf(template), positions[slot.id]) : slot;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Entries                                                                */
+/* ---------------------------------------------------------------------- */
 
 /**
  * Turns anything (our own editor state, stored data, another client's
  * payload) into a valid entry: known template, one trimmed caption per slot,
- * at most three known stickers inside the canvas.
+ * at most three known stickers inside the canvas, caption positions on the
+ * canvas (photo templates only).
+ *
+ * `fallback` is a template id, or the round's resolved template (needed for
+ * drops, which aren't in the catalog).
  */
-export function sanitizeEntry(raw: unknown, fallbackTemplateId?: string): MemeEntry {
+export function sanitizeEntry(raw: unknown, fallback?: string | MemeTemplate): MemeEntry {
   const input = isRecord(raw) ? raw : {};
-  const templateId = isTemplateId(input.templateId)
-    ? input.templateId
-    : isTemplateId(fallbackTemplateId)
-      ? fallbackTemplateId
-      : (MEME_TEMPLATES[0] as MemeTemplate).id;
-  const template = getTemplate(templateId);
+  const given = typeof fallback === "object" && fallback ? fallback : undefined;
+  const fallbackId = typeof fallback === "string" ? fallback : undefined;
+  const template =
+    given && (input.templateId === given.id || !isTemplateId(input.templateId))
+      ? given
+      : getTemplate(
+          isTemplateId(input.templateId)
+            ? input.templateId
+            : isTemplateId(fallbackId)
+              ? fallbackId
+              : (MEME_TEMPLATES[0] as MemeTemplate).id,
+        );
+  const templateId = template.id;
   const rawCaptions = isRecord(input.captions) ? input.captions : {};
   const captions: Record<string, string> = {};
   for (const slot of template.slots) captions[slot.id] = sanitizeCaption(rawCaptions[slot.id], slot.maxLength);
@@ -222,37 +312,66 @@ export function sanitizeEntry(raw: unknown, fallbackTemplateId?: string): MemeEn
         rotate: finite(s.rotate, 0),
       }),
     );
-  return { templateId, captions, stickers };
+  const positions = sanitizePositions(input.positions, template);
+  return Object.keys(positions).length ? { templateId, captions, stickers, positions } : { templateId, captions, stickers };
 }
 
 /** Submit is allowed once any caption has real text. */
-export function hasCaption(entry: Pick<MemeEntry, "templateId" | "captions">): boolean {
-  return getTemplate(entry.templateId).slots.some((slot) => sanitizeCaption(entry.captions[slot.id], slot.maxLength) !== "");
+export function hasCaption(entry: Pick<MemeEntry, "templateId" | "captions">, template = getTemplate(entry.templateId)): boolean {
+  return template.slots.some((slot) => sanitizeCaption(entry.captions[slot.id], slot.maxLength) !== "");
 }
 
-/** Alt text for the Arena: the captions in slot order ("POV: …" keeps its prefix). */
-export function entryAlt(entry: MemeEntry): string {
-  const template = getTemplate(entry.templateId);
+/**
+ * Alt text for the Arena: the captions in slot order ("POV: …" keeps its
+ * prefix), led by the round's topic when there is one.
+ */
+export function entryAlt(entry: MemeEntry, template = getTemplate(entry.templateId), topic?: string): string {
   const parts = template.slots
     .map((slot) => {
       const text = sanitizeCaption(entry.captions[slot.id], slot.maxLength);
       return text ? (slot.prefix ? `${slot.prefix} ${text}` : text) : "";
     })
     .filter(Boolean);
-  return parts.length ? parts.join(" / ") : `${template.name} meme`;
+  const text = parts.length ? parts.join(" / ") : `${template.name} meme`;
+  return topic ? `Topic: ${topic} — ${text}` : text;
 }
 
-/** Plain JSON copy of an entry for `xapps.submit({ data })`. */
-export function entryToJson(entry: MemeEntry): {
+export type EntryJson = {
   templateId: string;
   captions: { [slot: string]: string };
   stickers: { emoji: string; x: number; y: number; scale: number; rotate: number }[];
-} {
-  return {
+  positions?: { [slot: string]: { x: number; y: number } };
+  /** Drops: a reference to the image (never the image itself, it's embedded in the display). */
+  drop?: { src: string | null; width: number; height: number };
+  topic?: string;
+};
+
+/** Longest drop URL kept in `data` (demo drops are data: URLs: those are left out). */
+const DROP_REF_MAX = 512;
+
+/**
+ * Plain JSON copy of an entry for `xapps.submit({ data })`. Pass the resolved
+ * template and round to record a drop reference and the topic.
+ */
+export function entryToJson(entry: MemeEntry, template?: MemeTemplate, round?: MemeRound): EntryJson {
+  const json: EntryJson = {
     templateId: entry.templateId,
     captions: { ...entry.captions },
     stickers: entry.stickers.map((s) => ({ emoji: s.emoji, x: s.x, y: s.y, scale: s.scale, rotate: s.rotate })),
   };
+  if (entry.positions && Object.keys(entry.positions).length) {
+    json.positions = Object.fromEntries(Object.entries(entry.positions).map(([id, p]) => [id, { x: p.x, y: p.y }]));
+  }
+  if (template?.id === DROP_TEMPLATE_ID && template.photo) {
+    const src = template.photo.src;
+    json.drop = {
+      src: src.startsWith("https://") && src.length <= DROP_REF_MAX ? src : null,
+      width: template.photo.width,
+      height: template.photo.height,
+    };
+  }
+  if (round?.topic) json.topic = round.topic;
+  return json;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -260,16 +379,22 @@ export function entryToJson(entry: MemeEntry): {
 /* ---------------------------------------------------------------------- */
 
 /**
- * The match's template: an explicit `settings.templateId` wins, otherwise a
- * pick from the match-seeded random stream (identical on both clients).
+ * The round's template: a dropped image wins, then an explicit known
+ * `templateId`, otherwise a photo template picked from the match-seeded
+ * random stream (identical on both clients).
  */
+export function resolveTemplate(rng: { pick<T>(items: readonly T[]): T }, round: MemeRound): MemeTemplate {
+  if (round.drop) return dropTemplate(round.drop);
+  if (isTemplateId(round.templateId)) return getTemplate(round.templateId);
+  return rng.pick(PHOTO_TEMPLATES);
+}
+
+/** `resolveTemplate` straight from untrusted `match.settings`. */
 export function pickTemplate(
   rng: { pick<T>(items: readonly T[]): T },
-  settings?: { [key: string]: unknown },
+  settings?: { [key: string]: unknown } | null,
 ): MemeTemplate {
-  const requested = settings?.templateId;
-  if (isTemplateId(requested)) return getTemplate(requested);
-  return rng.pick(MEME_TEMPLATES);
+  return resolveTemplate(rng, parseRound(settings as Parameters<typeof parseRound>[0]));
 }
 
 /* ---------------------------------------------------------------------- */
@@ -277,15 +402,16 @@ export function pickTemplate(
 /* ---------------------------------------------------------------------- */
 
 /** A caption slot's full-size area as fractions of the canvas. */
-export function slotBounds(slot: CaptionSlot): Box {
+export function slotBounds(slot: CaptionSlot, canvas: CanvasSize = CANVAS): Box {
   const f = slotFrame(slot);
-  return { x: f.x / CANVAS.width, y: f.y / CANVAS.height, w: f.width / CANVAS.width, h: f.height / CANVAS.height };
+  return { x: f.x / canvas.width, y: f.y / canvas.height, w: f.width / canvas.width, h: f.height / canvas.height };
 }
 
 /** Which caption slot (if any) sits under a 0..1 canvas point — tapping the canvas focuses it. */
-export function slotAt(template: MemeTemplate, point: Point): CaptionSlot | undefined {
+export function slotAt(template: MemeTemplate, point: Point, positions?: Positions): CaptionSlot | undefined {
+  const canvas = canvasOf(template);
   return template.slots.find((slot) => {
-    const b = slotBounds(slot);
+    const b = slotBounds(slotWithPosition(template, slot, positions), canvas);
     return point.x >= b.x && point.x <= b.x + b.w && point.y >= b.y && point.y <= b.y + b.h;
   });
 }
@@ -300,8 +426,9 @@ function overlapArea(a: Box, b: Box): number {
  * Things a random sticker should rather not cover, weighted: captions most,
  * the template's own text next, its big hero emoji a little.
  */
-function obstacles(template: MemeTemplate): { box: Box; weight: number }[] {
-  const out = template.slots.map((slot) => ({ box: slotBounds(slot), weight: 10 }));
+function obstacles(template: MemeTemplate, positions?: Positions): { box: Box; weight: number }[] {
+  const canvas = canvasOf(template);
+  const out = template.slots.map((slot) => ({ box: slotBounds(slotWithPosition(template, slot, positions), canvas), weight: 10 }));
   for (const el of template.scene) {
     if (el.kind === "text") {
       const w = el.text.length * el.size * 0.58;
@@ -330,8 +457,11 @@ export function randomStickerPlacement(
   emoji: string,
   rand: Rand,
   existing: readonly StickerPlacement[] = [],
+  positions?: Positions,
 ): StickerPlacement {
-  const avoid = obstacles(template);
+  const avoid = obstacles(template, positions);
+  // Radii are fractions of the width; on a tall/wide canvas y fractions scale differently.
+  const aspect = canvasOf(template).width / canvasOf(template).height;
   let best: StickerPlacement | null = null;
   let bestCost = Infinity;
   for (let attempt = 0; attempt < 40; attempt++) {
@@ -344,11 +474,12 @@ export function randomStickerPlacement(
       rotate: -20 + rand() * 40,
     };
     const r = stickerRadius(scale);
-    const box = { x: candidate.x - r, y: candidate.y - r, w: r * 2, h: r * 2 };
+    const ry = r * aspect;
+    const box = { x: candidate.x - r, y: candidate.y - ry, w: r * 2, h: ry * 2 };
     let cost = 0;
     for (const { box: area, weight } of avoid) cost += overlapArea(box, area) * weight;
     for (const other of existing) {
-      const gap = Math.hypot(other.x - candidate.x, other.y - candidate.y) - r - stickerRadius(other.scale);
+      const gap = Math.hypot(other.x - candidate.x, (other.y - candidate.y) / aspect) - r - stickerRadius(other.scale);
       if (gap < 0.04) cost += 0.04 - gap;
     }
     if (cost < bestCost) {
@@ -361,10 +492,15 @@ export function randomStickerPlacement(
 }
 
 /** The dice button: every sticker gets a fresh random spot, angle and size. */
-export function scatterStickers<T extends StickerPlacement>(template: MemeTemplate, stickers: readonly T[], rand: Rand): T[] {
+export function scatterStickers<T extends StickerPlacement>(
+  template: MemeTemplate,
+  stickers: readonly T[],
+  rand: Rand,
+  positions?: Positions,
+): T[] {
   const placed: StickerPlacement[] = [];
   return stickers.map((sticker) => {
-    const next = randomStickerPlacement(template, sticker.emoji, rand, placed);
+    const next = randomStickerPlacement(template, sticker.emoji, rand, placed, positions);
     placed.push(next);
     return { ...sticker, x: next.x, y: next.y, scale: next.scale, rotate: next.rotate };
   });
@@ -378,14 +514,20 @@ export function pickFrom<T>(items: readonly T[], rand: Rand): T {
   return items[Math.min(items.length - 1, Math.floor(rand() * items.length))] as T;
 }
 
+/** The bot's caption bank for a template: originals, photo templates, or the generic pool for drops. */
+export function botCaptionsFor(template: MemeTemplate): readonly Record<string, string>[] {
+  if (template.id === DROP_TEMPLATE_ID) return DROP_BOT_CAPTIONS;
+  return BOT_CAPTIONS[template.id] ?? PHOTO_BOT_CAPTIONS[template.id] ?? [];
+}
+
 /** The practice bot's meme: a canned caption set for the template plus one sticker. */
 export function makeBotEntry(template: MemeTemplate, rand: Rand): MemeEntry {
-  const bank = BOT_CAPTIONS[template.id] ?? [];
+  const bank = botCaptionsFor(template);
   const captions = bank.length
     ? pickFrom(bank, rand)
     : Object.fromEntries(template.slots.map((slot) => [slot.id, slot.placeholder]));
   const sticker = randomStickerPlacement(template, pickFrom(STICKERS, rand), rand);
-  return sanitizeEntry({ templateId: template.id, captions, stickers: [sticker] });
+  return sanitizeEntry({ templateId: template.id, captions, stickers: [sticker] }, template);
 }
 
 /** When the bot submits on its own: somewhere 15–40 s into the match. */

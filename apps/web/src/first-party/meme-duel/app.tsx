@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useBot, useLiveOpponent } from "@/first-party/shared/hooks";
 import { play } from "@/lib/sfx";
 import { Editor } from "./editor";
-import { LockedScreen } from "./locked";
+import { LockedScreen, type LockedMeme } from "./locked";
 import {
   LIVE_TIME_MS,
   SOFT_TIME_MS,
@@ -14,26 +14,28 @@ import {
   TYPING_THROTTLE_MS,
   botFollowUpDelayMs,
   botSubmitDelayMs,
-  entryAlt,
-  entryToJson,
   makeBotEntry,
   outcomeFor,
-  pickTemplate,
+  resolveTemplate,
   sanitizeEntry,
 } from "./logic";
+import { DROP_TEMPLATE_ID } from "./photo-templates";
 import { Countdown, OpponentPill, useBuzz, type OpponentState } from "./pieces";
 import { Pregame } from "./pregame";
-import { renderMemeSvg } from "./render";
+import { parseRound } from "./round";
 import type { EditorSticker } from "./stickers";
-import type { MemeEntry } from "./templates";
+import { buildSubmission } from "./submission";
+import { canvasOf, type CaptionPosition } from "./templates";
+
 
 /** Color emoji fonts ahead of the system fallbacks (some ship monochrome emoji glyphs). */
 const APP_FONT =
   "var(--font-geist-sans), 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', ui-sans-serif, system-ui, sans-serif";
 
 /**
- * Meme Duel: both players caption the same seeded template, add up to three
- * stickers and submit an SVG for the Arena crowd to vote on.
+ * Meme Duel: both players caption the same image (a real template picked by
+ * the match seed, the challenger's pick, or an image they dropped), add up to
+ * three stickers and submit a self-contained SVG for the Arena crowd to vote on.
  *
  * Live sync (vs a human): `typing` (throttled, while editing) and `submitted`
  * room events drive the opponent pill. Bots are played locally and submit
@@ -54,13 +56,17 @@ export function MemeDuelApp() {
   const meId = xapps.me.id;
   const hardClock = match.mode === "live";
 
-  // Same template on both screens: an explicit setting wins, otherwise the match seed decides.
-  const template = useMemo(() => pickTemplate(xapps.random.fork("meme-duel:template"), xapps.match.settings), [xapps]);
+  // Same image on both screens: a drop or explicit template wins, otherwise the match seed decides.
+  const round = useMemo(() => parseRound(xapps.match.settings), [xapps]);
+  const template = useMemo(() => resolveTemplate(xapps.random.fork("meme-duel:template"), round), [xapps, round]);
 
   const [phase, setPhase] = useState<"editing" | "locked">(() => (xapps.me.submitted ? "locked" : "editing"));
   const [captions, setCaptions] = useState<Record<string, string>>({});
+  const [positions, setPositions] = useState<Record<string, CaptionPosition>>({});
   const [stickers, setStickers] = useState<EditorSticker[]>([]);
-  const [finalEntry, setFinalEntry] = useState<MemeEntry | null>(null);
+  const [finalMeme, setFinalMeme] = useState<LockedMeme | null>(null);
+  const [locking, setLocking] = useState(false);
+  const [botRetry, setBotRetry] = useState(0);
   const [humanTyping, setHumanTyping] = useState(false);
   const [lockedSignal, setLockedSignal] = useState(false);
   const [botTyping, setBotTyping] = useState(false);
@@ -128,23 +134,22 @@ export function MemeDuelApp() {
     const entry = makeBotEntry(template, Math.random);
     setBotTyping(false);
     setBotLocked(true);
-    xapps
-      .submitFor(botId, {
-        data: entryToJson(entry),
-        display: { kind: "svg", svg: renderMemeSvg(entry), alt: entryAlt(entry) },
-      })
+    // Photo entries reuse the image the player's editor already encoded.
+    buildSubmission(entry, template, round)
+      .then((built) => xapps.submitFor(botId, built.submission))
       .catch(() => {
         botDone.current = false;
         setBotLocked(false);
+        setBotRetry((n) => n + 1);
       });
-  }, [botId, template, xapps]);
+  }, [botId, round, template, xapps]);
 
-  // On its own schedule: 15–40 s into the match…
+  // On its own schedule: 15–40 s into the match (or a few seconds after a failed try)…
   useEffect(() => {
     if (!started || !botId) return;
-    const timer = setTimeout(submitBot, botSubmitDelayMs(Math.random));
+    const timer = setTimeout(submitBot, botRetry > 0 ? 4_000 : botSubmitDelayMs(Math.random));
     return () => clearTimeout(timer);
-  }, [started, botId, submitBot]);
+  }, [started, botId, submitBot, botRetry]);
 
   // …or a few seconds after the human, whichever comes first.
   useEffect(() => {
@@ -176,24 +181,36 @@ export function MemeDuelApp() {
   const submit = useCallback(async () => {
     if (submitted.current) return;
     submitted.current = true;
-    const entry = sanitizeEntry({ templateId: template.id, captions, stickers }, template.id);
-    setFinalEntry(entry);
-    setPhase("locked");
-    buzz("medium");
-    try {
-      await xapps.submit({
-        data: entryToJson(entry),
-        display: { kind: "svg", svg: renderMemeSvg(entry), alt: entryAlt(entry) },
-      });
-      if (liveOpponentId) xapps.room.send("submitted", {}).catch(() => {});
-    } catch {
+    const entry = sanitizeEntry({ templateId: template.id, captions, stickers, positions }, template);
+    const fail = (message: string) => {
       submitted.current = false;
+      setLocking(false);
       setPhase("editing");
       play("error");
       buzz("error");
-      xapps.ui.toast("Couldn't lock in your meme — try again", "danger").catch(() => {});
+      xapps.ui.toast(message, "danger").catch(() => {});
+    };
+    // Packing the photo into the entry is usually instant (pre-encoded while editing).
+    setLocking(true);
+    let built: Awaited<ReturnType<typeof buildSubmission>>;
+    try {
+      built = await buildSubmission(entry, template, round);
+    } catch {
+      fail("Couldn't attach the image — check your connection and try again");
+      return;
     }
-  }, [buzz, captions, liveOpponentId, stickers, template.id, xapps]);
+    const canvas = canvasOf(template);
+    setFinalMeme({ svg: built.svg, alt: built.alt, aspect: canvas.height / canvas.width });
+    setLocking(false);
+    setPhase("locked");
+    buzz("medium");
+    try {
+      await xapps.submit(built.submission);
+      if (liveOpponentId) xapps.room.send("submitted", {}).catch(() => {});
+    } catch {
+      fail("Couldn't lock in your meme — try again");
+    }
+  }, [buzz, captions, liveOpponentId, positions, round, stickers, template, xapps]);
 
   /* --------------------------------- HUD -------------------------------- */
 
@@ -225,13 +242,17 @@ export function MemeDuelApp() {
     <div className="relative flex h-dvh w-full flex-col overflow-hidden" style={{ fontFamily: APP_FONT }}>
       <AnimatePresence mode="wait" initial={false}>
         {!started ? (
-          <Pregame key="pregame" />
+          <Pregame key="pregame" topic={round.topic} drop={template.id === DROP_TEMPLATE_ID} />
         ) : phase === "editing" ? (
           <Editor
             key="editor"
             template={template}
+            round={round}
             captions={captions}
             setCaptions={setCaptions}
+            positions={positions}
+            setPositions={setPositions}
+            locking={locking}
             stickers={stickers}
             setStickers={setStickers}
             onActivity={onActivity}
@@ -258,7 +279,7 @@ export function MemeDuelApp() {
         ) : (
           <LockedScreen
             key="locked"
-            entry={finalEntry}
+            meme={finalMeme}
             opponent={opponent}
             opponentLocked={opponentLocked}
             opponentTyping={opponentTyping}

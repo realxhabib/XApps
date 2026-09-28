@@ -15,7 +15,7 @@ export function isAllowedMemeSource(src: string, supabaseUrl = process.env.NEXT_
     return false;
   }
   if (url.protocol !== "https:" || url.username || url.password || url.port) return false;
-  if (url.hostname === "i.imgflip.com") return /^\/[a-z0-9]+\.(jpg|jpeg|png|gif)$/i.test(url.pathname);
+  if (url.hostname === "i.imgflip.com") return /^\/(?:[24]\/)?[a-z0-9]+\.(jpg|jpeg|png|gif)$/i.test(url.pathname);
   if (url.hostname === "pbs.twimg.com") return url.pathname.startsWith("/media/");
   if (supabaseUrl) {
     try {

@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion, useMotionTemplate, useMotionValue, useReducedMotion, useSpring } from "motion/react";
-import { Check, Minus, Plus, RotateCcw, RotateCw, Stamp, Trash2, X } from "lucide-react";
+import { Check, ImageOff, Loader2, Minus, Plus, RefreshCw, RotateCcw, RotateCw, Stamp, Trash2, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -19,21 +19,35 @@ import {
 import { spring } from "@/lib/motion";
 import { play } from "@/lib/sfx";
 import { cn } from "@/lib/utils";
+import { containRect } from "./canvas";
+import { CenterGuide, MovableCaption } from "./captions";
 import {
   MAX_STICKERS,
   clampSticker,
   cleanCaptionInput,
   hasCaption,
+  hasMovableCaptions,
   randomStickerPlacement,
   scatterStickers,
   slotAt,
   slotBounds,
   type Point,
 } from "./logic";
+import { DROP_TEMPLATE_ID } from "./photo-templates";
 import { CardBack, useBuzz } from "./pieces";
 import { renderMemeSvg } from "./render";
+import type { MemeRound } from "./round";
 import { StickerLayer, TrashZone, type EditorSticker } from "./stickers";
-import { STICKERS, type CaptionSlot, type MemeTemplate, type StickerPlacement } from "./templates";
+import { photoUrl, primePhotoSource, warmPhoto } from "./submission";
+import {
+  STICKERS,
+  canvasOf,
+  type CaptionPosition,
+  type CaptionSlot,
+  type MemePhoto,
+  type MemeTemplate,
+  type StickerPlacement,
+} from "./templates";
 
 let stickerSeq = 0;
 function nextStickerId(): string {
@@ -41,18 +55,30 @@ function nextStickerId(): string {
   return `s${stickerSeq}-${Date.now().toString(36)}`;
 }
 
-/** Layout sizes that depend on the viewport: the canvas (--cv) always fits without page scroll. */
+/**
+ * Layout sizes that depend on the viewport: the canvas (--cvw wide, --ar tall
+ * per unit of width) always fits without page scroll. --extra is the topic row.
+ */
 const EDITOR_CSS = `
-.mdl-editor { --cv: min(calc(100vw - 32px), max(164px, calc(100dvh - 276px - var(--slots) * 42px)), 560px); --r: 20px; }
+.mdl-editor { --cvw: min(calc(100vw - 32px), calc(max(164px, calc(100dvh - 276px - var(--extra) - var(--slots) * 42px)) / var(--ar)), 560px); --r: 20px; }
 @media (min-width: 48rem) {
-  .mdl-editor { --cv: min(calc(100dvh - 172px), calc(100vw - 468px), 640px); --r: 26px; }
+  .mdl-editor { --cvw: min(calc((100dvh - 172px - var(--extra)) / var(--ar)), calc(100vw - 468px), 640px); --r: 26px; }
 }
 @media (max-height: 600px) { .mdl-short-hide { display: none !important; } }`;
 
+type PhotoState = "loading" | "ready" | "error";
+
 export interface EditorProps {
   template: MemeTemplate;
+  /** Topic and drop credit. */
+  round: MemeRound;
   captions: Record<string, string>;
   setCaptions: Dispatch<SetStateAction<Record<string, string>>>;
+  /** Dragged caption spots (photo templates). */
+  positions: Record<string, CaptionPosition>;
+  setPositions: Dispatch<SetStateAction<Record<string, CaptionPosition>>>;
+  /** Submitting: the image is being packed into the entry. */
+  locking?: boolean;
   stickers: EditorSticker[];
   setStickers: Dispatch<SetStateAction<EditorSticker[]>>;
   /** Called on every edit (throttled "typing" broadcast lives upstream). */
@@ -66,8 +92,12 @@ export interface EditorProps {
 
 export function Editor({
   template,
+  round,
   captions,
   setCaptions,
+  positions,
+  setPositions,
+  locking = false,
   stickers,
   setStickers,
   onActivity,
@@ -78,7 +108,19 @@ export function Editor({
 }: EditorProps) {
   const reduced = useReducedMotion() ?? false;
   const buzz = useBuzz();
-  const canSubmit = hasCaption({ templateId: template.id, captions });
+  const canvas = canvasOf(template);
+  const movable = hasMovableCaptions(template);
+  const photo = template.photo;
+  const [photoState, setPhotoState] = useState<PhotoState>(photo ? "loading" : "ready");
+  const [photoAttempt, setPhotoAttempt] = useState(0);
+  const hasText = hasCaption({ templateId: template.id, captions }, template);
+  const canSubmit = hasText && photoState === "ready" && !locking;
+  const [captionLayer, setCaptionLayer] = useState<HTMLDivElement | null>(null);
+  const [guide, setGuide] = useState(false);
+  const topic = round.topic;
+  const credit = photo?.credit;
+  const hasInfoRow = Boolean(topic || credit);
+  const isDrop = template.id === DROP_TEMPLATE_ID;
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [removing, setRemoving] = useState<ReadonlySet<string>>(() => new Set());
@@ -103,9 +145,13 @@ export function Editor({
   const liveCount = stickers.filter((s) => !removing.has(s.id)).length;
 
   // The live canvas: the real renderer with placeholders, stickers drawn on top as HTML.
+  // Photo templates show the photo as an <img> and draw each caption as its own draggable piece.
   const baseSvg = useMemo(
-    () => renderMemeSvg({ templateId: template.id, captions, stickers: [] }, { placeholders: true, withoutStickers: true }),
-    [template.id, captions],
+    () =>
+      movable
+        ? ""
+        : renderMemeSvg({ templateId: template.id, captions, stickers: [] }, { template, placeholders: true, withoutStickers: true }),
+    [movable, template, captions],
   );
 
   useEffect(() => {
@@ -137,7 +183,7 @@ export function Editor({
     const id = bounceSlot.current;
     bounceSlot.current = null;
     if (!id || reduced) return;
-    const el = svgHostRef.current?.querySelector<SVGGElement>(`[data-slot="${CSS.escape(id)}"]`);
+    const el = stageRef.current?.querySelector<SVGGElement>(`[data-slot="${CSS.escape(id)}"]`);
     if (!el || typeof el.animate !== "function") return;
     el.style.transformBox = "fill-box";
     el.style.transformOrigin = "center";
@@ -220,10 +266,25 @@ export function Editor({
   const onCanvasTap = useCallback(
     (point: Point) => {
       setSelectedId(null);
-      const slot = slotAt(template, point);
+      const slot = slotAt(template, point, positions);
       if (slot) focusSlot(slot.id);
     },
-    [focusSlot, template],
+    [focusSlot, positions, template],
+  );
+
+  const getStageRect = useCallback(() => stageRef.current?.getBoundingClientRect() ?? null, []);
+
+  const moveCaption = useCallback(
+    (id: string, next: CaptionPosition | undefined) => {
+      setPositions((prev) => {
+        const out = { ...prev };
+        if (next) out[id] = next;
+        else delete out[id];
+        return out;
+      });
+      onActivity();
+    },
+    [onActivity, setPositions],
   );
 
   /** Where on the canvas (0..1) a tray/dice button sits, so new stickers fly out of it. */
@@ -244,7 +305,7 @@ export function Editor({
       buzz("error");
       return;
     }
-    const placement = randomStickerPlacement(template, emoji, Math.random, stickers);
+    const placement = randomStickerPlacement(template, emoji, Math.random, stickers, positions);
     const id = nextStickerId();
     const spawn = spawnPoint(from);
     if (spawn) spawns.current.set(id, spawn);
@@ -265,7 +326,7 @@ export function Editor({
       const placed: StickerPlacement[] = [];
       const spawn = spawnPoint(diceRef.current);
       const fresh = picks.map((emoji) => {
-        const p = randomStickerPlacement(template, emoji, Math.random, placed);
+        const p = randomStickerPlacement(template, emoji, Math.random, placed, positions);
         placed.push(p);
         const id = nextStickerId();
         if (spawn) spawns.current.set(id, spawn);
@@ -274,7 +335,7 @@ export function Editor({
       setStickers((prev) => [...prev, ...fresh]);
       return;
     }
-    setStickers((prev) => scatterStickers(template, prev, Math.random));
+    setStickers((prev) => scatterStickers(template, prev, Math.random, positions));
   };
 
   /* -------------------------------- tilt -------------------------------- */
@@ -314,13 +375,20 @@ export function Editor({
   /* ------------------------------- render ------------------------------- */
 
   const focused = template.slots.find((s) => s.id === focusedSlot);
-  const focusBox = focused ? slotBounds(focused) : null;
+  // Photo captions show their own selection chrome.
+  const focusBox = focused && !movable ? slotBounds(focused, canvas) : null;
 
   return (
     <motion.div
       className="mdl-editor mx-auto flex h-full min-h-0 w-full max-w-[1180px] flex-col gap-2.5 px-4 pb-3 pt-3 md:gap-4 md:px-6 md:pb-6 md:pt-4"
       // Phones reserve room for one input per caption slot below the canvas.
-      style={{ "--slots": template.slots.length } as CSSProperties}
+      style={
+        {
+          "--slots": template.slots.length,
+          "--ar": canvas.height / canvas.width,
+          "--extra": hasInfoRow ? "40px" : "0px",
+        } as CSSProperties
+      }
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0, transition: { duration: 0.08, delay: 0.24 } }}
@@ -349,13 +417,15 @@ export function Editor({
         <div className="shrink-0">{timer}</div>
       </motion.header>
 
+      {hasInfoRow && <InfoRow topic={topic} credit={credit} />}
+
       <div className="flex min-h-0 flex-1 flex-col gap-2.5 md:flex-row md:items-start md:justify-center md:gap-6">
         {/* Canvas column */}
         <div className="flex w-full shrink-0 flex-col items-center gap-2 md:w-auto md:self-start">
           <div
             ref={stageRef}
             className="relative z-20 touch-none select-none"
-            style={{ width: "var(--cv)", height: "var(--cv)", perspective: 1100 }}
+            style={{ width: "var(--cvw)", height: "calc(var(--cvw) * var(--ar))", perspective: 1100 }}
             onPointerMove={onStageMove}
             onPointerLeave={onStageLeave}
           >
@@ -381,11 +451,27 @@ export function Editor({
                   role="img"
                   aria-label={`${template.name} meme preview`}
                 >
-                  <div
-                    ref={svgHostRef}
-                    className="size-full [&>svg]:block [&>svg]:size-full"
-                    dangerouslySetInnerHTML={{ __html: baseSvg }}
-                  />
+                  {photo ? (
+                    <PhotoBase
+                      key={photoAttempt}
+                      photo={photo}
+                      canvas={canvas}
+                      attempt={photoAttempt}
+                      state={photoState}
+                      onLoad={(img) => {
+                        setPhotoState("ready");
+                        primePhotoSource(photo, img);
+                        warmPhoto(photo);
+                      }}
+                      onError={() => setPhotoState("error")}
+                    />
+                  ) : (
+                    <div
+                      ref={svgHostRef}
+                      className="size-full [&>svg]:block [&>svg]:size-full"
+                      dangerouslySetInnerHTML={{ __html: baseSvg }}
+                    />
+                  )}
                   <motion.div
                     aria-hidden
                     className="pointer-events-none absolute inset-0 mix-blend-overlay"
@@ -403,7 +489,9 @@ export function Editor({
                       exit={{ opacity: 0, y: -24, scale: 0.85, transition: { duration: 0.25 } }}
                     >
                       <div className="max-w-[86%] rounded-2xl bg-ink-950/85 px-[max(12px,4cqw)] py-[max(6px,1.8cqw)] text-center shadow-[0_20px_50px_-12px_rgb(0_0_0/0.7)] ring-1 ring-white/15 backdrop-blur-md">
-                        <p className="text-[clamp(8px,1.9cqw,10px)] font-bold uppercase tracking-[0.22em] text-[var(--accent-from)]">Your template</p>
+                        <p className="text-[clamp(8px,1.9cqw,10px)] font-bold uppercase tracking-[0.22em] text-[var(--accent-from)]">
+                          {isDrop ? "Your image" : "Your template"}
+                        </p>
                         <p className="whitespace-nowrap font-display text-[clamp(14px,5.2cqw,26px)] leading-tight font-extrabold tracking-tight">
                           {template.name}
                         </p>
@@ -445,7 +533,40 @@ export function Editor({
                   )}
                 </AnimatePresence>
 
+                {movable && (
+                  <div
+                    ref={setCaptionLayer}
+                    aria-hidden
+                    className={cn(
+                      "pointer-events-none absolute inset-0 transition-opacity duration-300",
+                      photoState === "ready" ? "opacity-100" : "opacity-0",
+                    )}
+                    style={{ clipPath: "inset(0 round var(--r))" }}
+                  />
+                )}
+                <CenterGuide visible={guide} />
+
                 <StickerLayer
+                  underlay={
+                    movable && captionLayer && photoState === "ready"
+                      ? template.slots.map((slot, i) => (
+                          <MovableCaption
+                            key={slot.id}
+                            slot={slot}
+                            canvas={canvas}
+                            value={captions[slot.id] ?? ""}
+                            position={positions[slot.id]}
+                            focused={focusedSlot === slot.id}
+                            index={i}
+                            visualLayer={captionLayer}
+                            getStageRect={getStageRect}
+                            onTap={() => focusSlot(slot.id)}
+                            onMove={(next) => moveCaption(slot.id, next)}
+                            onGuide={setGuide}
+                          />
+                        ))
+                      : null
+                  }
                   stickers={stickers}
                   size={size}
                   selectedId={selectedId}
@@ -462,6 +583,16 @@ export function Editor({
                 />
               </motion.div>
 
+              {/* Above the stickers' hit layer so Retry is clickable. */}
+              <PhotoError
+                visible={photoState === "error"}
+                onRetry={() => {
+                  setPhotoState("loading");
+                  setPhotoAttempt((n) => n + 1);
+                  play("tick");
+                }}
+              />
+
               {/* Back: the face-down card seen during the reveal flip */}
               <div className="absolute inset-0" style={{ backfaceVisibility: "hidden", transform: "rotateY(180deg)" }}>
                 <CardBack />
@@ -473,7 +604,7 @@ export function Editor({
 
           {/* Sticker tray ⇄ selected-sticker tools */}
           <motion.div
-            className="relative flex h-14 w-full items-center md:w-[var(--cv)]"
+            className="relative flex h-14 w-full items-center md:w-[var(--cvw)] md:min-w-[360px]"
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: dragging ? 0.25 : 1, y: 0 }}
             exit={{ opacity: 0, y: 16, transition: { duration: 0.16 } }}
@@ -517,7 +648,10 @@ export function Editor({
           <div className="mdl-short-hide hidden md:block">
             <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-ink-300">Caption battle</p>
             <h2 className="mt-1 font-display text-2xl font-extrabold tracking-tight">Make the crowd laugh</h2>
-            <p className="mt-1 text-sm text-ink-300">Same template for both of you. Funniest meme takes the Arena vote.</p>
+            <p className="mt-1 text-sm text-ink-300">
+              {isDrop ? "Same image for both of you." : "Same template for both of you."}
+              {topic ? " Stick to the topic." : ""} Funniest meme takes the Arena vote.
+            </p>
             <p className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] px-2.5 py-1 text-[11px] font-semibold text-ink-200 ring-1 ring-white/10">
               <span className="size-1.5 rounded-full bg-[var(--accent-from)]" />
               {modeHint}
@@ -549,11 +683,28 @@ export function Editor({
               />
             ))}
             <p className="mdl-short-hide hidden text-xs leading-relaxed text-ink-400 md:block">
-              Tip: tap the meme to jump to a caption. Drag stickers anywhere, use the ↻ handle (or pinch / scroll) to spin and
-              resize, and drop them in the 🗑️ to remove.
+              {movable
+                ? "Tip: drag captions anywhere on the image (double-click one to put it back). "
+                : "Tip: tap the meme to jump to a caption. "}
+              Drag stickers anywhere, use the ↻ handle (or pinch / scroll) to spin and resize, and drop them in the 🗑️ to remove.
             </p>
           </div>
-          <SubmitButton enabled={canSubmit} onSubmit={onSubmit} />
+          <SubmitButton
+            enabled={canSubmit}
+            locking={locking}
+            label={
+              locking
+                ? "Locking in…"
+                : !hasText
+                  ? "Write a caption to submit"
+                  : photoState === "loading"
+                    ? "Loading the image…"
+                    : photoState === "error"
+                      ? "Retry the image to submit"
+                      : "Lock it in"
+            }
+            onSubmit={onSubmit}
+          />
           <p className="-mt-1 hidden text-center text-[11px] text-ink-400 md:block">
             <kbd className="rounded bg-white/10 px-1 font-mono">⌘</kbd> + <kbd className="rounded bg-white/10 px-1 font-mono">Enter</kbd> to lock
             it in
@@ -877,7 +1028,17 @@ function ToolButton({
 /* Submit                                                                 */
 /* ---------------------------------------------------------------------- */
 
-function SubmitButton({ enabled, onSubmit }: { enabled: boolean; onSubmit: () => void }) {
+function SubmitButton({
+  enabled,
+  locking,
+  label,
+  onSubmit,
+}: {
+  enabled: boolean;
+  locking: boolean;
+  label: string;
+  onSubmit: () => void;
+}) {
   const reduced = useReducedMotion();
   return (
     <motion.button
@@ -904,8 +1065,169 @@ function SubmitButton({ enabled, onSubmit }: { enabled: boolean; onSubmit: () =>
           className="absolute inset-0 animate-shimmer bg-[linear-gradient(110deg,transparent_35%,rgb(255_255_255/0.35)_50%,transparent_65%)] bg-[length:250%_100%] motion-reduce:animate-none"
         />
       )}
-      <Stamp className="relative size-5" strokeWidth={2.5} />
-      <span className="relative">{enabled ? "Lock it in" : "Write a caption to submit"}</span>
+      {locking ? (
+        <Loader2 className="relative size-5 animate-spin" strokeWidth={2.5} />
+      ) : (
+        <Stamp className="relative size-5" strokeWidth={2.5} />
+      )}
+      <span className="relative">{label}</span>
     </motion.button>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Topic / credit                                                         */
+/* ---------------------------------------------------------------------- */
+
+function InfoRow({ topic, credit }: { topic?: string; credit?: MemePhoto["credit"] }) {
+  const handle = credit?.handle.replace(/^@/, "");
+  const safeUrl = credit && /^https:\/\//.test(credit.url) ? credit.url : undefined;
+  return (
+    <motion.div
+      className="flex h-8 shrink-0 items-center justify-center gap-2"
+      initial={{ opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8, transition: { duration: 0.14 } }}
+      transition={{ ...spring.soft, delay: 0.3 }}
+    >
+      {topic && (
+        <motion.p
+          className="flex min-w-0 items-center gap-2 rounded-full bg-[linear-gradient(120deg,var(--accent-from),var(--accent-to))] py-1 pl-1 pr-3.5 text-ink-950 shadow-[0_10px_30px_-14px_var(--accent-to)]"
+          initial={{ scale: 0.7 }}
+          animate={{ scale: 1 }}
+          transition={{ ...spring.wobbly, delay: 0.45 }}
+          title={`Topic: ${topic}`}
+        >
+          <span className="shrink-0 rounded-full bg-ink-950/85 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-[0.16em] text-[var(--accent-from)]">
+            Topic
+          </span>
+          <span className="truncate font-display text-sm font-extrabold tracking-tight">{topic}</span>
+        </motion.p>
+      )}
+      {handle && (
+        <a
+          href={safeUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium text-ink-400 transition-colors hover:text-ink-100"
+          title={`Image from @${handle} on X`}
+        >
+          <span aria-hidden>📷</span>
+          <span className="max-w-[9rem] truncate">
+            from <b className="font-semibold text-ink-200">@{handle}</b>
+            <span className="hidden sm:inline"> on X</span>
+          </span>
+        </a>
+      )}
+    </motion.div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Photo base                                                             */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * The round's image, loaded through the same-origin proxy. While it loads a
+ * skeleton shimmers; if it fails the player gets a retry (never a different
+ * image: both players must caption the same one).
+ */
+function PhotoBase({
+  photo,
+  canvas,
+  attempt,
+  state,
+  onLoad,
+  onError,
+}: {
+  photo: MemePhoto;
+  canvas: { width: number; height: number };
+  attempt: number;
+  state: PhotoState;
+  onLoad: (img: HTMLImageElement) => void;
+  onError: () => void;
+}) {
+  const reduced = useReducedMotion();
+  const rect = containRect(canvas, photo.width, photo.height);
+  const pct = (v: number, of: number) => `${(v / of) * 100}%`;
+  return (
+    <div className="absolute inset-0 bg-[#0b0b10]">
+      {/* eslint-disable-next-line @next/next/no-img-element -- proxied meme image, drawn to a canvas on submit */}
+      <img
+        src={photoUrl(photo.src, attempt)}
+        alt=""
+        draggable={false}
+        decoding="async"
+        onLoad={(e) => onLoad(e.currentTarget)}
+        onError={onError}
+        className={cn(
+          "absolute select-none transition-[opacity,filter] duration-500",
+          state === "ready" ? "opacity-100 blur-0" : "opacity-0 blur-md",
+        )}
+        style={{ left: pct(rect.x, canvas.width), top: pct(rect.y, canvas.height), width: pct(rect.width, canvas.width), height: pct(rect.height, canvas.height) }}
+      />
+      <AnimatePresence>
+        {state === "loading" && (
+          <motion.div
+            key="skeleton"
+            className="@container absolute inset-0 grid place-items-center overflow-hidden bg-[linear-gradient(135deg,rgb(255_255_255/0.06),rgb(255_255_255/0.02))]"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0, transition: { duration: 0.3 } }}
+          >
+            <div
+              aria-hidden
+              className="absolute inset-0 animate-shimmer bg-[linear-gradient(110deg,transparent_30%,rgb(255_255_255/0.09)_50%,transparent_70%)] bg-[length:250%_100%] motion-reduce:animate-none"
+            />
+            <div className="relative flex flex-col items-center gap-2 text-ink-300">
+              <motion.span
+                className="text-[clamp(28px,10cqw,56px)]"
+                animate={reduced ? undefined : { y: [0, -6, 0], rotate: [-4, 4, -4] }}
+                transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
+              >
+                🖼️
+              </motion.span>
+              <span className="text-xs font-semibold tracking-wide">Loading the image…</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+/** Shown over the whole canvas when the image failed: a retry, never a different image. */
+function PhotoError({ visible, onRetry }: { visible: boolean; onRetry: () => void }) {
+  return (
+    <AnimatePresence>
+        {visible && (
+          <motion.div
+            key="error"
+            role="alert"
+            className="absolute inset-0 z-40 grid place-items-center overflow-hidden rounded-[var(--r)] bg-ink-900/90 p-4 text-center"
+            initial={{ opacity: 0, scale: 0.96 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0 }}
+            transition={spring.snappy}
+          >
+            <div className="flex flex-col items-center gap-2">
+              <ImageOff className="size-8 text-ink-300" />
+              <p className="font-display text-base font-bold tracking-tight">Couldn&apos;t load the image</p>
+              <p className="max-w-[16rem] text-xs text-ink-400">Your opponent is captioning this same image, so let&apos;s try again.</p>
+              <motion.button
+                type="button"
+                onClick={onRetry}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.92 }}
+                transition={spring.bouncy}
+                className="mt-1 flex items-center gap-1.5 rounded-full bg-[linear-gradient(120deg,var(--accent-from),var(--accent-to))] px-4 py-2 text-sm font-bold text-ink-950"
+              >
+                <RefreshCw className="size-4" strokeWidth={2.75} />
+                Retry
+              </motion.button>
+            </div>
+          </motion.div>
+        )}
+    </AnimatePresence>
   );
 }

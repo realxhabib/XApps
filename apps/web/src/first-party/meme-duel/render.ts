@@ -1,6 +1,8 @@
+import { containRect } from "./canvas";
 import {
-  CANVAS,
+  canvasOf,
   getTemplate,
+  type CaptionPosition,
   type CaptionSlot,
   type MemeEntry,
   type MemeTemplate,
@@ -204,10 +206,10 @@ function letterSpacing(slot: CaptionSlot): number {
   return slot.style === "impact" ? 0.5 : 0;
 }
 
-/** The text a slot actually draws: impact captions are uppercase, whitespace is collapsed. */
+/** The text a slot actually draws: impact captions are uppercase (unless `keepCase`), whitespace is collapsed. */
 export function normalizeCaptionText(slot: CaptionSlot, raw: string): string {
   const text = raw.replace(/\s+/g, " ").trim();
-  return slot.style === "impact" ? text.toUpperCase() : text;
+  return slot.style === "impact" && !slot.keepCase ? text.toUpperCase() : text;
 }
 
 /**
@@ -253,6 +255,26 @@ export function slotFrame(slot: CaptionSlot): { x: number; y: number; width: num
   const y = valign === "top" ? slot.y : valign === "bottom" ? slot.y - height : slot.y - height / 2;
   const x = slot.align === "middle" ? slot.x - slot.width / 2 : slot.x;
   return { x, y, width: slot.width, height };
+}
+
+/** Center of a slot's frame in canvas units: where a caption sits before anyone drags it. */
+export function slotCenter(slot: CaptionSlot): { x: number; y: number } {
+  const f = slotFrame(slot);
+  return { x: f.x + f.width / 2, y: f.y + f.height / 2 };
+}
+
+/**
+ * The slot moved so its frame is centered on `position` (0..1 of the canvas).
+ * No position (or junk) leaves the slot where the template put it.
+ */
+export function positionedSlot(slot: CaptionSlot, canvas: { width: number; height: number }, position?: CaptionPosition): CaptionSlot {
+  if (!position || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return slot;
+  const center = slotCenter(slot);
+  const dx = position.x * canvas.width - center.x;
+  const dy = position.y * canvas.height - center.y;
+  if (Math.abs(dx) < 0.05 && Math.abs(dy) < 0.05) return slot;
+  const r = (v: number) => Math.round(v * 10) / 10;
+  return { ...slot, x: r(slot.x + dx), y: r(slot.y + dy) };
 }
 
 /* ---------------------------------------------------------------------- */
@@ -376,26 +398,66 @@ export interface RenderOptions {
   placeholders?: boolean;
   /** Leave stickers out (the editor draws them as draggable HTML). */
   withoutStickers?: boolean;
+  /** Leave captions out (the editor draws photo captions as draggable pieces). */
+  withoutCaptions?: boolean;
+  /** Transparent background: no gradient/backdrop, no photo (the editor shows the photo as an <img>). */
+  withoutBackground?: boolean;
+  /**
+   * The resolved template, for templates that aren't in the catalog (drops).
+   * Defaults to `getTemplate(entry.templateId)`.
+   */
+  template?: MemeTemplate;
+  /**
+   * Photo templates: the image as a data URL (`data:image/jpeg;base64,…`).
+   * Entries must be self-contained, so a remote URL is never embedded.
+   */
+  imageHref?: string;
+  /** Accessible title embedded in the SVG (e.g. the topic and captions). */
+  title?: string;
+}
+
+/** Only inline raster data URLs may be embedded (an <img>-rendered SVG can't fetch anything else anyway). */
+const EMBEDDABLE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/;
+
+/** One caption on its own, for the editor's draggable captions: an SVG whose viewBox is the slot's frame. */
+export function renderCaptionSvg(slot: CaptionSlot, value: string, placeholder: boolean, pad = 0): string {
+  const f = slotFrame(slot);
+  const inner = renderCaption(slot, truncate(value, slot.maxLength), placeholder);
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${num(f.x - pad)} ${num(f.y - pad)} ${num(f.width + pad * 2)} ${num(
+    f.height + pad * 2,
+  )}" overflow="visible">${inner}</svg>`;
 }
 
 export function renderMemeSvg(entry: MemeEntry, options: RenderOptions = {}): string {
-  const template: MemeTemplate = getTemplate(entry.templateId);
+  const template: MemeTemplate = options.template ?? getTemplate(entry.templateId);
+  const canvas = canvasOf(template);
   const [from, to] = template.background;
   const scene = template.scene.map(renderScene).join("");
-  const captions = template.slots
-    .map((slot) => {
-      const raw = entry.captions[slot.id];
-      return renderCaption(slot, truncate(typeof raw === "string" ? raw : "", slot.maxLength), !!options.placeholders);
-    })
-    .join("");
+  let photo = "";
+  if (template.photo && !options.withoutBackground && options.imageHref && EMBEDDABLE.test(options.imageHref)) {
+    const r = containRect(canvas, template.photo.width, template.photo.height);
+    photo = `<image href="${options.imageHref}" x="${num(r.x)}" y="${num(r.y)}" width="${num(r.width)}" height="${num(
+      r.height,
+    )}" preserveAspectRatio="none"/>`;
+  }
+  const positions = template.photo ? entry.positions : undefined;
+  const captions = options.withoutCaptions
+    ? ""
+    : template.slots
+        .map((base) => {
+          const slot = positionedSlot(base, canvas, positions?.[base.id]);
+          const raw = entry.captions[slot.id];
+          return renderCaption(slot, truncate(typeof raw === "string" ? raw : "", slot.maxLength), !!options.placeholders);
+        })
+        .join("");
   const stickerList = options.withoutStickers ? [] : entry.stickers.slice(0, 3);
   let filters = "";
   const stickers = stickerList
     .map((s, i) => {
       // Entries can come from anywhere (stored data, other clients): never let NaN reach the markup.
       const scale = finite(s.scale, 1);
-      const x = num(finite(s.x, 0.5) * CANVAS.width);
-      const y = num(finite(s.y, 0.5) * CANVAS.height);
+      const x = num(finite(s.x, 0.5) * canvas.width);
+      const y = num(finite(s.y, 0.5) * canvas.height);
       const rotate = finite(s.rotate, 0).toFixed(1);
       filters += stickerFilter(`sticker${i}`, scale);
       return `<text x="${x}" y="${y}" font-size="${num(STICKER_SIZE * scale)}" text-anchor="middle" dominant-baseline="central" font-family="${FONT_EMOJI}" filter="url(#sticker${i})" transform="rotate(${rotate} ${x} ${y})">${escapeXml(
@@ -404,7 +466,14 @@ export function renderMemeSvg(entry: MemeEntry, options: RenderOptions = {}): st
     })
     .join("");
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${CANVAS.width} ${CANVAS.height}" width="${CANVAS.width}" height="${CANVAS.height}"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${from}"/><stop offset="1" stop-color="${to}"/></linearGradient>${filters}</defs><rect width="${CANVAS.width}" height="${CANVAS.height}" fill="url(#bg)"/>${scene}${captions}${stickers}</svg>`;
+  const { width, height } = canvas;
+  const title = options.title ? `<title>${escapeXml(options.title)}</title>` : "";
+  const background = options.withoutBackground
+    ? ""
+    : `<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${from}"/><stop offset="1" stop-color="${to}"/></linearGradient>`;
+  const defs = background || filters ? `<defs>${background}${filters}</defs>` : "";
+  const backdrop = options.withoutBackground ? "" : `<rect width="${width}" height="${height}" fill="url(#bg)"/>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">${title}${defs}${backdrop}${photo}${scene}${captions}${stickers}</svg>`;
 }
 
 export function svgToDataUrl(svg: string): string {

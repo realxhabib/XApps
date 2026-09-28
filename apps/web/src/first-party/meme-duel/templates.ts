@@ -2,7 +2,12 @@
  * Original meme templates, drawn entirely with gradients, shapes and emoji so
  * every entry renders as a small, self-contained SVG. The same renderer runs
  * in the editor, in the Arena and in share previews.
+ *
+ * Real photo templates (Drake, Distracted Boyfriend…) live in
+ * `photo-templates.ts` and share these types: a photo template is a
+ * `MemeTemplate` with a `photo` and its own `canvas` size.
  */
+import { PHOTO_TEMPLATES } from "./photo-templates";
 
 export type CaptionStyle = "impact" | "label" | "post";
 
@@ -30,6 +35,8 @@ export interface CaptionSlot {
   color?: string;
   /** Font weight for "post" captions (default 600). */
   weight?: number;
+  /** Impact captions are uppercased unless this is set (mOcKiNg SpOnGeBoB). */
+  keepCase?: boolean;
 }
 
 export type SceneElement =
@@ -50,15 +57,34 @@ export type SceneElement =
       stroke?: string;
     };
 
+/** A real image under the captions: a photo template or a dropped image. */
+export interface MemePhoto {
+  /** Original URL (https, or a data:image URL for demo drops). Always load it through `memeImageUrl()`. */
+  src: string;
+  width: number;
+  height: number;
+  /** Where a drop came from (shown in the editor). */
+  credit?: { handle: string; url: string } | null;
+}
+
 export interface MemeTemplate {
   id: string;
   name: string;
   background: [string, string];
   scene: SceneElement[];
   slots: CaptionSlot[];
+  /** Canvas size in SVG units. Originals are 600×600; photos follow their aspect ratio. */
+  canvas?: { width: number; height: number };
+  /** Photo templates and drops: the image filling the canvas. Their captions can be dragged around. */
+  photo?: MemePhoto;
 }
 
+/** The canvas of the original templates. Use `canvasOf(template)` for anything that may be a photo. */
 export const CANVAS = { width: 600, height: 600 } as const;
+
+export function canvasOf(template: Pick<MemeTemplate, "canvas">): { width: number; height: number } {
+  return template.canvas ?? CANVAS;
+}
 
 /** Classic white-with-black-outline caption spanning the canvas. */
 const impact = (id: string, placeholder: string, y: number, extra: Partial<CaptionSlot> = {}): CaptionSlot => ({
@@ -298,14 +324,25 @@ export interface StickerPlacement {
   rotate: number;
 }
 
+/** Where a dragged caption sits: the center of its slot frame, 0..1 of the canvas. */
+export interface CaptionPosition {
+  x: number;
+  y: number;
+}
+
 export interface MemeEntry {
   templateId: string;
   captions: Record<string, string>;
   stickers: StickerPlacement[];
+  /** Photo templates/drops only: captions the player dragged away from their default spot. */
+  positions?: Record<string, CaptionPosition>;
 }
 
+/** Any known template (original or photo) by id; unknown ids fall back to the first original. */
 export function getTemplate(id: string): MemeTemplate {
-  return MEME_TEMPLATES.find((t) => t.id === id) ?? (MEME_TEMPLATES[0] as MemeTemplate);
+  return (
+    MEME_TEMPLATES.find((t) => t.id === id) ?? PHOTO_TEMPLATES.find((t) => t.id === id) ?? (MEME_TEMPLATES[0] as MemeTemplate)
+  );
 }
 
 /* ---------------------------------------------------------------------- */

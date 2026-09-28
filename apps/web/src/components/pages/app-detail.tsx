@@ -19,7 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { spring } from "@/lib/motion";
 import { openXIntent } from "@/lib/share";
 import { cn, formatCompact, formatNumber } from "@/lib/utils";
-import { useViewer } from "@/platform/client";
+import { useResolveViewer, useViewer } from "@/platform/client";
 import { MODE_LABEL } from "@/platform/match-utils";
 import { useActivity, useApp, useLeaderboard, usePractice, useQuickMatch } from "@/platform/queries";
 import { CATEGORIES } from "@/platform/types";
@@ -27,6 +27,7 @@ import { CATEGORIES } from "@/platform/types";
 export function AppDetail({ slug }: { slug: string }) {
   const router = useRouter();
   const { viewer } = useViewer();
+  const resolveViewer = useResolveViewer();
   const { data: app, isPending } = useApp(slug);
   const quick = useQuickMatch();
   const practice = usePractice();
@@ -47,7 +48,7 @@ export function AppDetail({ slug }: { slug: string }) {
   const category = CATEGORIES.find((c) => c.id === app.category);
   const needSignIn = () => router.push(`/login?next=${encodeURIComponent(`/apps/${slug}`)}`);
   const go = async (kind: "quick" | "practice") => {
-    if (!viewer) return needSignIn();
+    if (!(viewer ?? (await resolveViewer()))) return needSignIn();
     try {
       const match = kind === "quick" ? await quick.mutateAsync(app.slug) : await practice.mutateAsync(app.slug);
       router.push(`/play/${match.id}`);
@@ -140,7 +141,7 @@ export function AppDetail({ slug }: { slug: string }) {
                   size="xl"
                   variant={app.modes.includes("live") ? "glass" : "accent"}
                   icon={<Swords className="size-5" />}
-                  onClick={() => (viewer ? setSheet(true) : needSignIn())}
+                  onClick={async () => ((viewer ?? (await resolveViewer())) ? setSheet(true) : needSignIn())}
                 >
                   Challenge someone
                 </Button>

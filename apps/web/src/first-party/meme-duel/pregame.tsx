@@ -16,8 +16,8 @@ const item = {
   show: { opacity: 1, y: 0, filter: "blur(0px)", transition: spring.soft },
 };
 
-/** Before `match.start`: title, one-line rules and the face-down template card. */
-export function Pregame() {
+/** Before `match.start`: title, one-line rules, the round's topic and the face-down template card. */
+export function Pregame({ topic, drop = false }: { topic?: string; drop?: boolean }) {
   const reduced = useReducedMotion();
   return (
     <motion.div
@@ -44,8 +44,23 @@ export function Pregame() {
             Meme Duel
           </span>
         </h1>
-        <p className="mx-auto max-w-xs text-sm text-ink-300">Same template. Two captions. The crowd decides.</p>
+        <p className="mx-auto max-w-xs text-sm text-ink-300">
+          {drop ? "Same image" : "Same template"}. Two captions. The crowd decides.
+        </p>
       </motion.div>
+
+      {topic && (
+        <motion.div variants={item} className="flex max-w-sm flex-col items-center gap-1.5">
+          <span className="text-[11px] font-bold uppercase tracking-[0.22em] text-ink-400">Topic</span>
+          <motion.p
+            className="rounded-2xl bg-[linear-gradient(120deg,var(--accent-from),var(--accent-to))] px-4 py-2 font-display text-xl leading-tight font-extrabold tracking-tight text-ink-950 shadow-[0_14px_40px_-14px_var(--accent-to)] [text-wrap:balance]"
+            animate={reduced ? undefined : { rotate: [-1.5, 1.5, -1.5] }}
+            transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
+          >
+            {topic}
+          </motion.p>
+        </motion.div>
+      )}
 
       <motion.ul variants={item} className="flex flex-wrap justify-center gap-2">
         {RULES.map((rule, i) => (

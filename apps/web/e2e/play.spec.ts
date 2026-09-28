@@ -9,7 +9,8 @@ test("practice match runs from intro to results", async ({ page }) => {
 
   const app = page.frameLocator("iframe");
   const results = page.getByRole("dialog", { name: /RPS Showdown/ });
-  for (let i = 0; i < 12 && !(await results.isVisible()); i++) {
+  // First to two wins; ties replay the round, so allow plenty of rounds.
+  for (let i = 0; i < 40 && !(await results.isVisible()); i++) {
     const paper = app.getByRole("button", { name: "Paper" });
     if (await paper.isEnabled().catch(() => false)) await paper.click();
     await page.waitForTimeout(1800);

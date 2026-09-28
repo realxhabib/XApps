@@ -19,6 +19,7 @@ function parseTone(tone?: string): { side?: { label: string; className: string }
 /**
  * Renders a contest entry exactly as the app described it. SVG and images go
  * through <img>, so entries from any app can never run script on the host.
+ * Images keep their own aspect ratio (memes come in every shape).
  */
 export function EntryView({ display, className, compact }: { display: SubmissionDisplay | undefined; className?: string; compact?: boolean }) {
   if (!display) {
@@ -37,7 +38,7 @@ export function EntryView({ display, className, compact }: { display: Submission
         alt={display.alt}
         referrerPolicy="no-referrer"
         draggable={false}
-        className={cn("aspect-square w-full rounded-3xl bg-ink-800 object-cover shadow-2xl ring-1 ring-white/10", className)}
+        className={cn("h-auto max-h-[75vh] w-full rounded-3xl bg-ink-900 object-contain shadow-2xl ring-1 ring-white/10", className)}
       />
     );
   }

@@ -13,7 +13,11 @@ import { play } from "@/lib/sfx";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { MODE_LABEL } from "@/platform/match-utils";
+import { roundToSettings, type MemeRound } from "@/first-party/meme-duel/round";
+import { shrinkImage } from "@/lib/image";
+import { useBackend } from "@/platform/client";
 import { useCreateChallenge, useSearchProfiles } from "@/platform/queries";
+import { EMPTY_MEME_SETUP, MemeRoundSetup, memeSetupReady, trendingToRound, type MemeSetup } from "./meme-round-setup";
 import type { AppManifest, Profile } from "@/platform/types";
 
 type Target = { kind: "person"; profile: Profile } | { kind: "open" };
@@ -37,14 +41,41 @@ export function ChallengeSheet({
   const [target, setTarget] = useState<Target | null>(initialOpponent ? { kind: "person", profile: initialOpponent } : null);
   const people = useSearchProfiles(deferred, open);
   const create = useCreateChallenge();
+  const backend = useBackend();
+  const memeApp = app.slug === "meme-duel";
+  const [meme, setMeme] = useState<MemeSetup>(EMPTY_MEME_SETUP);
+  const [uploading, setUploading] = useState(false);
+  const ready = !!target && (!memeApp || memeSetupReady(meme));
+
+  /** Turns the Meme Duel setup into match settings, uploading a dropped file first. */
+  const memeSettings = async () => {
+    const round: MemeRound = { topic: meme.topic.trim() || undefined };
+    if (meme.source === "template" && meme.templateId) round.templateId = meme.templateId;
+    if (meme.source === "trending" && meme.trending) Object.assign(round, trendingToRound(meme.trending));
+    if (meme.source === "drop" && meme.drop) {
+      if (meme.drop.kind === "x") {
+        round.drop = meme.drop.drop;
+      } else {
+        setUploading(true);
+        try {
+          const src = await backend.uploadImage(meme.drop.blob);
+          round.drop = { src, width: meme.drop.width, height: meme.drop.height, credit: null };
+        } finally {
+          setUploading(false);
+        }
+      }
+    }
+    return roundToSettings(round);
+  };
 
   const send = async () => {
-    if (!target) return;
+    if (!target || !ready) return;
     try {
       const match = await create.mutateAsync({
         appSlug: app.slug,
         mode,
         opponentHandle: target.kind === "person" ? target.profile.handle : null,
+        settings: memeApp ? await memeSettings() : undefined,
       });
       play("whoosh");
       toast(target.kind === "person" ? `Challenge sent to @${target.profile.handle}` : "Open challenge created", {
@@ -75,6 +106,15 @@ export function ChallengeSheet({
           ? "Live: you both play at the same time, head to head."
           : "Play anytime: you go now, they answer whenever they're ready."}
       </p>
+
+      {memeApp && (
+        <MemeRoundSetup
+          value={meme}
+          onChange={setMeme}
+          // Demo mode keeps images in localStorage, so it shrinks them harder.
+          prepareFile={(file) => shrinkImage(file, backend.kind === "demo" ? { maxSide: 720, maxBytes: 300_000 } : {})}
+        />
+      )}
 
       <label className="flex h-12 items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.03] px-4 focus-within:border-nova-400/60 focus-within:bg-white/[0.05]">
         <Search className="size-4 text-ink-400" />
@@ -140,8 +180,16 @@ export function ChallengeSheet({
         )}
       </div>
 
-      <Button className="mt-5 w-full" size="lg" variant="accent" disabled={!target} loading={create.isPending} onClick={send} magnetic>
-        {target?.kind === "person" ? `Challenge @${target.profile.handle}` : target?.kind === "open" ? "Create open challenge" : "Pick a rival"}
+      <Button className="mt-5 w-full" size="lg" variant="accent" disabled={!ready} loading={create.isPending || uploading} onClick={send} magnetic>
+        {!target
+          ? "Pick a rival"
+          : memeApp && !memeSetupReady(meme)
+            ? meme.source === "drop"
+              ? "Add an image first"
+              : "Pick a meme"
+            : target.kind === "person"
+              ? `Challenge @${target.profile.handle}`
+              : "Create open challenge"}
       </Button>
     </Dialog>
   );

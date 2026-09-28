@@ -2,19 +2,26 @@
 
 import type { MatchMode, PlayerInfo } from "@xapps/sdk";
 import { AnimatePresence, motion, useAnimate, useReducedMotion } from "motion/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { WaitingFor } from "@/first-party/shared/ui";
 import { spring } from "@/lib/motion";
 import { play } from "@/lib/sfx";
 import { cn } from "@/lib/utils";
 import type { Outcome } from "./logic";
-import { entryAlt } from "./logic";
 import { Burst, CardBack, useBuzz } from "./pieces";
-import { renderMemeSvg, svgToDataUrl } from "./render";
-import type { MemeEntry } from "./templates";
+import { svgToDataUrl } from "./render";
 
+/** What the locked screen shows: exactly the SVG that was submitted. */
+export interface LockedMeme {
+  svg: string;
+  alt: string;
+  /** Height / width of the canvas. */
+  aspect: number;
+}
+
+/** Card width (--lc) keeps the whole card on screen whatever the meme's aspect ratio (--ar). */
 const LOCKED_CSS = `
-.mdl-locked { --lc: min(calc(100vw - 48px), calc(100dvh - 236px), 460px); --r: 24px; }`;
+.mdl-locked { --lc: min(calc(100vw - 48px), calc((100dvh - 236px) / var(--ar)), 460px); --r: 24px; }`;
 
 const INK = Array.from({ length: 10 }, (_, i) => {
   // Deterministic splatter so renders stay pure.
@@ -26,7 +33,7 @@ const INK = Array.from({ length: 10 }, (_, i) => {
 const WIN_BURST = ["😂", "🔥", "💯", "👑", "✨", "🏆"];
 
 export function LockedScreen({
-  entry,
+  meme,
   opponent,
   opponentLocked,
   opponentTyping,
@@ -35,7 +42,7 @@ export function LockedScreen({
   mode,
 }: {
   /** Null when we reloaded after submitting (we don't have the entry anymore). */
-  entry: MemeEntry | null;
+  meme: LockedMeme | null;
   opponent?: PlayerInfo;
   opponentLocked: boolean;
   opponentTyping: boolean;
@@ -50,7 +57,7 @@ export function LockedScreen({
   const [settled, setSettled] = useState(false);
   const slamOnce = useRef(false);
   const settleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const src = useMemo(() => (entry ? svgToDataUrl(renderMemeSvg(entry)) : null), [entry]);
+  const src = useMemo(() => (meme ? svgToDataUrl(meme.svg) : null), [meme]);
 
   const onStampLanded = () => {
     if (slamOnce.current) return;
@@ -77,13 +84,14 @@ export function LockedScreen({
   return (
     <motion.div
       className="mdl-locked flex h-full min-h-0 w-full flex-col items-center justify-center gap-5 px-6 py-5"
+      style={{ "--ar": meme?.aspect ?? 1 } as CSSProperties}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
     >
       <style>{LOCKED_CSS}</style>
 
-      <div className="relative" style={{ width: "var(--lc)", height: "var(--lc)", perspective: 1200 }}>
+      <div className="relative" style={{ width: "var(--lc)", height: "calc(var(--lc) * var(--ar))", perspective: 1200 }}>
         <div ref={scope} className="relative size-full">
           <motion.div
             className="relative size-full"
@@ -99,7 +107,7 @@ export function LockedScreen({
             >
               {src ? (
                 // eslint-disable-next-line @next/next/no-img-element -- inline SVG data URL, same as the Arena renders it
-                <img src={src} alt={entryAlt(entry as MemeEntry)} className="size-full select-none" draggable={false} />
+                <img src={src} alt={meme?.alt ?? ""} className="size-full select-none" draggable={false} />
               ) : (
                 <div className="grid size-full place-items-center bg-[linear-gradient(135deg,var(--accent-from),var(--accent-to))] text-center">
                   <div>

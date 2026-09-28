@@ -99,3 +99,14 @@ export function useViewer(): ViewerState {
   });
   return { viewer: data ?? null, loading: isPending };
 }
+
+/**
+ * For click handlers: resolves the viewer, waiting for the first load if it's
+ * still in flight, so an early click isn't mistaken for "signed out".
+ */
+export function useResolveViewer(): () => Promise<Profile | null> {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return () =>
+    queryClient.ensureQueryData({ queryKey: ["viewer"], queryFn: () => backend.getViewer(), staleTime: 30_000 }).catch(() => null);
+}

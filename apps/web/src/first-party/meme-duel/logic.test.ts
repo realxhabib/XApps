@@ -33,6 +33,7 @@ import {
   type Rand,
 } from "./logic";
 import { escapeXml, layoutCaption, renderMemeSvg, svgToDataUrl } from "./render";
+import { PHOTO_TEMPLATES } from "./photo-templates";
 import { BOT_CAPTIONS, MEME_TEMPLATES, STICKERS, getTemplate, type MemeEntry } from "./templates";
 
 /** Deterministic Rand for tests. */
@@ -236,7 +237,8 @@ describe("template choice", () => {
 
   it("honors settings.templateId", () => {
     expect(pickTemplate(createRandom("x"), { templateId: "bar-chart" }).id).toBe("bar-chart");
-    expect(MEME_TEMPLATES).toContain(pickTemplate(createRandom("x"), { templateId: "missing" }));
+    // Unknown ids fall back to a seeded pick among the real photo templates.
+    expect(PHOTO_TEMPLATES).toContain(pickTemplate(createRandom("x"), { templateId: "missing" }));
   });
 });
 

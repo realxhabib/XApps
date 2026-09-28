@@ -2,7 +2,15 @@
 
 import { AnimatePresence, animate, motion, useMotionValue, useReducedMotion, useTransform } from "motion/react";
 import { RotateCw, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import { spring } from "@/lib/motion";
 import { play } from "@/lib/sfx";
@@ -59,6 +67,8 @@ export interface StickerLayerProps extends Callbacks {
   removing: ReadonlySet<string>;
   /** A tap on bare canvas (0..1 coords): deselect and maybe focus a caption. */
   onCanvasTap: (point: Point) => void;
+  /** Interactive pieces that sit under the stickers but above the canvas (draggable captions). */
+  underlay?: ReactNode;
 }
 
 /**
@@ -67,7 +77,7 @@ export interface StickerLayerProps extends Callbacks {
  * but free while dragging, and the selection chrome/handles are never
  * clipped so they stay grabbable at the edges.
  */
-export function StickerLayer({ stickers, size, selectedId, removing, onCanvasTap, onDragChange, ...callbacks }: StickerLayerProps) {
+export function StickerLayer({ stickers, size, selectedId, removing, onCanvasTap, onDragChange, underlay, ...callbacks }: StickerLayerProps) {
   const [glyphLayer, setGlyphLayer] = useState<HTMLDivElement | null>(null);
   const [chromeLayer, setChromeLayer] = useState<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -101,7 +111,9 @@ export function StickerLayer({ stickers, size, selectedId, removing, onCanvasTap
           const rect = e.currentTarget.getBoundingClientRect();
           onCanvasTap({ x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height });
         }}
-      />
+      >
+        {underlay}
+      </div>
       {glyphLayer &&
         chromeLayer &&
         size > 0 &&
