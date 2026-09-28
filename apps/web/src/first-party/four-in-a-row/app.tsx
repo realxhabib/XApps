@@ -200,6 +200,12 @@ function GameView({ g }: { g: FourInARow }) {
     [myTurn, drop, buzz],
   );
 
+  // Live: show the opponent where our ghost starts each turn (not just when it moves).
+  const moveCount = game.moves.length;
+  useEffect(() => {
+    if (myTurn) shareAim(aimRef.current);
+  }, [myTurn, moveCount, shareAim]);
+
   // Keyboard: ←/→ aim, Enter/Space drop, 1–7 drop straight into a column.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
