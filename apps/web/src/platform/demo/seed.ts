@@ -5,7 +5,7 @@ import { HOT_TAKE_PROMPTS, hotTakeDisplay } from "@/first-party/hot-takes/prompt
 import { OFFICIAL_APPS } from "../catalog";
 import { settle } from "../scoring";
 import type { Profile } from "../types";
-import type { DemoDb, MatchRow, PlayerRow } from "./store";
+import { DB_VERSION, MATCH_V2_DEFAULTS, newPlayerRow, type DemoDb, type MatchRow, type PlayerRow } from "./store";
 
 export const PRACTICE_BOT_ID = "bot-xapps";
 
@@ -22,39 +22,55 @@ const PERSONAS: Array<Pick<Profile, "id" | "handle" | "name" | "bio">> = [
   { id: "p-lowkey_lena", handle: "lowkey_lena", name: "Lena", bio: "just here to vote tbh" },
 ];
 
-export const PRACTICE_BOT: Profile = {
-  id: PRACTICE_BOT_ID,
-  handle: "xapps_bot",
-  name: "XApps Bot",
-  avatarUrl: null,
-  bio: "I practice so you don't have to lose in public.",
-  xp: 0,
-  wins: 0,
-  losses: 0,
-  draws: 0,
-  streak: 0,
-  bestStreak: 0,
-  createdAt: "2026-09-01T00:00:00.000Z",
-  isBot: true,
-};
+function practiceBot(id: string, handle: string, name: string, bio: string): Profile {
+  return {
+    id,
+    handle,
+    name,
+    avatarUrl: null,
+    bio,
+    xp: 0,
+    wins: 0,
+    losses: 0,
+    draws: 0,
+    streak: 0,
+    bestStreak: 0,
+    createdAt: "2026-09-01T00:00:00.000Z",
+    isBot: true,
+  };
+}
+
+export const PRACTICE_BOT: Profile = practiceBot(
+  PRACTICE_BOT_ID,
+  "xapps_bot",
+  "XApps Bot",
+  "I practice so you don't have to lose in public.",
+);
+
+/** One distinct bot per practice seat (seat 1 is always the classic XApps Bot). */
+export const PRACTICE_BOTS: Profile[] = [
+  PRACTICE_BOT,
+  practiceBot("bot-xapps-2", "bot_blip", "Blip", "Practice bot. Beeps when nervous."),
+  practiceBot("bot-xapps-3", "bot_bloop", "Bloop", "Practice bot. Mostly harmless."),
+  practiceBot("bot-xapps-4", "bot_zap", "Zap", "Practice bot. Fast, not smart."),
+  practiceBot("bot-xapps-5", "bot_nova", "Nova", "Practice bot. Plays to win (sometimes)."),
+  practiceBot("bot-xapps-6", "bot_gizmo", "Gizmo", "Practice bot. Has read the rules once."),
+  practiceBot("bot-xapps-7", "bot_echo", "Echo", "Practice bot. Copies whoever's winning."),
+];
+
+const PRACTICE_BOT_IDS = new Set(PRACTICE_BOTS.map((b) => b.id));
+
+/** Practice bots never show up as people (search, personas, leaderboards). */
+export function isPracticeBot(id: string): boolean {
+  return PRACTICE_BOT_IDS.has(id);
+}
 
 function iso(msAgo: number): string {
   return new Date(Date.now() - msAgo).toISOString();
 }
 
 function player(userId: string, seat: number, extra: Partial<PlayerRow> = {}): PlayerRow {
-  return {
-    userId,
-    seat,
-    state: "joined",
-    isBot: true,
-    score: null,
-    submission: null,
-    result: null,
-    xpDelta: 0,
-    lastSeenAt: null,
-    ...extra,
-  };
+  return newPlayerRow(userId, seat, { isBot: true, ...extra });
 }
 
 /** Builds a fresh demo world: personas, match history, and contests waiting for votes. */
@@ -75,10 +91,10 @@ export function buildSeed(): DemoDb {
       isBot: true,
     };
   });
-  profiles[PRACTICE_BOT_ID] = PRACTICE_BOT;
+  for (const bot of PRACTICE_BOTS) profiles[bot.id] = bot;
 
   const db: DemoDb = {
-    version: 3,
+    version: DB_VERSION,
     profiles,
     apps: {},
     playCounts: Object.fromEntries(OFFICIAL_APPS.map((app) => [app.slug, rng.int(900, 4800)])),
@@ -132,6 +148,7 @@ export function buildSeed(): DemoDb {
       votesNeeded: 0,
       votingEndsAt: null,
       simulatedVotes: false,
+      ...MATCH_V2_DEFAULTS,
       players: [
         player(a, 0, { state: "submitted", score: sa }),
         player(b, 1, { state: "submitted", score: sb }),
@@ -234,6 +251,7 @@ export function addPersonaContest(
     votesNeeded,
     votingEndsAt: voting ? new Date(Date.now() + 36 * 3_600_000).toISOString() : null,
     simulatedVotes: false,
+    ...MATCH_V2_DEFAULTS,
     players,
   };
   const voters = PERSONA_IDS.filter((id) => id !== a && id !== b);
@@ -255,24 +273,32 @@ function randomIdFrom(rng: ReturnType<typeof createRandom>): string {
 
 /** Writes a settlement into the match row and updates player stats. */
 export function applySettlement(db: DemoDb, match: MatchRow, forfeitBy?: string): void {
-  const hydrated = {
-    scoring: match.scoring,
-    mode: match.mode,
-    votes: match.votes,
-    players: match.players.map((p) => ({ ...p, profile: db.profiles[p.userId]! })),
-  };
-  const { winnerId, results, xp } = settle(hydrated, forfeitBy);
+  if (forfeitBy) {
+    const quitter = match.players.find((p) => p.userId === forfeitBy && p.role === "player");
+    if (quitter && quitter.state !== "declined") quitter.state = "left";
+  }
+  // Like settle_match: multiplayer invites nobody answered are withdrawn, not ranked.
+  if (match.maxPlayers > 2) match.players = match.players.filter((p) => !(p.role === "player" && p.state === "invited"));
+  const { winnerId, winnerTeam, ranks, results, xp } = settle(
+    { scoring: match.scoring, mode: match.mode, votes: match.votes, teams: match.teams, players: match.players },
+    forfeitBy,
+  );
   match.winnerId = winnerId;
+  match.winnerTeam = winnerTeam;
   match.status = "completed";
+  match.isOpen = false;
+  match.turnDeadline = null;
   match.endedAt = match.endedAt ?? new Date().toISOString();
   match.updatedAt = new Date().toISOString();
   db.playCounts[match.appSlug] = (db.playCounts[match.appSlug] ?? 0) + 1;
 
   for (const p of match.players) {
+    if (!(p.userId in results)) continue;
+    p.rank = ranks[p.userId] ?? null;
     p.result = results[p.userId] ?? null;
     p.xpDelta = xp[p.userId] ?? 0;
     const profile = db.profiles[p.userId];
-    if (!profile || p.userId === PRACTICE_BOT_ID) continue;
+    if (!profile || isPracticeBot(p.userId)) continue;
     profile.xp += p.xpDelta;
     if (match.mode === "practice") continue;
     if (p.result === "win") {
@@ -294,6 +320,45 @@ export function applySettlement(db: DemoDb, match: MatchRow, forfeitBy?: string)
     else stats.draws++;
     db.appStats[key] = stats;
   }
+}
+
+/**
+ * Upgrades a v3 demo database (1v1 only) to v4: every player gets a seat role,
+ * matches get the v2 columns, and the extra practice bots join the world.
+ */
+export function upgradeDb(old: unknown): DemoDb | null {
+  const db = old as { version?: number } & Partial<Omit<DemoDb, "version">>;
+  if (!db || typeof db !== "object" || db.version !== 3 || !db.profiles || !db.matches) return null;
+  const matches: Record<string, MatchRow> = {};
+  for (const [id, raw] of Object.entries(db.matches)) {
+    const row = raw as MatchRow;
+    const completed = row.status === "completed";
+    matches[id] = {
+      ...MATCH_V2_DEFAULTS,
+      ...row,
+      maxPlayers: Math.max(2, row.players?.length ?? 2),
+      players: (row.players ?? []).map((p) =>
+        newPlayerRow(p.userId, p.seat, {
+          ...p,
+          team: null,
+          role: "player",
+          rank: completed && p.result ? (p.result === "loss" ? 2 : 1) : null,
+        }),
+      ),
+    };
+  }
+  const profiles = { ...db.profiles };
+  for (const bot of PRACTICE_BOTS) profiles[bot.id] = profiles[bot.id] ?? bot;
+  return {
+    version: DB_VERSION,
+    profiles,
+    apps: db.apps ?? {},
+    playCounts: db.playCounts ?? {},
+    matches,
+    votes: db.votes ?? [],
+    storage: db.storage ?? {},
+    appStats: db.appStats ?? {},
+  };
 }
 
 export function newMatchId(): string {

@@ -2,11 +2,12 @@ import type {
   Json,
   MatchMode,
   MatchStatus,
+  PlayerRole,
   Scoring,
   SubmissionDisplay,
 } from "@xapps/sdk";
 
-export type { Json, MatchMode, MatchStatus, Scoring, SubmissionDisplay };
+export type { Json, MatchMode, MatchStatus, PlayerRole, Scoring, SubmissionDisplay };
 
 export type AppCategory = "games" | "contests" | "debates" | "trivia" | "creative" | "social";
 
@@ -37,7 +38,16 @@ export interface AppManifest {
   /** Where the app is served. Relative URLs are same-origin (first-party). */
   url: string;
   modes: PlayableMode[];
+  /** Seats per match: 2 ≤ min ≤ max ≤ 8. */
   players: { min: number; max: number };
+  /** 0 = free for all; 2–4 = team play (seat s plays for team s % teams). */
+  teams?: number;
+  /** Others may watch live matches (default true). */
+  spectators?: boolean;
+  /** The app renders its own challenge setup screen (setup purpose). */
+  setup?: boolean;
+  /** Players take turns (live or over days); the host shows turn UI and "your turn" inbox items. */
+  turnBased?: boolean;
   scoring: Scoring;
   /** For `votes` scoring: votes needed to decide a match. */
   votesToWin?: number;
@@ -74,7 +84,13 @@ export type PlayerResult = "win" | "loss" | "draw" | null;
 
 export interface MatchPlayer {
   userId: string;
-  seat: number;
+  /** Null for spectators. */
+  seat: number | null;
+  /** Team index in team play, else null. */
+  team: number | null;
+  role: PlayerRole;
+  /** Final placement once settled (1 = first; ties share a rank). */
+  rank: number | null;
   state: PlayerState;
   isBot: boolean;
   score: number | null;
@@ -103,9 +119,22 @@ export interface Match {
   votes: { [userId: string]: number };
   votesNeeded: number;
   votingEndsAt: string | null;
+  /** Seated players by seat, plus the viewer's own row if they're spectating. */
   players: MatchPlayer[];
   /** Practice contests are judged by a simulated crowd. */
   simulatedVotes: boolean;
+  minPlayers: number;
+  maxPlayers: number;
+  teams: number;
+  /** Winning team in team play. */
+  winnerTeam: number | null;
+  spectatorCount: number;
+  /** Shared, persistent match state written by the app. */
+  state: Json | null;
+  stateVersion: number;
+  turnUserId: string | null;
+  turnDeadline: string | null;
+  round: number;
 }
 
 export interface LeaderRow {
@@ -128,6 +157,10 @@ export interface CreateChallengeInput {
   mode: Exclude<PlayableMode, "practice">;
   /** Invite a specific person; leave empty for an open challenge link. */
   opponentHandle?: string | null;
+  /** Invite several people (multiplayer apps). Merged with `opponentHandle`. */
+  opponentHandles?: string[];
+  /** Table size for multiplayer apps, within the app's range. */
+  maxPlayers?: number;
   /** How the challenger set up the round; the app reads it as `match.settings` (max 4 KB). */
   settings?: { [key: string]: Json };
 }
@@ -144,6 +177,16 @@ export interface RegisterAppInput {
   modes: PlayableMode[];
   scoring: Scoring;
   howTo: string[];
+  /** Seats per match (default 2–2): 2 ≤ min ≤ max ≤ 8. */
+  players?: { min: number; max: number };
+  /** 0 = free for all (default); 2–4 = team play, `players.max` a multiple of it. */
+  teams?: number;
+  /** Others may watch (default true). */
+  spectators?: boolean;
+  /** The app renders its own challenge setup screen (default false). */
+  setup?: boolean;
+  /** Players take turns (default false). */
+  turnBased?: boolean;
 }
 
 export interface SubmitInput {

@@ -23,6 +23,9 @@ import { useViewer } from "@/platform/client";
 import { XP } from "@/platform/scoring";
 import { useApps, useVote, useVotingMatches } from "@/platform/queries";
 import type { Match } from "@/platform/types";
+import { seatedPlayers } from "@/components/play/match-view";
+
+const entryLabel = (seat: number) => String.fromCharCode(65 + seat);
 
 export function Arena() {
   const router = useRouter();
@@ -60,7 +63,7 @@ export function Arena() {
         router.push(`/login?next=${encodeURIComponent("/arena")}`);
         return;
       }
-      const choice = [...current.players].sort((a, b) => a.seat - b.seat)[seat];
+      const choice = seatedPlayers(current).filter((p) => p.state !== "invited" && p.state !== "left")[seat];
       if (!choice) return;
       play("vote");
       haptic("success");
@@ -90,15 +93,18 @@ export function Arena() {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
-      if (event.key === "ArrowLeft" || event.key === "1") void cast(0);
-      if (event.key === "ArrowRight" || event.key === "2") void cast(1);
+      const n = Number(event.key);
+      if (Number.isInteger(n) && n >= 1 && n <= 8) void cast(n - 1);
+      else if (event.key === "ArrowLeft") void cast(0);
+      else if (event.key === "ArrowRight") void cast(1);
       if (event.key.toLowerCase() === "s" && !picked) next();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [cast, next, picked]);
 
-  const players = current ? [...current.players].sort((a, b) => a.seat - b.seat) : [];
+  const players = current ? seatedPlayers(current).filter((p) => p.state !== "invited" && p.state !== "left") : [];
+  const many = players.length > 2;
   const shown = picked?.result ?? current;
   const title = players.map((p) => p.submission?.display).find((d) => d?.kind === "text" && d.title);
 
@@ -169,8 +175,17 @@ export function Arena() {
                 Contest {index + 1} of {filtered.length}
               </span>
               <span className="hidden items-center gap-1.5 sm:flex">
-                <Kbd>←</Kbd>
-                <Kbd>→</Kbd> vote · <Kbd>S</Kbd> skip
+                {many ? (
+                  <>
+                    <Kbd>1</Kbd>–<Kbd>{String(players.length)}</Kbd> vote
+                  </>
+                ) : (
+                  <>
+                    <Kbd>←</Kbd>
+                    <Kbd>→</Kbd> vote
+                  </>
+                )}{" "}
+                · <Kbd>S</Kbd> skip
               </span>
             </div>
             <div className="mb-5 h-1 overflow-hidden rounded-full bg-white/[0.06]">
@@ -195,11 +210,22 @@ export function Arena() {
                   <span className="font-semibold">{app?.name}</span>
                   <span className="text-ink-500">·</span>
                   <span className="text-ink-300">first to {current.votesNeeded}</span>
+                  {many && (
+                    <>
+                      <span className="text-ink-500">·</span>
+                      <span className="text-ink-300">{players.length} entries</span>
+                    </>
+                  )}
                 </div>
                 {title?.kind === "text" && title.title && (
                   <p className="mt-3 text-center font-display text-2xl font-extrabold tracking-tight sm:text-3xl">{title.title}</p>
                 )}
-                <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                <div
+                  className={cn(
+                    "mt-5 grid",
+                    !many ? "gap-4 sm:grid-cols-2" : players.length === 3 ? "grid-cols-2 gap-3 sm:grid-cols-3" : players.length === 4 ? "grid-cols-2 gap-3" : "grid-cols-2 gap-3 sm:grid-cols-3",
+                  )}
+                >
                   {players.map((p, seat) => {
                     const isPick = picked?.userId === p.userId;
                     const count = shown?.votes[p.userId] ?? 0;
@@ -214,15 +240,16 @@ export function Arena() {
                         disabled={!!picked}
                         className={cn(
                           "group relative rounded-[2rem] p-2 text-left transition-shadow",
+                          many && "rounded-3xl p-1.5",
                           isPick ? "ring-2 ring-volt shadow-[0_0_60px_-10px_rgb(198_255_61/0.6)]" : "ring-1 ring-white/10",
                         )}
-                        whileHover={picked ? undefined : { y: -8, rotate: seat === 0 ? -1.2 : 1.2 }}
+                        whileHover={picked ? undefined : { y: -8, rotate: seat % 2 === 0 ? -1.2 : 1.2 }}
                         whileTap={picked ? undefined : { scale: 0.97 }}
                         animate={picked ? (isPick ? { scale: 1.03, opacity: 1 } : { scale: 0.95, opacity: 0.55 }) : { scale: 1, opacity: 1 }}
                         transition={spring.bouncy}
-                        aria-label={`Vote for entry ${seat === 0 ? "A" : "B"}`}
+                        aria-label={`Vote for entry ${entryLabel(seat)}`}
                       >
-                        <EntryView display={p.submission?.display} />
+                        <EntryView display={p.submission?.display} compact={many} />
                         <div className="flex items-center gap-2 px-2 pb-1 pt-3">
                           <AnimatePresence mode="wait" initial={false}>
                             {picked ? (
@@ -238,10 +265,10 @@ export function Arena() {
                             ) : (
                               <motion.span key="anon" className="flex items-center gap-2 text-sm font-semibold text-ink-300" exit={{ opacity: 0, y: -8 }}>
                                 <span className="flex size-7 items-center justify-center rounded-full bg-white/10 font-mono text-xs">
-                                  {seat === 0 ? "A" : "B"}
+                                  {entryLabel(seat)}
                                 </span>
-                                Entry {seat === 0 ? "A" : "B"}
-                                {seat === 0 ? <ArrowLeft className="size-3.5 opacity-50" /> : <ArrowRight className="size-3.5 opacity-50" />}
+                                <span className={cn(many && "hidden sm:inline")}>Entry {entryLabel(seat)}</span>
+                                {!many && (seat === 0 ? <ArrowLeft className="size-3.5 opacity-50" /> : <ArrowRight className="size-3.5 opacity-50" />)}
                               </motion.span>
                             )}
                           </AnimatePresence>

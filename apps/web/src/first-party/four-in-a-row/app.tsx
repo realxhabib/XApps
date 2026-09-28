@@ -1,6 +1,7 @@
 "use client";
 
 import { useXApps } from "@xapps/sdk/react";
+import { Eye, Hourglass } from "lucide-react";
 import { AnimatePresence, LayoutGroup, motion, useAnimate, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Avatar } from "@/components/ui/avatar";
@@ -10,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { AnimatedDots, Eyebrow } from "../shared/ui";
 import { Board, DiscDefs, DiscShape, useBoardIds } from "./board";
 import { SEAT_COLORS, VIEW_H, VIEW_W, dropPlan } from "./geometry";
-import { COLS, ROWS, type Seat } from "./logic";
+import { COLS, ROWS, other, type Seat } from "./logic";
 import { PlayerCard, useTurnRemaining, type CardResult } from "./players";
 import { useFourInARow, type FourInARow } from "./use-game";
 
@@ -91,13 +92,14 @@ function PreGame({ g }: { g: FourInARow }) {
       </svg>
 
       <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ ...spring.soft, delay: 0.1 }}>
-        <Eyebrow>{g.live ? "Live match" : "Practice"}</Eyebrow>
+        <Eyebrow>{g.spectating ? "Watching" : g.async ? "Play anytime" : g.live ? "Live match" : "Practice"}</Eyebrow>
         <h1 className="mt-2 font-display text-4xl font-extrabold tracking-tight sm:text-5xl">
           Four in a{" "}
           <span className="bg-[linear-gradient(100deg,var(--accent-from),var(--accent-to))] bg-clip-text text-transparent">Row</span>
         </h1>
         <p className="mx-auto mt-2 max-w-xs text-sm text-ink-300">
-          Drop discs in turn. Line up four — across, up or diagonal — to win. 30s per move.
+          Drop discs in turn. Line up four — across, up or diagonal — to win.{" "}
+          {g.async ? "Take your time: you have days per move." : "30s per move."}
         </p>
       </motion.div>
 
@@ -107,7 +109,7 @@ function PreGame({ g }: { g: FourInARow }) {
         animate={{ opacity: 1, scale: 1 }}
         transition={{ ...spring.bouncy, delay: 0.25 }}
       >
-        {g.players.map((p, seat) => (
+        {g.players.map((p, seat) => p && (
           <div key={p.id} className={cn("flex items-center gap-2", seat === 1 && "flex-row-reverse")}>
             <div className="relative">
               <Avatar person={p} size={44} />
@@ -124,7 +126,7 @@ function PreGame({ g }: { g: FourInARow }) {
         ))}
       </motion.div>
       <p className="text-sm font-medium text-ink-200">
-        Get ready
+        {g.game.moves.length > 0 ? "Picking up where you left off" : "Get ready"}
         <AnimatedDots />
       </p>
     </div>
@@ -158,7 +160,9 @@ function GameView({ g }: { g: FourInARow }) {
   const [stageRef, stage] = useSize();
   const [barRef, bar] = useSize();
   const [joltScope, animateJolt] = useAnimate<HTMLDivElement>();
-  const { game, mySeat, oppSeat, outcome } = g;
+  const { game, mySeat, viewSeat, oppSeat, outcome } = g;
+  /** Discs already on the board when we opened it: they sit still, no replayed drops. */
+  const [restoredCount] = useState(game.discs.length);
   const buzz = useCallback(
     (style: "light" | "medium" | "heavy" | "success" | "error") => g.xapps.ui.haptic(style).catch(noop),
     [g.xapps],
@@ -239,11 +243,11 @@ function GameView({ g }: { g: FourInARow }) {
 
   /* ------------------------- landing & win effects ---------------------- */
 
-  const [landed, setLanded] = useState(0);
+  const [landed, setLanded] = useState(restoredCount);
   const discCount = game.discs.length;
   const lastDisc = game.discs[discCount - 1];
   useEffect(() => {
-    if (!lastDisc) return;
+    if (!lastDisc || lastDisc.n < restoredCount) return;
     const plan = dropPlan(lastDisc.row, reduced);
     const timer = setTimeout(() => {
       setLanded(lastDisc.n + 1);
@@ -258,13 +262,31 @@ function GameView({ g }: { g: FourInARow }) {
       }
     }, plan.impactMs);
     return () => clearTimeout(timer);
-  }, [lastDisc, reduced, buzz, animateJolt, joltScope]);
+  }, [lastDisc, restoredCount, reduced, buzz, animateJolt, joltScope]);
+
+  /* ----------------------------- your-turn moment ------------------------ */
+
+  // Counts each time the turn arrives; the board rim sweeps our colour.
+  const [moment, setMoment] = useState({ mine: false, count: 0 });
+  if (moment.mine !== g.myTurn) setMoment({ mine: g.myTurn, count: g.myTurn ? moment.count + 1 : moment.count });
+  const humanRival = !!g.opponent && !g.opponent.isBot;
+  useEffect(() => {
+    if (moment.count === 0) return;
+    // Against a person (or when coming back to a waiting board) it's worth a chime.
+    if (humanRival || (moment.count === 1 && restoredCount > 0)) {
+      play("notify");
+      buzz("medium");
+    }
+    // Only when the moment itself changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [moment.count]);
 
   const reveal = outcome !== null && (outcome.reason === "abandon" || landed >= discCount);
-  const iLost = reveal && outcome?.winner === oppSeat;
+  const iLost = reveal && mySeat !== null && outcome?.winner === other(mySeat);
   useEffect(() => {
     if (!reveal || !outcome) return;
-    const won = outcome.winner === mySeat;
+    // Spectators get the winner's fanfare.
+    const won = mySeat === null || outcome.winner === mySeat;
     const timer = setTimeout(
       () => {
         if (outcome.winner === null) {
@@ -308,11 +330,13 @@ function GameView({ g }: { g: FourInARow }) {
       player={g.players[seat]}
       seat={seat}
       isMe={seat === mySeat}
-      active={g.playing && game.turn === seat}
+      active={g.playing && g.turnSeat === seat}
       turnStartedAt={g.turnStartedAt}
-      thinking={seat === oppSeat && g.opponentTurn}
+      timed={g.timed}
+      deadline={g.deadline}
+      thinking={g.playing && !g.async && g.turnSeat === seat && seat !== mySeat}
       result={resultFor(seat)}
-      online={seat === oppSeat && g.live ? g.opponentOnline : undefined}
+      online={seat === oppSeat && g.live && !g.spectating ? g.opponentOnline : undefined}
       variant={variant}
       mirror={mirror}
       reduced={reduced}
@@ -337,12 +361,14 @@ function GameView({ g }: { g: FourInARow }) {
           game={game}
           width={boardW}
           height={boardH}
-          mySeat={mySeat}
+          mySeat={viewSeat}
           canPlay={myTurn}
           aim={aim}
-          opponentTurn={g.opponentTurn}
-          opponentAim={g.opponentAim}
+          otherAim={g.opponentAim}
           reveal={reveal}
+          restoredCount={restoredCount}
+          highlightLast={discCount > 0 && landed >= discCount}
+          turnFlash={moment.count}
           reduced={reduced}
           bump={bump}
           onAim={moveAim}
@@ -365,13 +391,13 @@ function GameView({ g }: { g: FourInARow }) {
               animate={{ opacity: 1, x: 0 }}
               transition={{ ...spring.soft, delay: 0.1 }}
             >
-              {card(mySeat, "side")}
+              {card(viewSeat, "side")}
             </motion.div>
             <div className="flex h-full min-w-0 flex-1 flex-col gap-2">
               <div ref={stageRef} className="relative flex min-h-0 w-full flex-1 items-center justify-center">
                 {board}
               </div>
-              <Footer g={g} reveal={reveal} />
+              <Footer g={g} reveal={reveal} moment={moment.count} />
             </div>
             <motion.div
               className="flex w-40 shrink-0 lg:w-48"
@@ -392,13 +418,13 @@ function GameView({ g }: { g: FourInARow }) {
               animate={{ opacity: 1, y: 0 }}
               transition={{ ...spring.soft, delay: 0.05 }}
             >
-              {card(mySeat, "bar", false)}
+              {card(viewSeat, "bar", false)}
               {card(oppSeat, "bar", true)}
             </motion.div>
             <div className="relative flex shrink-0 items-center justify-center" style={{ width: boardW, height: boardH }}>
               {board}
             </div>
-            <Footer g={g} reveal={reveal} />
+            <Footer g={g} reveal={reveal} moment={moment.count} />
           </div>
         )}
       </LayoutGroup>
@@ -424,7 +450,7 @@ function Lane({ g, reveal, fontSize, reduced }: { g: FourInARow; reveal: boolean
       tone = "win";
     } else {
       title = `${g.players[outcome.winner]?.name ?? "They"} wins`;
-      tone = "lose";
+      tone = g.spectating ? "win" : "lose";
     }
   }
 
@@ -466,10 +492,12 @@ function Lane({ g, reveal, fontSize, reduced }: { g: FourInARow; reveal: boolean
 /* Footer: hints, last-5s warning, waiting / final state                    */
 /* ------------------------------------------------------------------------ */
 
-function Footer({ g, reveal }: { g: FourInARow; reveal: boolean }) {
-  const remaining = useTurnRemaining(g.turnStartedAt, g.myTurn);
-  const warn = g.myTurn && remaining <= 5_000;
+function Footer({ g, reveal, moment }: { g: FourInARow; reveal: boolean; moment: number }) {
+  const remaining = useTurnRemaining(g.turnStartedAt, g.myTurn && g.timed);
+  const warn = g.timed && g.myTurn && remaining <= 5_000;
   const opp = g.opponent;
+  const mover = g.players[g.turnSeat];
+  const moverColor = SEAT_COLORS[g.turnSeat].base;
 
   let key: string;
   let content: React.ReactNode;
@@ -479,9 +507,16 @@ function Footer({ g, reveal }: { g: FourInARow; reveal: boolean }) {
       content = <span className="text-ink-300">Final · {g.game.moves.length} moves</span>;
     } else if (g.submitted && opp && !opp.isBot && !opp.submitted) {
       key = "waiting";
-      content = (
+      content = g.async ? (
         <span className="flex items-center gap-2 text-ink-300">
-          {opp && <Avatar person={opp} size={18} />}
+          <Avatar person={opp} size={18} />
+          <span>
+            Result in · <b className="text-ink-50">@{opp.handle}</b> sees it next visit
+          </span>
+        </span>
+      ) : (
+        <span className="flex items-center gap-2 text-ink-300">
+          <Avatar person={opp} size={18} />
           Waiting for <b className="text-ink-50">@{opp.handle}</b>
           <AnimatedDots />
         </span>
@@ -505,14 +540,65 @@ function Footer({ g, reveal }: { g: FourInARow; reveal: boolean }) {
         <span className="font-mono tabular">{Math.ceil(remaining / 1000)}s</span> left — auto-drop incoming!
       </motion.span>
     );
+  } else if (g.unreadable) {
+    key = "unreadable";
+    content = <span className="text-ink-400">This board couldn&apos;t be loaded</span>;
+  } else if (g.awaitingOpponent && g.started) {
+    key = "awaiting";
+    content = (
+      <span className="flex items-center gap-2 text-ink-300">
+        <Hourglass className="size-3.5 text-ink-400" aria-hidden />
+        <span>
+          Waiting for <b className="text-ink-50">@{opp?.handle ?? "opponent"}</b> to accept
+          {g.mySeat === 0 ? " · you go first" : ""}
+        </span>
+      </span>
+    );
+  } else if (g.spectating && g.playing) {
+    key = `watch-${g.turnSeat}`;
+    content = (
+      <span className="flex items-center gap-2 text-ink-300">
+        <Eye className="size-3.5" aria-hidden />
+        Watching ·
+        {g.game.moves.length === 0 ? (
+          <span>waiting for the first move</span>
+        ) : (
+          <span>
+            <b style={{ color: moverColor }}>@{mover?.handle ?? "player"}</b> to move
+          </span>
+        )}
+      </span>
+    );
   } else if (g.myTurn) {
     key = "hint";
     content = (
-      <span className="text-ink-300">
-        <span className="pointer-fine:hidden">Tap a column · drag to aim</span>
-        <span className="hidden pointer-fine:inline">
+      <span className="flex items-center gap-2 text-ink-300">
+        <motion.span
+          key={moment}
+          className="shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-[0.14em] text-ink-950 sm:text-[11px]"
+          style={{ background: SEAT_COLORS[g.viewSeat].base }}
+          initial={{ opacity: 0, scale: 0.5 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={spring.bouncy}
+        >
+          Your turn
+        </motion.span>
+        <span className="whitespace-nowrap pointer-fine:hidden">Tap a column · drag to aim</span>
+        <span className="hidden whitespace-nowrap pointer-fine:inline sm:pointer-fine:hidden">Click a column</span>
+        <span className="hidden whitespace-nowrap sm:pointer-fine:inline">
           Click a column · <Key>←</Key>
           <Key>→</Key> + <Key>Enter</Key> · <Key>1</Key>–<Key>7</Key>
+        </span>
+      </span>
+    );
+  } else if (g.opponentTurn && g.async) {
+    // Play anytime: nothing to watch — say so calmly and let them close the app.
+    key = "their-move";
+    content = (
+      <span className="flex items-center gap-2 text-ink-300">
+        <Hourglass className="size-3.5 text-ink-400" aria-hidden />
+        <span>
+          <b className="text-ink-50">@{opp?.handle ?? "opponent"}</b>&apos;s move · we&apos;ll tell you when it&apos;s yours
         </span>
       </span>
     );

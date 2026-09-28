@@ -1,11 +1,12 @@
 "use client";
 
 import { useQueryClient } from "@tanstack/react-query";
+import { XAppsError } from "@xapps/sdk";
 import type { HostHandlers } from "@xapps/sdk/host";
 import { AnimatePresence, motion } from "motion/react";
-import { Home, WifiOff } from "lucide-react";
+import { Eye, Home, WifiOff } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/components/chrome/toasts";
 import { AppGlyph } from "@/components/marketplace/app-glyph";
 import { celebrate } from "@/components/motion/confetti";
@@ -26,8 +27,10 @@ import { useApp, useMatch, useMatchAction } from "@/platform/queries";
 import type { AppManifest, Match, Profile } from "@/platform/types";
 import { FloatingReactions, Hud, type HudState, useFloatingReactions } from "./hud";
 import { InviteCard, Lobby } from "./lobby";
+import { isMultiplayer, ordinal, seatedPlayers, viewerIsSpectator, viewerOutcome } from "./match-view";
 import { ResultsOverlay } from "./results-overlay";
-import { useAppBridge } from "./use-app-bridge";
+import { TurnBanner } from "./turn-banner";
+import { APP_ALLOW, APP_SANDBOX, emitMatchChanges, useAppBridge, type Emit } from "./use-app-bridge";
 import { VersusIntro } from "./versus-intro";
 import { VotingOverlay } from "./voting-overlay";
 
@@ -67,6 +70,18 @@ function FullscreenLoader({ app }: { app?: AppManifest }) {
 }
 
 function shareText(app: AppManifest, match: Match, viewerId: string | undefined): string {
+  if (isMultiplayer(match)) {
+    const outcome = viewerOutcome(match, viewerId);
+    const table = seatedPlayers(match).length;
+    if (outcome.kind === "spectator") return `Just watched a ${table}-player ${app.name} match on XApps ${app.icon}`;
+    if (match.teams >= 2) {
+      return outcome.kind === "win"
+        ? `Team win in ${app.name} on XApps ${app.icon} 🏆 Who wants the rematch?`
+        : `Tough team loss in ${app.name} on XApps ${app.icon} Rematch incoming.`;
+    }
+    if (outcome.rank === 1) return `Took 1st of ${table} in ${app.name} on XApps ${app.icon} 🏆 Who's next?`;
+    return `Placed ${ordinal(outcome.rank ?? table)} of ${table} in ${app.name} on XApps ${app.icon} Next time it's mine.`;
+  }
   const opponent = opponentOf(match, viewerId);
   const them = opponent && !opponent.isBot ? `@${opponent.profile.handle}` : "the bot";
   if (!match.winnerId) return `Dead even with ${them} in ${app.name} on XApps ${app.icon} Who breaks the tie?`;
@@ -85,17 +100,22 @@ function shareText(app: AppManifest, match: Match, viewerId: string | undefined)
 export function PlayRoom({ matchId }: { matchId: string }) {
   const router = useRouter();
   const backend = useBackend();
+  const queryClient = useQueryClient();
   const { viewer, loading: viewerLoading } = useViewer();
   const { data: match, isPending: matchLoading, error: matchError } = useMatch(matchId);
   const { data: app } = useApp(match?.appSlug ?? "", !!match);
   const action = useMatchAction();
   const me = match ? playerOf(match, viewer?.id) : undefined;
+  const spectating = !!match && viewerIsSpectator(match, viewer?.id);
+  const [busy, setBusy] = useState<"start" | "watch" | null>(null);
 
   const canPlay =
     !!match &&
     !!me &&
-    me.state === "joined" &&
-    (match.status === "active" || (match.mode === "async" && (match.status === "open" || match.status === "pending")));
+    (spectating
+      ? match.status === "active"
+      : me.state === "joined" &&
+        (match.status === "active" || (match.mode === "async" && (match.status === "open" || match.status === "pending"))));
   // Once the stage is shown it stays mounted through voting/results.
   const [stickyStage, setStickyStage] = useState(false);
   if (canPlay && !stickyStage) setStickyStage(true);
@@ -112,6 +132,20 @@ export function PlayRoom({ matchId }: { matchId: string }) {
     },
     [action, match],
   );
+
+  const lobbyCall = async (kind: "start" | "watch") => {
+    if (!match) return;
+    setBusy(kind);
+    try {
+      const updated = kind === "start" ? await backend.startMatch(match.id) : await backend.spectate(match.id);
+      queryClient.setQueryData(["match", match.id], updated);
+      if (kind === "start") play("go");
+    } catch (error) {
+      toast(errorMessage(error), { tone: "danger" });
+    } finally {
+      setBusy(null);
+    }
+  };
 
   if (matchLoading || viewerLoading || (match && !app)) return <FullscreenLoader app={app ?? undefined} />;
 
@@ -142,6 +176,11 @@ export function PlayRoom({ matchId }: { matchId: string }) {
 
   // --- Everything below is a host-rendered screen (no iframe) ----------------
   const isCreator = viewer?.id === match.createdBy;
+  const canWatch = app.spectators !== false && match.mode !== "practice";
+  const onWatch = canWatch
+    ? () => (viewer ? void lobbyCall("watch") : router.push(`/login?next=${encodeURIComponent(`/play/${match.id}`)}`))
+    : undefined;
+  const lobbyOpen = match.status === "open" || match.status === "pending";
   let body: React.ReactNode;
 
   if (match.status === "completed") {
@@ -186,17 +225,46 @@ export function PlayRoom({ matchId }: { matchId: string }) {
         match={match}
         viewer={null}
         onAccept={() => router.push(`/login?next=${encodeURIComponent(`/play/${match.id}`)}`)}
+        onWatch={match.status === "active" ? onWatch : undefined}
       />
     );
+  } else if (spectating && lobbyOpen) {
+    body = <Lobby app={app} match={match} viewer={viewer} watching />;
   } else if (!me) {
-    body =
-      match.isOpen && match.status === "open" ? (
-        <InviteCard app={app} match={match} viewer={viewer} accepting={action.isPending} onAccept={() => run("join")} />
-      ) : (
-        <EmptyState emoji="🍿" title="Match in progress" className="mx-auto mt-24 max-w-md" action={<Button href={`/apps/${app.slug}`}>Play {app.name}</Button>}>
-          {match.players.map((p) => `@${p.profile.handle}`).join(" vs ")} are mid-duel. Start your own!
-        </EmptyState>
-      );
+    const seats = seatedPlayers(match);
+    const hasSeat = match.isOpen && lobbyOpen && seats.length < Math.max(2, match.maxPlayers);
+    body = hasSeat ? (
+      <InviteCard
+        app={app}
+        match={match}
+        viewer={viewer}
+        accepting={action.isPending}
+        onAccept={() => run("join")}
+        onWatch={onWatch}
+        watching={busy === "watch"}
+      />
+    ) : (
+      <EmptyState
+        emoji="🍿"
+        title="Match in progress"
+        className="mx-auto mt-24 max-w-md"
+        action={
+          <div className="flex flex-wrap justify-center gap-3">
+            {onWatch && (
+              <Button variant="accent" icon={<Eye className="size-4" />} loading={busy === "watch"} onClick={onWatch} magnetic>
+                Watch live
+              </Button>
+            )}
+            <Button href={`/apps/${app.slug}`} variant={onWatch ? "glass" : "primary"}>
+              Play {app.name}
+            </Button>
+          </div>
+        }
+      >
+        {seats.map((p) => `@${p.profile.handle}`).join(seats.length > 2 ? ", " : " vs ")} {seats.length > 2 ? "are mid-match" : "are mid-duel"}.{" "}
+        {onWatch ? "Pull up a seat in the stands, or start your own." : "Start your own!"}
+      </EmptyState>
+    );
   } else if (me.state === "invited") {
     body = (
       <InviteCard
@@ -208,20 +276,22 @@ export function PlayRoom({ matchId }: { matchId: string }) {
         onDecline={() => run("decline", () => router.push("/challenges"))}
       />
     );
-  } else if (isCreator && (match.status === "open" || match.status === "pending")) {
+  } else if (lobbyOpen && me.state === "joined") {
     body = (
       <Lobby
         app={app}
         match={match}
         viewer={viewer}
         cancelling={action.isPending}
-        onCancel={() => run("cancel", () => router.push(`/apps/${app.slug}`))}
+        onCancel={isCreator ? () => run("cancel", () => router.push(`/apps/${app.slug}`)) : undefined}
+        onStart={isCreator ? () => void lobbyCall("start") : undefined}
+        starting={busy === "start"}
         onPlayBot={
-          match.settings.quick === true
+          isCreator && match.settings.quick === true
             ? async () => {
                 try {
                   await backend.cancelMatch(match.id).catch(() => undefined);
-                  const practice = await backend.startPractice(app.slug);
+                  const practice = await backend.startPractice(app.slug, match.maxPlayers > 2 ? match.maxPlayers : undefined);
                   router.replace(`/play/${practice.id}`);
                 } catch (error) {
                   toast(errorMessage(error), { tone: "danger" });
@@ -232,11 +302,17 @@ export function PlayRoom({ matchId }: { matchId: string }) {
       />
     );
   } else {
-    // Already submitted in an earlier visit and waiting on the opponent.
-    const opponent = opponentOf(match, viewer.id);
+    // Already submitted in an earlier visit and waiting on the others.
+    const pending = seatedPlayers(match).filter((p) => p.userId !== viewer.id && (p.state === "joined" || p.state === "invited"));
+    const first = pending[0] ?? opponentOf(match, viewer.id);
     body = (
-      <EmptyState emoji="⏳" title={`Waiting for @${opponent?.profile.handle ?? "your opponent"}`} className="mx-auto mt-24 max-w-md" action={<Button href="/challenges">Back to challenges</Button>}>
-        Your result is locked in. We&apos;ll let you know the moment they play.
+      <EmptyState
+        emoji="⏳"
+        title={pending.length > 1 ? `Waiting for ${pending.length} players` : `Waiting for @${first?.profile.handle ?? "your opponent"}`}
+        className="mx-auto mt-24 max-w-md"
+        action={<Button href="/challenges">Back to challenges</Button>}
+      >
+        Your result is locked in. We&apos;ll let you know the moment {pending.length > 1 ? "everyone has played" : "they play"}.
       </EmptyState>
     );
   }
@@ -258,6 +334,27 @@ export function PlayRoom({ matchId }: { matchId: string }) {
 
 type Overlay = "none" | "voting" | "results";
 
+function introSeenKey(matchId: string) {
+  return `xapps:intro-seen:${matchId}`;
+}
+
+function readIntroSeen(matchId: string): boolean {
+  try {
+    return window.localStorage.getItem(introSeenKey(matchId)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function toSdkError(error: unknown): XAppsError {
+  if (error instanceof XAppsError) return error;
+  if (error instanceof BackendError) {
+    const code = error.code === "conflict" ? "conflict" : error.code === "forbidden" || error.code === "unauthenticated" ? "forbidden" : error.code === "invalid" ? "invalid_params" : "internal";
+    return new XAppsError(code, error.message);
+  }
+  return new XAppsError("internal", errorMessage(error));
+}
+
 /** The live stage: HUD + sandboxed app iframe + intro/voting/results overlays. */
 function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; viewer: Profile }) {
   const router = useRouter();
@@ -269,6 +366,12 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
   const startedAtRef = useRef<number | null>(null);
   const introStateRef = useRef<"idle" | "playing" | "done">("idle");
   const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
+  /** State versions this client wrote, so `state.change` can say `by: me`. */
+  const ownWrites = useRef(new Set<number>());
+  /** Last match snapshot the app was told about (for state/turn/round diffs). */
+  const lastMatch = useRef<Match | null>(null);
+  /** The bridge's emit, for handlers (which are built before the bridge exists). */
+  const emitRef = useRef<Emit | null>(null);
 
   const [hud, setHud] = useState<HudState>({ status: null, scores: {}, turn: null });
   const [appReady, setAppReady] = useState(false);
@@ -284,7 +387,12 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
 
   const live = match.mode === "live";
   const me = playerOf(match, viewer.id);
-  const opponent = opponentOf(match, viewer.id);
+  const spectating = viewerIsSpectator(match, viewer.id);
+  const seated = seatedPlayers(match);
+  const others = seated.filter((p) => p.userId !== viewer.id);
+  const opponent = others[0] ?? opponentOf(match, viewer.id);
+  const multiplayer = isMultiplayer(match);
+  const turnBased = !!app.turnBased || match.turnUserId !== null;
 
   const later = useCallback((fn: () => void, ms: number) => {
     const id = setTimeout(() => {
@@ -310,19 +418,35 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
 
   /* ------------------------------------------------------------ bridge */
 
+  /** Freshest copy of the match (our own writes land in the cache before the next render). */
+  const latest = () => queryClient.getQueryData<Match>(["match", match.id]) ?? match;
+  const store = (updated: Match) => queryClient.setQueryData(["match", match.id], updated);
+  /** Our own state/turn/round writes: tell the app right away, then update the cache (the diff below then sees nothing new). */
+  const announce = (updated: Match) => {
+    const by = ownWrites.current.has(updated.stateVersion) ? viewer.id : null;
+    if (emitRef.current) emitMatchChanges(emitRef.current, lastMatch.current, updated, by);
+    lastMatch.current = updated;
+    store(updated);
+  };
+  const seatedOnly = (method: string) => {
+    if (spectating) throw new XAppsError("forbidden", `${method}: spectators can't do that`);
+  };
+
   const handlers: HostHandlers = {
     ready: () => {
       setAppReady(true);
       return { startedAt: startedAtRef.current };
     },
     "room.send": ({ type, payload }) => {
+      seatedOnly("room.send");
       roomRef.current?.send({ kind: "app", type, payload });
       return null;
     },
     "match.submit": async ({ playerId, score, data, display }) => {
+      seatedOnly("match.submit");
       try {
         const updated = await backend.submit(match.id, { playerId, score, data, display });
-        queryClient.setQueryData(["match", match.id], updated);
+        store(updated);
         const final = updated.status === "completed";
         return { state: final ? "final" : "waiting", result: final ? toMatchResult(updated) : null };
       } catch (error) {
@@ -331,6 +455,7 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
       }
     },
     "match.forfeit": async () => {
+      seatedOnly("match.forfeit");
       await forfeit();
       return null;
     },
@@ -367,15 +492,62 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
       await backend.storageSet(app.slug, key, value);
       return null;
     },
+    "state.get": () => {
+      const current = latest();
+      return { state: current.state, version: current.stateVersion };
+    },
+    "state.set": async ({ state, expectedVersion }) => {
+      seatedOnly("state.set");
+      try {
+        const { version, match: updated } = await backend.updateState(match.id, state, expectedVersion);
+        ownWrites.current.add(version);
+        announce(updated);
+        return { version };
+      } catch (error) {
+        const sdkError = toSdkError(error);
+        // A conflict is routine (the SDK re-reads and retries), so no toast for it.
+        if (sdkError.code !== "conflict") toast(errorMessage(error), { tone: "danger" });
+        throw sdkError;
+      }
+    },
+    "turn.end": async ({ next }) => {
+      seatedOnly("turn.end");
+      try {
+        // turn.change goes out before the reply.
+        announce(await backend.endTurn(match.id, next ?? null));
+        return null;
+      } catch (error) {
+        throw toSdkError(error);
+      }
+    },
+    "round.set": async ({ round }) => {
+      seatedOnly("round.set");
+      try {
+        announce(await backend.setRound(match.id, round));
+        return null;
+      } catch (error) {
+        throw toSdkError(error);
+      }
+    },
+    "setup.submit": () => {
+      throw new XAppsError("forbidden", "setup.submit only works in setup purpose");
+    },
+    "setup.cancel": () => {
+      throw new XAppsError("forbidden", "setup.cancel only works in setup purpose");
+    },
   };
 
   const { connected, connections, emit } = useAppBridge({
     iframeRef,
     appOrigin: appUrl?.origin ?? null,
     enabled: !!appUrl,
-    context: () => buildLaunchContext(app, match, viewer, window.location.origin),
+    context: () => buildLaunchContext(app, latest(), viewer, window.location.origin),
     handlers,
   });
+
+  useLayoutEffect(() => {
+    emitRef.current = emit;
+  }, [emit]);
 
   // A reloaded iframe must say ready() again.
   const [seenConnections, setSeenConnections] = useState(connections);
@@ -394,10 +566,15 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
       setIntro("done");
       setStarted(true);
       emit("match.start", { at });
-      if (!match.startedAt) backend.markStarted(match.id).catch(() => undefined);
+      try {
+        window.localStorage.setItem(introSeenKey(match.id), "1");
+      } catch {
+        // ignore
+      }
+      if (!match.startedAt && !spectating) backend.markStarted(match.id).catch(() => undefined);
       later(() => iframeRef.current?.focus(), 50);
     },
-    [backend, emit, later, match.id, match.startedAt],
+    [backend, emit, later, match.id, match.startedAt, spectating],
   );
 
   const startIntro = useCallback(() => {
@@ -438,13 +615,13 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
   }, [backend, emit, live, match.id, viewer.id]);
 
   useEffect(() => {
-    roomRef.current?.track({ ready: appReady });
-  }, [appReady]);
+    roomRef.current?.track({ ready: appReady && !spectating });
+  }, [appReady, spectating]);
 
-  const humans = match.players.filter((p) => !p.isBot && p.state !== "declined").sort((a, b) => a.seat - b.seat);
+  const humans = seated.filter((p) => !p.isBot && p.state !== "invited" && p.state !== "left");
   const refereeId = humans[0]?.userId;
   const readyIds = new Set(peers.filter((p) => p.ready).map((p) => p.userId));
-  if (appReady) readyIds.add(viewer.id);
+  if (appReady && !spectating) readyIds.add(viewer.id);
   const everyoneReady = humans.length > 0 && humans.every((h) => readyIds.has(h.userId));
   const onlineIds = useMemo(() => {
     const ids = new Set(peers.map((p) => p.userId));
@@ -453,6 +630,10 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
     if (!live) match.players.forEach((p) => ids.add(p.userId));
     return ids;
   }, [live, match.players, peers, viewer.id]);
+  const seatedIds = new Set(seated.map((p) => p.userId));
+  const liveWatchers = new Set(peers.map((p) => p.userId).filter((id) => !seatedIds.has(id)));
+  if (spectating) liveWatchers.add(viewer.id);
+  const spectatorCount = Math.max(match.spectatorCount ?? 0, liveWatchers.size);
 
   useEffect(() => {
     emit("room.presence", { online: Array.from(onlineIds) });
@@ -462,8 +643,15 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
   useEffect(() => {
     if (!appReady || startedAtRef.current !== null || introStateRef.current !== "idle") return;
     if (me?.state === "submitted") return;
+    if (spectating) {
+      // Spectators never hold the match up: join mid-match, or ride along with the start signal.
+      if (match.startedAt) beginPlaying(Date.parse(match.startedAt));
+      return;
+    }
     if (!live) {
-      startIntro();
+      // Picking a turn-based game back up days later shouldn't replay the intro.
+      if (turnBased && match.startedAt && readIntroSeen(match.id)) beginPlaying(Date.parse(match.startedAt));
+      else startIntro();
       return;
     }
     if (match.startedAt) {
@@ -480,18 +668,18 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
     // Safety net in case the referee's start signal got lost.
     const fallback = setTimeout(startIntro, 2500);
     return () => clearTimeout(fallback);
-  }, [appReady, beginPlaying, everyoneReady, live, match.startedAt, me?.state, refereeId, startIntro, viewer.id]);
+  }, [appReady, beginPlaying, everyoneReady, live, match.id, match.startedAt, me?.state, refereeId, spectating, startIntro, turnBased, viewer.id]);
 
   // Liveness heartbeat so a vanished opponent can be claimed against.
   useEffect(() => {
-    if (!live || !started) return;
+    if (!live || !started || spectating) return;
     void backend.heartbeat(match.id);
     const t = setInterval(() => void backend.heartbeat(match.id), 10_000);
     return () => clearInterval(t);
-  }, [backend, live, match.id, started]);
+  }, [backend, live, match.id, started, spectating]);
 
-  const opponentOnline = !opponent || opponent.isBot || onlineIds.has(opponent.userId);
-  const disconnected = live && started && match.status === "active" && !opponentOnline;
+  const missing = others.find((p) => !p.isBot && (p.state === "joined") && !onlineIds.has(p.userId));
+  const disconnected = live && started && match.status === "active" && !spectating && !!missing;
   useEffect(() => {
     if (!disconnected) return;
     const since = Date.now();
@@ -513,6 +701,12 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
   const lastStatus = useRef(match.status);
   useEffect(() => {
     emit("match.update", { match: toLaunchMatch(match, viewer.id) });
+    const previousMatch = lastMatch.current;
+    // A stale snapshot (an older echo after our own write) never moves the app backwards.
+    if (!previousMatch || previousMatch.id !== match.id || match.stateVersion >= previousMatch.stateVersion) {
+      lastMatch.current = match;
+      emitMatchChanges(emit, previousMatch, match, ownWrites.current.has(match.stateVersion) ? viewer.id : null);
+    }
     const previous = lastStatus.current;
     lastStatus.current = match.status;
     if (match.status === "completed" && previous !== "completed") {
@@ -536,7 +730,7 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
   }
 
   const onBack = () => {
-    const running = match.status === "active" && started && me?.state !== "submitted";
+    const running = match.status === "active" && started && me?.state !== "submitted" && !spectating;
     if (running && live) {
       setConfirmLeave(true);
       return;
@@ -553,14 +747,16 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
   const rematch = async () => {
     setRematching(true);
     try {
-      const opp = opponentOf(match, viewer.id);
+      const rivals = others.filter((p) => !p.isBot);
       const next =
-        match.mode === "practice" || !opp || (opp.isBot && backend.kind !== "demo")
-          ? await backend.startPractice(app.slug)
+        match.mode === "practice" || rivals.length === 0 || (others.some((p) => p.isBot) && backend.kind !== "demo")
+          ? await backend.startPractice(app.slug, seated.length > 2 ? seated.length : undefined)
           : await backend.createChallenge({
               appSlug: app.slug,
               mode: match.mode === "async" ? "async" : "live",
-              opponentHandle: opp.profile.handle,
+              opponentHandle: rivals.length === 1 ? rivals[0]!.profile.handle : null,
+              opponentHandles: rivals.length > 1 ? rivals.map((p) => p.profile.handle) : undefined,
+              maxPlayers: match.maxPlayers > 2 ? match.maxPlayers : undefined,
               // Same setup (template, dropped image, topic) for the rematch.
               settings: rematchSettings(match.settings),
             });
@@ -571,8 +767,10 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
     }
   };
 
-  const waitingForPeer = live && appReady && !started && intro === "idle" && !everyoneReady;
+  const waitingForPeer = live && appReady && !started && intro === "idle" && (spectating ? !match.startedAt : !everyoneReady);
+  const notReady = humans.filter((h) => h.userId !== viewer.id && !readyIds.has(h.userId));
   const goneFor = disconnected && goneSince ? Math.floor((now - goneSince) / 1000) : 0;
+  const introPlayers = seated.filter((p) => p.state !== "invited");
 
   return (
     <div
@@ -586,9 +784,11 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
         viewerId={viewer.id}
         online={onlineIds}
         hud={hud}
+        spectating={spectating}
+        spectatorCount={spectatorCount}
         onBack={onBack}
         onReact={react}
-        onForfeit={match.status === "active" && match.players.length > 1 ? () => setConfirmLeave(true) : undefined}
+        onForfeit={!spectating && match.status === "active" && seated.length > 1 && me?.state === "joined" ? () => setConfirmLeave(true) : undefined}
         onCopyLink={async () => {
           const ok = await copyText(`${window.location.origin}/play/${match.id}`);
           toast(ok ? "Match link copied" : "Couldn't copy the link", { tone: ok ? "success" : "danger" });
@@ -608,8 +808,8 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
               src={appUrl.href}
               title={app.name}
               className="absolute inset-0 size-full border-0"
-              sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
-              allow="autoplay; clipboard-write; fullscreen"
+              sandbox={APP_SANDBOX}
+              allow={APP_ALLOW}
             />
           )}
 
@@ -626,7 +826,7 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
                 <p className="text-sm text-ink-300">Loading {app.name}…</p>
               </motion.div>
             )}
-            {waitingForPeer && opponent && (
+            {waitingForPeer && (notReady.length > 0 || spectating) && (
               <motion.div
                 key="waiting"
                 className="absolute inset-0 flex items-center justify-center bg-ink-950/70 backdrop-blur-md"
@@ -634,52 +834,78 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
               >
-                <motion.div className="flex flex-col items-center gap-4 text-center" initial={{ y: 12 }} animate={{ y: 0 }}>
-                  <motion.div animate={{ scale: [1, 1.06, 1] }} transition={{ duration: 1.6, repeat: Infinity }}>
-                    <Avatar person={opponent.profile} size={80} online={onlineIds.has(opponent.userId)} />
-                  </motion.div>
+                <motion.div className="flex flex-col items-center gap-4 px-6 text-center" initial={{ y: 12 }} animate={{ y: 0 }}>
+                  <div className="flex -space-x-3">
+                    {(spectating ? humans : notReady).slice(0, 5).map((p, i) => (
+                      <motion.div
+                        key={p.userId}
+                        className="rounded-full ring-4 ring-ink-950/80"
+                        animate={{ scale: [1, 1.06, 1] }}
+                        transition={{ duration: 1.6, repeat: Infinity, delay: i * 0.2 }}
+                      >
+                        <Avatar person={p.profile} size={notReady.length > 1 || spectating ? 64 : 80} online={onlineIds.has(p.userId)} />
+                      </motion.div>
+                    ))}
+                  </div>
                   <p className="font-display text-2xl font-bold">
-                    {onlineIds.has(opponent.userId) ? `@${opponent.profile.handle} is loading…` : `Waiting for @${opponent.profile.handle}`}
+                    {spectating
+                      ? "The players are warming up"
+                      : notReady.length > 1
+                        ? `Waiting for ${notReady.length} players`
+                        : onlineIds.has(notReady[0]!.userId)
+                          ? `@${notReady[0]!.profile.handle} is loading…`
+                          : `Waiting for @${notReady[0]!.profile.handle}`}
                   </p>
-                  <p className="max-w-xs text-sm text-ink-300">The match starts the moment you&apos;re both here.</p>
+                  <p className="max-w-xs text-sm text-ink-300">
+                    {spectating ? "You're in the stands. The match starts the moment everyone's here." : notReady.length > 1 || multiplayer ? "The match starts the moment everyone's here." : "The match starts the moment you're both here."}
+                  </p>
                 </motion.div>
               </motion.div>
             )}
           </AnimatePresence>
 
           <AnimatePresence>
-            {disconnected && goneSince && (
+            {disconnected && goneSince && missing && (
               <motion.div
-                className="absolute inset-x-0 bottom-4 z-10 mx-auto flex w-fit items-center gap-3 rounded-full glass-strong py-2 pl-4 pr-2 text-sm shadow-xl"
+                className="absolute inset-x-0 bottom-4 z-10 mx-auto flex w-fit max-w-[calc(100%-1.5rem)] items-center gap-3 rounded-full glass-strong py-2 pl-4 pr-2 text-sm shadow-xl"
                 initial={{ y: 40, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
                 exit={{ y: 40, opacity: 0 }}
                 transition={spring.bouncy}
               >
-                <WifiOff className="size-4 text-gold" />
-                <span>
-                  @{opponent?.profile.handle} disconnected · <span className="font-mono tabular">{goneFor}s</span>
+                <WifiOff className="size-4 shrink-0 text-gold" />
+                <span className="min-w-0 truncate">
+                  @{missing.profile.handle} disconnected · <span className="font-mono tabular">{goneFor}s</span>
                 </span>
                 {goneFor >= 45 ? (
                   <Button size="sm" variant="volt" onClick={() => action.mutate({ action: "claim", matchId: match.id }, { onError: (e) => toast(errorMessage(e), { tone: "danger" }) })}>
-                    Claim the win
+                    {seated.length > 2 ? "Mark as left" : "Claim the win"}
                   </Button>
                 ) : (
-                  <span className="pr-2 text-xs text-ink-400">claim in {45 - goneFor}s</span>
+                  <span className="shrink-0 pr-2 text-xs text-ink-400">claim in {45 - goneFor}s</span>
                 )}
               </motion.div>
             )}
           </AnimatePresence>
+
+          <TurnBanner
+            match={match}
+            viewerId={viewer.id}
+            spectating={spectating}
+            enabled={started && overlay === "none" && match.status === "active"}
+            onLeave={() => router.push("/challenges")}
+          />
         </motion.div>
       </div>
 
       <FloatingReactions items={floating} />
 
-      {intro === "playing" && me && (
+      {intro === "playing" && (me || spectating) && (
         <VersusIntro
           app={app}
-          left={me}
-          right={opponent}
+          players={introPlayers}
+          teams={match.teams}
+          viewerId={viewer.id}
           mode={match.mode}
           onDone={() => beginPlaying(Date.now())}
         />
@@ -691,7 +917,7 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
             app={app}
             match={match}
             viewerId={viewer.id}
-            onShare={() => openXIntent(`Vote for the best entry in my ${app.name} duel on XApps ${app.icon}`, `${window.location.origin}/arena`)}
+            onShare={() => openXIntent(`Vote for the best entry in my ${app.name} ${multiplayer ? "match" : "duel"} on XApps ${app.icon}`, `${window.location.origin}/arena`)}
             onLeave={() => router.push("/arena")}
           />
         )}
@@ -700,7 +926,7 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
             app={app}
             match={match}
             viewer={queryClient.getQueryData<Profile | null>(["viewer"]) ?? viewer}
-            onRematch={rematch}
+            onRematch={spectating ? undefined : rematch}
             rematching={rematching}
             onShare={() => openXIntent(shareText(app, match, viewer.id), `${window.location.origin}/apps/${app.slug}`)}
             onHome={() => router.push(`/apps/${app.slug}`)}
@@ -712,7 +938,11 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
         open={confirmLeave}
         onClose={() => setConfirmLeave(false)}
         title="Forfeit this match?"
-        description={`@${opponent?.profile.handle ?? "Your opponent"} takes the win if you leave now.`}
+        description={
+          seated.length > 2
+            ? "You'll be marked as left and place last. The others play on."
+            : `@${opponent?.profile.handle ?? "Your opponent"} takes the win if you leave now.`
+        }
       >
         <div className="flex flex-col gap-2 sm:flex-row-reverse">
           <Button

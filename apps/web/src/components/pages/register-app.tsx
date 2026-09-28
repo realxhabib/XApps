@@ -9,10 +9,12 @@ import { toast } from "@/components/chrome/toasts";
 import { AppCard } from "@/components/marketplace/app-card";
 import { celebrate } from "@/components/motion/confetti";
 import { Button } from "@/components/ui/button";
+import { Segmented } from "@/components/ui/segmented";
 import { play } from "@/lib/sfx";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { useBackend, useViewer } from "@/platform/client";
+import { manifestShapeError } from "@/platform/catalog";
 import { useRegisterApp } from "@/platform/queries";
 import { CATEGORIES, type AppCategory, type AppManifest, type PlayableMode, type Scoring } from "@/platform/types";
 import { SignInPrompt } from "./sign-in-prompt";
@@ -41,6 +43,11 @@ const schema = z.object({
   modes: z.array(z.enum(["live", "async", "practice"])).min(1, "Pick at least one mode"),
   scoring: z.enum(["high", "low", "votes"]),
   howTo: z.array(z.string().trim().max(120)).max(3),
+  players: z.object({ min: z.number().int().min(2).max(8), max: z.number().int().min(2).max(8) }),
+  teams: z.union([z.literal(0), z.literal(2), z.literal(3), z.literal(4)]),
+  spectators: z.boolean(),
+  turnBased: z.boolean(),
+  setup: z.boolean(),
 });
 
 type Form = z.infer<typeof schema>;
@@ -96,6 +103,11 @@ export function RegisterApp() {
     modes: ["live", "practice"],
     scoring: "high",
     howTo: ["", "", ""],
+    players: { min: 2, max: 2 },
+    teams: 0,
+    spectators: true,
+    turnBased: false,
+    setup: false,
   });
 
   const set = <K extends keyof Form>(key: K, value: Form[K]) => {
@@ -114,7 +126,11 @@ export function RegisterApp() {
       accent: form.accent,
       url: form.url,
       modes: form.modes,
-      players: { min: 2, max: 2 },
+      players: form.players,
+      teams: form.teams,
+      spectators: form.spectators,
+      turnBased: form.turnBased,
+      setup: form.setup,
       scoring: form.scoring,
       durationLabel: "Community",
       howTo: form.howTo.filter(Boolean),
@@ -133,6 +149,12 @@ export function RegisterApp() {
 
   const submit = async () => {
     const parsed = schema.safeParse(form);
+    const shape = parsed.success ? manifestShapeError(parsed.data) : null;
+    if (shape) {
+      setErrors({ players: shape });
+      play("error");
+      return;
+    }
     if (!parsed.success) {
       const next: Errors = {};
       for (const issue of parsed.error.issues) {
@@ -359,6 +381,15 @@ export function RegisterApp() {
             </div>
           </div>
 
+          <TableSettings
+            value={{ players: form.players, teams: form.teams, spectators: form.spectators, turnBased: form.turnBased, setup: form.setup }}
+            error={errors.players}
+            onChange={(next) => {
+              setForm((f) => ({ ...f, ...next }));
+              setErrors((e) => ({ ...e, players: undefined }));
+            }}
+          />
+
           <div>
             <span className="text-sm font-semibold">How to play (up to 3 steps)</span>
             <div className="mt-2 space-y-2">
@@ -390,6 +421,110 @@ export function RegisterApp() {
           <p className="mt-4 text-xs text-ink-500">This is exactly how your card appears in the marketplace.</p>
         </div>
       </div>
+    </div>
+  );
+}
+
+type TableValue = Pick<Form, "players" | "teams" | "spectators" | "turnBased" | "setup">;
+
+/** Seats, teams and the Stage 1 capabilities an app declares. */
+function TableSettings({ value, error, onChange }: { value: TableValue; error?: string; onChange: (next: Partial<TableValue>) => void }) {
+  const { min, max } = value.players;
+  const setPlayers = (next: { min: number; max: number }) => {
+    const lo = Math.min(8, Math.max(2, next.min));
+    const hi = Math.min(8, Math.max(lo, next.max));
+    onChange({ players: { min: lo, max: hi } });
+  };
+  const toggles: [keyof Pick<TableValue, "spectators" | "turnBased" | "setup">, string, string][] = [
+    ["spectators", "Spectators", "Others can watch live matches"],
+    ["turnBased", "Turn-based", "Players take turns; we ping whoever's up"],
+    ["setup", "Custom setup", "You render the challenge setup screen"],
+  ];
+  return (
+    <div>
+      <span className="text-sm font-semibold">Table</span>
+      <motion.div
+        className="mt-2 grid gap-4 rounded-3xl border border-white/10 p-4 sm:grid-cols-2"
+        animate={error ? { x: [0, -6, 6, -3, 0] } : { x: 0 }}
+        transition={{ duration: 0.35 }}
+      >
+        <div className="space-y-3">
+          {(
+            [
+              ["Fewest players", "min"],
+              ["Most players", "max"],
+            ] as const
+          ).map(([label, key]) => (
+            <div key={key} className="flex items-center justify-between gap-3">
+              <span className="text-sm text-ink-200">{label}</span>
+              <div className="flex items-center gap-1 rounded-full glass p-1">
+                <button
+                  type="button"
+                  aria-label={`Fewer (${label})`}
+                  onClick={() => setPlayers({ ...value.players, [key]: value.players[key] - 1 })}
+                  className="flex size-7 items-center justify-center rounded-full text-ink-200 transition hover:bg-white/10"
+                >
+                  −
+                </button>
+                <motion.span key={value.players[key]} initial={{ y: -6, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={spring.snappy} className="w-6 text-center font-mono font-bold tabular">
+                  {value.players[key]}
+                </motion.span>
+                <button
+                  type="button"
+                  aria-label={`More (${label})`}
+                  onClick={() => setPlayers({ ...value.players, [key]: value.players[key] + 1 })}
+                  className="flex size-7 items-center justify-center rounded-full text-ink-200 transition hover:bg-white/10"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+          ))}
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm text-ink-200">Teams</span>
+            <Segmented
+              layoutId="register-teams"
+              size="sm"
+              value={String(value.teams) as "0" | "2" | "3" | "4"}
+              onChange={(t) => onChange({ teams: Number(t) as TableValue["teams"] })}
+              items={[
+                { id: "0", label: "None" },
+                { id: "2", label: "2" },
+                { id: "3", label: "3" },
+                { id: "4", label: "4" },
+              ]}
+            />
+          </div>
+          <p className="text-xs text-ink-400">
+            {min === max ? `${min} players` : `${min}–${max} players`}
+            {value.teams ? ` · ${value.teams} teams (seat s plays for team s % ${value.teams})` : " · free for all"}
+          </p>
+        </div>
+        <div className="space-y-2">
+          {toggles.map(([key, label, sub]) => {
+            const on = value[key];
+            return (
+              <button
+                type="button"
+                key={key}
+                role="switch"
+                aria-checked={on}
+                onClick={() => onChange({ [key]: !on })}
+                className={cn("flex w-full items-center gap-3 rounded-2xl border px-3 py-2 text-left transition", on ? "border-white/30 bg-white/[0.07]" : "border-white/10")}
+              >
+                <span className={cn("relative h-5 w-9 shrink-0 rounded-full transition-colors", on ? "bg-volt" : "bg-white/15")}>
+                  <motion.span className="absolute top-0.5 size-4 rounded-full bg-white shadow" animate={{ left: on ? 18 : 2 }} transition={spring.snappy} />
+                </span>
+                <span>
+                  <span className="block text-sm font-semibold">{label}</span>
+                  <span className="block text-xs text-ink-400">{sub}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </motion.div>
+      {error && <p className="mt-1 text-xs text-danger">{error}</p>}
     </div>
   );
 }

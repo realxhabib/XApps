@@ -67,8 +67,19 @@ export interface Backend {
   uploadImage(image: Blob): Promise<string>;
   /** Join someone who's waiting, or open a new public lobby. */
   quickMatch(appSlug: string): Promise<Match>;
-  /** Solo match against a bot the app drives. */
-  startPractice(appSlug: string): Promise<Match>;
+  /** Solo match against bots the app drives (`players` seats, default the app's minimum). */
+  startPractice(appSlug: string, players?: number): Promise<Match>;
+  /** Creator starts a lobby early once the minimum is seated. */
+  startMatch(matchId: string): Promise<Match>;
+  /** Watch a match without a seat. */
+  spectate(matchId: string): Promise<Match>;
+  /** Invite more people (by handle) into a match's free seats. */
+  inviteToMatch(matchId: string, handles: string[]): Promise<Match>;
+  /** Compare-and-set the shared match state. Throws BackendError "conflict" if the version moved. */
+  updateState(matchId: string, state: Json, expectedVersion: number): Promise<{ version: number; match: Match }>;
+  /** Pass the turn (default: next seated player still in the match). */
+  endTurn(matchId: string, next?: string | null): Promise<Match>;
+  setRound(matchId: string, round: number): Promise<Match>;
   /** Accept an invite or take the empty seat of an open challenge. */
   joinMatch(matchId: string): Promise<Match>;
   declineMatch(matchId: string): Promise<Match>;

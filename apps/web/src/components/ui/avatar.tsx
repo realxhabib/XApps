@@ -85,13 +85,13 @@ export function Avatar({
             height={inner}
             referrerPolicy="no-referrer"
             loading="lazy"
-            className="size-full object-cover"
+            className="size-full rounded-full object-cover"
             onError={() => setBroken(true)}
           />
         ) : (
           <span
             aria-hidden
-            className="flex size-full items-center justify-center font-display font-bold text-white"
+            className="flex size-full items-center justify-center rounded-full font-display font-bold text-white"
             style={{
               fontSize: inner * 0.42,
               background: `radial-gradient(circle at 30% 25%, ${palette[2]} 0%, transparent 55%), radial-gradient(circle at 75% 80%, ${palette[1]} 0%, transparent 60%), linear-gradient(${angle}deg, ${palette[0]}, ${palette[1]})`,

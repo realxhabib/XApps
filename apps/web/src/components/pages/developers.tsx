@@ -9,9 +9,11 @@ import {
   Gavel,
   MonitorPlay,
   Plus,
+  Layers,
   Radio,
   ShieldCheck,
   Trophy,
+  Users,
 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
@@ -32,6 +34,8 @@ const FEATURES = [
   { icon: Fingerprint, title: "X identity", body: "Every player arrives signed in with their X handle and avatar. No auth code on your side." },
   { icon: Radio, title: "Realtime rooms", body: "Broadcast moves and see who's connected. Seeded randomness keeps both screens in sync." },
   { icon: Boxes, title: "Matchmaking", body: "Quick match, invites by @handle and open challenge links that go viral on the timeline." },
+  { icon: Users, title: "2 to 8 players", body: "Free-for-alls, 2–4 teams and spectators. Lobbies, seats and podiums are handled for you." },
+  { icon: Layers, title: "Shared state & turns", body: "A versioned match document every client sees, plus turns and rounds — live or over days." },
   { icon: Trophy, title: "Results & XP", body: "Submit a score; the platform settles the match, awards XP and updates leaderboards." },
   { icon: Gavel, title: "Crowd judging", body: "Contest apps submit an entry and the Arena crowd votes. Ideal for creative formats." },
   { icon: MonitorPlay, title: "Host-rendered drama", body: "VS intro, countdown, HUD, emoji reactions, confetti and results screens come free." },
@@ -92,6 +96,21 @@ await xapps.submit({
   },
 });`;
 
+const TURNS_SNIPPET = `import { connect } from "@xapps/sdk";
+
+const xapps = await connect();                     // manifest: turnBased: true, modes: ["live", "async"]
+
+// Everyone sees the same versioned document, days later too.
+xapps.state.onChange((board) => render(board));
+xapps.onTurn(({ turn }) => highlight(turn === xapps.me.id));
+await xapps.ready();
+
+async function play(move) {
+  if (!xapps.turn.isMine) return;
+  await xapps.state.update((board) => applyMove(board ?? newBoard(), move));  // retries on conflicts
+  await xapps.turn.end();                           // next seated player's move (inbox pings them)
+}`;
+
 const LIFECYCLE = [
   { title: "Load", body: "Host opens your URL in a sandboxed iframe." },
   { title: "Handshake", body: "connect() receives players, seed and mode." },
@@ -108,8 +127,10 @@ const API: { group: string; rows: [string, string][] }[] = [
     group: "Connect & context",
     rows: [
       ["connect(options?)", "Handshake with the host. Returns the shared client (safe to call many times). Opened directly, it starts a local mock host."],
-      ["xapps.me · xapps.opponent · xapps.players", "PlayerInfo: id, handle, name, avatarUrl, seat, isBot, submitted, score."],
-      ["xapps.match", "id, mode (live | async | practice | sandbox), status, scoring, seed, settings."],
+      ["xapps.me · xapps.players · xapps.opponents", "PlayerInfo: id, handle, name, avatarUrl, seat, team, role, isBot, submitted, score. `opponent` is the first opponent (1v1 apps)."],
+      ["xapps.teammates · xapps.role · xapps.isSpectator", "Team play and watching: spectators see everything but can't submit, send or write state."],
+      ["xapps.match", "id, mode (live | async | practice | sandbox), status, scoring, seed, settings, minPlayers, maxPlayers, teams."],
+      ["xapps.purpose", "\"match\", or \"setup\" when the host opens you to set up a challenge (manifest setup: true)."],
       ["xapps.random", "Seeded RNG shared by every client: next(), int(), pick(), shuffle(), normal(), fork(label)."],
       ["xapps.isHost", "True for seat 0 — handy when one client should referee."],
     ],
@@ -135,6 +156,24 @@ const API: { group: string; rows: [string, string][] }[] = [
     ],
   },
   {
+    group: "Shared state, turns & rounds",
+    rows: [
+      ["xapps.state.get() · set(value, version?)", `One JSON document per match (≤ ${LIMITS.matchStateBytes / 1024} KB), versioned: a stale write fails with "conflict".`],
+      ["xapps.state.update(draft => next)", "Read-modify-write that re-reads and retries on conflicts. Persists, so turn-based games resume days later."],
+      ["xapps.state.onChange(fn)", "Every change from any player (your own writes included)."],
+      ["xapps.turn.current · isMine · deadline · end(next?)", "Whose move it is. end() passes to the next seated player (or who you name). Async turns have a 3-day deadline."],
+      ["xapps.round.set(n) · onRound(fn)", "Round counter shown in the host HUD. Never goes backwards."],
+    ],
+  },
+  {
+    group: "Challenge setup (setup: true)",
+    rows: [
+      ["xapps.setup.submit(settings, summary?)", `Render your own setup screen inside the challenge sheet; settings (≤ ${LIMITS.setupSettingsBytes / 1024} KB) become match.settings.`],
+      ["xapps.setup.cancel()", "Close setup without choosing."],
+      ["?xapps-purpose=setup", "Open your app directly with this to test the setup screen against the mock host."],
+    ],
+  },
+  {
     group: "Host UI & extras",
     rows: [
       ["xapps.ui.setStatus(text) · setScores(map) · setTurn(id)", "Drive the host HUD above your app."],
@@ -150,6 +189,8 @@ const API: { group: string; rows: [string, string][] }[] = [
       ["useXApps() · useMatch() · usePresence()", "Client, live match object, connected players."],
       ["useRoomEvent(type, handler) · useReactions(handler)", "Subscriptions that clean themselves up."],
       ["useMatchStarted() · useMatchResult()", "Booleans/results that re-render when they change."],
+      ["useMatchState() · useTurn() · useRound()", "{ state, version, set, update } · { turn, isMine, deadline, end } · { round, set }."],
+      ["usePlayers() · useSetup()", "{ players, opponents, teammates, me, role } · { isSetup, submit, cancel }."],
     ],
   },
 ];
@@ -160,7 +201,12 @@ const MANIFEST: [string, string][] = [
   ["category", "games · contests · debates · trivia · creative · social"],
   ["icon · accent", "One emoji + a two-color gradient"],
   ["url", "https URL of your app (must allow framing by XApps)"],
-  ["modes", "live (same time) · async (play anytime) · practice (vs bot)"],
+  ["modes", "live (same time) · async (play anytime) · practice (vs bots)"],
+  ["players", "{ min, max } seats per match, 2–8"],
+  ["teams", "0 for free-for-all, or 2–4 teams (seat s plays for team s % teams)"],
+  ["spectators", "Let others watch live matches (default on)"],
+  ["turnBased", "Players take turns; the host shows turn UI and pings whoever's up"],
+  ["setup", "You render your own challenge setup screen"],
   ["scoring", "high (bigger wins) · low (smaller wins) · votes (crowd decides)"],
   ["howTo", "Up to 3 short steps shown on your listing"],
 ];
@@ -189,7 +235,7 @@ function MyApps() {
 }
 
 export function Developers() {
-  const [tab, setTab] = useState<"react" | "vanilla" | "contest">("react");
+  const [tab, setTab] = useState<"react" | "vanilla" | "contest" | "turns">("react");
   return (
     <div>
       <section className="grid items-center gap-10 lg:grid-cols-[1.1fr_1fr]">
@@ -237,7 +283,7 @@ export function Developers() {
 
       <section className="mt-20" id="quickstart">
         <p className="text-xs font-bold uppercase tracking-[0.22em] text-ink-400">Quickstart</p>
-        <h2 className="mt-2 font-display text-3xl font-extrabold tracking-tight sm:text-4xl">Head-to-head in 20 lines</h2>
+        <h2 className="mt-2 font-display text-3xl font-extrabold tracking-tight sm:text-4xl">From 1v1 to 8 players in 20 lines</h2>
         <Segmented
           className="mt-6"
           layoutId="dev-snippet"
@@ -247,12 +293,13 @@ export function Developers() {
             { id: "react", label: "React" },
             { id: "vanilla", label: "No build" },
             { id: "contest", label: "Contest entry" },
+            { id: "turns", label: "Turn-based" },
           ]}
         />
         <motion.div key={tab} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={spring.snappy} className="mt-4">
           <CodeBlock
-            filename={tab === "react" ? "App.tsx" : tab === "vanilla" ? "index.html" : "submit.ts"}
-            code={tab === "react" ? REACT_SNIPPET : tab === "vanilla" ? VANILLA_SNIPPET : CONTEST_SNIPPET}
+            filename={tab === "react" ? "App.tsx" : tab === "vanilla" ? "index.html" : tab === "turns" ? "game.ts" : "submit.ts"}
+            code={tab === "react" ? REACT_SNIPPET : tab === "vanilla" ? VANILLA_SNIPPET : tab === "turns" ? TURNS_SNIPPET : CONTEST_SNIPPET}
           />
         </motion.div>
         <p className="mt-3 text-sm text-ink-400">

@@ -2,8 +2,9 @@
  * Four in a Row — pure game logic. No React, no SDK, no timers.
  *
  * The whole game is a list of columns (`moves`); the grid, whose turn it is
- * and the winner are all derived by replaying it. That keeps the live sync
- * protocol trivial: two clients agree exactly when their move lists agree.
+ * and the winner are all derived by replaying it. The shared match state
+ * stores that list (with who played each move and when), so every client —
+ * and a reload days later — agrees exactly when their move lists agree.
  *
  * Coordinates: `col` 0..6 left→right, `row` 0..5 bottom→top. Seat 0 always
  * moves first.
@@ -205,52 +206,119 @@ export function scoreFor(state: GameState, seat: Seat): number | null {
 }
 
 /* ------------------------------------------------------------------------ */
-/* Live sync protocol                                                       */
+/* Shared match state                                                       */
 /* ------------------------------------------------------------------------ */
 
-export type RemoteMoveResult =
-  | { kind: "applied"; state: GameState }
-  /** Already have it — messages are re-sent, so this is normal. */
-  | { kind: "duplicate" }
-  /** Same index, different column: histories diverged. Ignore it. */
-  | { kind: "conflict" }
-  /** Its index is ahead of us — we missed a message. Ask for a sync. */
-  | { kind: "gap" }
-  | { kind: "invalid"; reason: MoveError | "malformed" };
+/** One move as stored in the shared state. `by` is the player id, `at` epoch ms. */
+export type MoveRecord = { col: number; by: string; at: number };
+
+export type StateCoord = { col: number; row: number };
 
 /**
- * Handles `{ type: "move", payload: { n, col } }` from `from`. Moves apply
- * strictly in order and are validated (right player's turn, column not full)
- * so a bad message can never corrupt the game.
+ * The match's shared, persisted state (`xapps.state`). `moves` is the source
+ * of truth; `board`, `winner`, `draw` and `line` are derived from it on every
+ * write so hosts, feeds and future server code can read the position without
+ * replaying. Always JSON (no `undefined`), ≪ 64 KB.
  */
-export function receiveMove(state: GameState, payload: unknown, from: Seat): RemoteMoveResult {
-  if (typeof payload !== "object" || payload === null) return { kind: "invalid", reason: "malformed" };
-  const { n, col } = payload as { n?: unknown; col?: unknown };
-  if (typeof n !== "number" || !Number.isInteger(n) || n < 0 || !isColumn(col)) {
-    return { kind: "invalid", reason: "malformed" };
+export type BoardState = {
+  /** Flat grid indexed by `row * COLS + col` (row 0 = bottom): seat 0, seat 1 or null. */
+  board: Cell[];
+  moves: MoveRecord[];
+  /** Winner's player id. */
+  winner: string | null;
+  draw: boolean;
+  /** The winning four (or more), end to end. */
+  line: StateCoord[] | null;
+};
+
+/** Player ids by seat: `[seat 0 (moves first), seat 1]`. */
+export type Seats = readonly [string, string];
+
+export interface ReadBoard {
+  game: GameState;
+  moves: MoveRecord[];
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * Rebuilds the game from an untrusted shared state by replaying its moves.
+ * `null`/missing state is a fresh game. Returns `null` if the state is
+ * malformed, a move is illegal, or a move was made by the wrong player — so a
+ * reload days later always lands on exactly the position both players saw.
+ */
+export function readBoardState(value: unknown, seats: Seats): ReadBoard | null {
+  if (value === null || value === undefined) return { game: newGame(), moves: [] };
+  if (!isRecord(value)) return null;
+  const raw = value.moves ?? [];
+  if (!Array.isArray(raw) || raw.length > CELLS) return null;
+  let game = newGame();
+  const moves: MoveRecord[] = [];
+  for (const entry of raw) {
+    if (!isRecord(entry)) return null;
+    const { col, by, at } = entry;
+    if (!isColumn(col) || typeof by !== "string" || typeof at !== "number" || !Number.isFinite(at)) return null;
+    if (by !== seats[game.turn]) return null;
+    const next = playMove(game, col);
+    if (!next) return null;
+    game = next;
+    moves.push({ col, by, at });
   }
-  if (n < state.moves.length) return state.moves[n] === col ? { kind: "duplicate" } : { kind: "conflict" };
-  if (n > state.moves.length) return { kind: "gap" };
-  const check = validateMove(state, col, from);
-  if (!check.ok) return { kind: "invalid", reason: check.reason };
-  return { kind: "applied", state: playMove(state, col) as GameState };
+  return { game, moves };
 }
 
-/** Validates an untrusted move list. */
-export function parseMoves(value: unknown): number[] | null {
-  if (!Array.isArray(value) || value.length > CELLS) return null;
-  return value.every(isColumn) ? (value.slice() as number[]) : null;
+/** Serialises a game (plus its move records) into the shared state shape. */
+export function toBoardState(game: GameState, moves: readonly MoveRecord[], seats: Seats): BoardState {
+  const line = game.winLines[0];
+  return {
+    board: game.board.slice(),
+    moves: moves.map((m) => ({ col: m.col, by: m.by, at: m.at })),
+    winner: game.winner === null ? null : seats[game.winner],
+    draw: game.draw,
+    line: line ? line.map((c) => ({ col: c.col, row: c.row })) : null,
+  };
+}
+
+export type StateMoveError = MoveError | "not-your-turn" | "not-a-player" | "bad-state";
+
+export type StateMoveResult =
+  | { ok: true; state: BoardState; game: GameState }
+  | { ok: false; reason: StateMoveError };
+
+/**
+ * The state reducer: applies `move` to the (untrusted) shared state. Rejects
+ * moves by non-players, out of turn (by the move list, and — when the host
+ * runs turns — by `turnHolder`), into full columns, after the game ended, or
+ * on a corrupt state. Never mutates `value`.
+ */
+export function applyStateMove(
+  value: unknown,
+  move: { col: unknown; by: string; at: number },
+  seats: Seats,
+  turnHolder: string | null = null,
+): StateMoveResult {
+  const read = readBoardState(value, seats);
+  if (!read) return { ok: false, reason: "bad-state" };
+  const seat = seats.indexOf(move.by);
+  if (seat !== 0 && seat !== 1) return { ok: false, reason: "not-a-player" };
+  const check = validateMove(read.game, move.col, seat);
+  if (!check.ok) return check;
+  if (turnHolder !== null && turnHolder !== move.by) return { ok: false, reason: "not-your-turn" };
+  const game = playMove(read.game, move.col, seat) as GameState;
+  const moves = [...read.moves, { col: move.col as number, by: move.by, at: move.at }];
+  return { ok: true, game, state: toBoardState(game, moves, seats) };
 }
 
 /**
- * Handles `{ type: "sync", payload: { moves } }`: adopt the remote history
- * only if it is longer than ours, extends ours, and is a legal game.
+ * When a reopened turn's clock should be treated as having started: the last
+ * move's time, but never in the future and never so long ago that the player
+ * gets less than `minLeftMs` (clocks differ between devices).
  */
-export function mergeSync(local: GameState, remoteMoves: unknown): GameState | null {
-  const moves = parseMoves(remoteMoves);
-  if (!moves || moves.length <= local.moves.length) return null;
-  for (let i = 0; i < local.moves.length; i++) if (moves[i] !== local.moves[i]) return null;
-  return replay(moves);
+export function resumeClockAt(moves: readonly MoveRecord[], now: number, turnMs = TURN_MS, minLeftMs = 8_000): number {
+  const last = moves[moves.length - 1];
+  if (!last) return now;
+  return Math.min(now, Math.max(last.at, now - turnMs + minLeftMs));
 }
 
 /** Used when the clock runs out: any legal column. `random` returns [0, 1). */

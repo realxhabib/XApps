@@ -33,7 +33,7 @@ export function AppArt({ app, className }: { app: AppManifest; className?: strin
               animate={{ scale: [0.9, 1.15, 0.9], rotate: [-4, 2, -4] }}
               transition={loop(2.4)}
             >
-              DRAW!
+              GO!
             </motion.span>
           </div>
         </div>
@@ -94,6 +94,37 @@ export function AppArt({ app, className }: { app: AppManifest; className?: strin
           </div>
         </div>
       );
+    case "trivia-royale": {
+      const tiles = ["#ff4d6d", "#3d7bff", "#ffc93d", "#1fd1b2"];
+      return (
+        <div className={className} aria-hidden>
+          <div className="flex size-full items-center justify-center gap-4 py-4">
+            <div className="grid aspect-square h-full grid-cols-2 gap-[8%]">
+              {tiles.map((color, i) => (
+                <motion.span
+                  key={color}
+                  className="rounded-[22%] shadow-lg"
+                  style={{ background: color, boxShadow: "inset 0 -4px 0 rgb(0 0 0 / 0.22)" }}
+                  animate={i === 2 ? { scale: [1, 1.12, 1], opacity: 1 } : { scale: 1, opacity: [1, 0.45, 1] }}
+                  transition={loop(2.4, 0.9)}
+                />
+              ))}
+            </div>
+            <div className="flex -space-x-2">
+              {[a, b, "#c6ff3d", "#ffffff"].map((color, i) => (
+                <motion.span
+                  key={i}
+                  className="size-6 rounded-full ring-2 ring-ink-950"
+                  style={{ background: color }}
+                  animate={{ y: [0, -6, 0] }}
+                  transition={loop(1.8, i * 0.15)}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
     case "meme-duel":
       return (
         <div className={className} aria-hidden>

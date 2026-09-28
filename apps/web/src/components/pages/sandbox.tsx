@@ -2,12 +2,13 @@
 
 import { createHostBridge, decideWinner, type HostBridge, type HostHandlers } from "@xapps/sdk/host";
 import type { HostEvent, HostEventData, Json, LaunchContext, MatchResult, PlayerInfo, Scoring, SubmissionDisplay } from "@xapps/sdk/protocol";
-import { randomId } from "@xapps/sdk";
+import { randomId, XAppsError } from "@xapps/sdk";
 import { AnimatePresence, motion } from "motion/react";
 import { Eraser, Play, RotateCcw, Trophy } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EntryView } from "@/components/arena/entry-view";
+import { APP_SANDBOX } from "@/components/play/use-app-bridge";
 import { toast } from "@/components/chrome/toasts";
 import { celebrate } from "@/components/motion/confetti";
 import { Avatar } from "@/components/ui/avatar";
@@ -94,6 +95,8 @@ export function Sandbox() {
   // before React re-renders (both seats saying ready at once, for example).
   const readyRef = useRef<boolean[]>([false, false]);
   const entriesRef = useRef<Record<string, Entry>>({});
+  /** Shared match state, turn and round (v2), in memory for this run. */
+  const shared = useRef<{ state: Json | null; version: number; turn: string | null; round: number }>({ state: null, version: 0, turn: null, round: 0 });
 
   const players: Seat[] = useMemo(() => (run?.mode === "practice" ? [HUMANS[0]!, BOT] : HUMANS), [run?.mode]);
   const humanSeats = run?.mode === "practice" ? 1 : 2;
@@ -131,6 +134,15 @@ export function Sandbox() {
         seed: r?.seed ?? "sandbox",
         seat: seatIndex,
         settings: {},
+        minPlayers: ps.length,
+        maxPlayers: ps.length,
+        teams: 0,
+        role: "player",
+        state: shared.current.state,
+        stateVersion: shared.current.version,
+        turn: shared.current.turn,
+        turnDeadline: null,
+        round: shared.current.round,
         players: ps.map<PlayerInfo>((p, i) => ({
           id: p.id,
           handle: p.handle,
@@ -140,6 +152,8 @@ export function Sandbox() {
           isBot: p.isBot,
           submitted: !!e[p.id],
           score: e[p.id]?.score ?? null,
+          team: null,
+          role: "player",
         })),
       };
     },
@@ -242,11 +256,41 @@ export function Sandbox() {
           storage.current.set(`${me.id}:${key}`, value);
           return null;
         },
+        "state.get": () => ({ state: shared.current.state, version: shared.current.version }),
+        "state.set": ({ state, expectedVersion }) => {
+          if (expectedVersion !== shared.current.version) throw new XAppsError("conflict", "state.set: the state moved on");
+          shared.current = { ...shared.current, state, version: shared.current.version + 1 };
+          for (let i = 0; i < humanSeats; i++) emit(i, "state.change", { state, version: shared.current.version, by: me.id });
+          return { version: shared.current.version };
+        },
+        "turn.end": ({ next }) => {
+          const current = shared.current.turn;
+          if (current && current !== me.id && !players.find((p) => p.id === current)?.isBot) throw new XAppsError("forbidden", "turn.end: not your turn");
+          const holder = current ?? me.id;
+          const index = players.findIndex((p) => p.id === holder);
+          const turn = next ?? players[(index + 1) % players.length]!.id;
+          shared.current = { ...shared.current, turn };
+          for (let i = 0; i < humanSeats; i++) emit(i, "turn.change", { turn, deadline: null });
+          return null;
+        },
+        "round.set": ({ round }) => {
+          if (round < shared.current.round) throw new XAppsError("invalid_params", "round.set: rounds never go backwards");
+          shared.current = { ...shared.current, round };
+          for (let i = 0; i < humanSeats; i++) emit(i, "round.change", { round });
+          return null;
+        },
+        "setup.submit": () => {
+          throw new XAppsError("forbidden", "setup.submit only works in setup purpose");
+        },
+        "setup.cancel": () => {
+          throw new XAppsError("forbidden", "setup.cancel only works in setup purpose");
+        },
       };
       const bridge = createHostBridge({
         target: () => frames[seat]!.current?.contentWindow ?? null,
         appOrigin: origin,
         context: () => ({
+          purpose: "match",
           app: { id: "sandbox", slug: "sandbox", name: "Sandbox" },
           user: { id: me.id, handle: me.handle, name: me.name, avatarUrl: null },
           match: launchMatch(seat),
@@ -281,6 +325,7 @@ export function Sandbox() {
     setSeats([blankSeat(), blankSeat()]);
     setEntries({});
     entriesRef.current = {};
+    shared.current = { state: null, version: 0, turn: null, round: 0 };
     readyRef.current = [false, false];
     setResult(null);
     setLog([]);
@@ -409,7 +454,7 @@ export function Sandbox() {
                       src={run.url}
                       title={`Seat ${seat + 1}`}
                       className="absolute inset-0 size-full border-0"
-                      sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+                      sandbox={APP_SANDBOX}
                       allow="autoplay; clipboard-write"
                     />
                   </div>

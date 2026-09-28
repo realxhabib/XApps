@@ -39,6 +39,8 @@ const GHOST: PlayerInfo = {
   seat: 1,
   isBot: true,
   submitted: false,
+  team: null,
+  role: "player",
   score: null,
 };
 

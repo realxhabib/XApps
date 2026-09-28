@@ -14,16 +14,64 @@ import {
   type HostEvent,
   type HostEventData,
   type HostToApp,
+  type Json,
   type LaunchContext,
   type RequestMessage,
   type RequestMethod,
   type RequestParams,
   type RequestResult,
 } from "./protocol";
+import { accessProblem, isPlainObject, jsonProblem } from "./rules";
 
+export { accessProblem } from "./rules";
+
+export type HostHandler<M extends RequestMethod> = (
+  params: RequestParams<M>,
+) => RequestResult<M> | Promise<RequestResult<M>>;
+
+/**
+ * Request handlers, keyed by protocol method. Missing handlers answer
+ * `unknown_method`. The v2 methods can also be given by their friendly
+ * names (`getState`, `setState`, `endTurn`, `setRound`, `submitSetup`,
+ * `cancelSetup`); the method-name key wins when both are present.
+ */
 export type HostHandlers = {
-  [M in RequestMethod]?: (params: RequestParams<M>) => RequestResult<M> | Promise<RequestResult<M>>;
+  [M in RequestMethod]?: HostHandler<M>;
+} & {
+  /** `state.get` → `{ state, version }` */
+  getState?: HostHandler<"state.get">;
+  /** `state.set` → `{ version }`; throw `new XAppsError("conflict", …)` when `expectedVersion` is stale. */
+  setState?: HostHandler<"state.set">;
+  /** `turn.end` → `null`. Emit `turn.change` before returning so the app sees it first. */
+  endTurn?: HostHandler<"turn.end">;
+  /** `round.set` → `null`. */
+  setRound?: HostHandler<"round.set">;
+  /** `setup.submit` → `null` (setup purpose only). */
+  submitSetup?: HostHandler<"setup.submit">;
+  /** `setup.cancel` → `null` (setup purpose only). */
+  cancelSetup?: HostHandler<"setup.cancel">;
 };
+
+/** Friendly handler names for the v2 methods. */
+export const HANDLER_ALIASES = {
+  "state.get": "getState",
+  "state.set": "setState",
+  "turn.end": "endTurn",
+  "round.set": "setRound",
+  "setup.submit": "submitSetup",
+  "setup.cancel": "cancelSetup",
+} as const satisfies Partial<Record<RequestMethod, keyof HostHandlers>>;
+
+/** The handler for `method`, by protocol name or friendly alias. */
+export function resolveHostHandler<M extends RequestMethod>(
+  handlers: HostHandlers,
+  method: M,
+): HostHandler<M> | undefined {
+  const direct = handlers[method] as HostHandler<M> | undefined;
+  if (direct) return direct;
+  const alias = (HANDLER_ALIASES as Partial<Record<RequestMethod, keyof HostHandlers>>)[method];
+  return alias ? (handlers[alias] as HostHandler<M> | undefined) : undefined;
+}
 
 export interface HostTransport {
   post(message: HostToApp): void;
@@ -40,11 +88,24 @@ export interface HostCoreOptions {
   onRequestError?: (method: string, error: XAppsError) => void;
   /** Fired for every request — useful for dev tooling (sandbox inspector). */
   onRequest?: (method: RequestMethod, params: unknown) => void;
+  /**
+   * Purpose/role used to refuse requests (`forbidden`): spectators can't
+   * submit, send, write state, end turns or set rounds; setup-purpose apps
+   * can only use `setup.*` (plus ready/ui/storage/social), and match apps
+   * can't use `setup.*`. Defaults to reading `context()` on each request.
+   */
+  access?: () => { purpose?: LaunchContext["purpose"]; role?: LaunchContext["match"]["role"] };
 }
 
 export interface HostBridge {
   /** Send an event to the app. Buffered until the app has connected. */
   emit<E extends HostEvent>(event: E, data: HostEventData<E>): void;
+  /** Emit `state.change`. `by` is the writer's player id (null: host/server). */
+  emitState(state: Json | null, version: number, by?: string | null): void;
+  /** Emit `turn.change`. */
+  emitTurn(turn: string | null, deadline?: string | null): void;
+  /** Emit `round.change`. */
+  emitRound(round: number): void;
   readonly connected: boolean;
   destroy(): void;
 }
@@ -81,6 +142,15 @@ export function createHostCore(transport: HostTransport, options: HostCoreOption
     });
   };
 
+  const readAccess = () => {
+    if (options.access) {
+      const { purpose, role } = options.access();
+      return { purpose, match: { role } };
+    }
+    const context = options.context();
+    return { purpose: context.purpose, match: context.match };
+  };
+
   const takeBudget = () => {
     const now = Date.now();
     budget = Math.min(
@@ -100,6 +170,17 @@ export function createHostCore(transport: HostTransport, options: HostCoreOption
       respondError(id, String(method), new XAppsError("unknown_method", `Unknown method ${String(method)}`));
       return;
     }
+    let denied: string | null;
+    try {
+      denied = accessProblem(method, readAccess());
+    } catch (error) {
+      respondError(id, method, new XAppsError("internal", error instanceof Error ? error.message : "Host error"));
+      return;
+    }
+    if (denied) {
+      respondError(id, method, new XAppsError("forbidden", denied));
+      return;
+    }
     const problem = validateRequest(method, params);
     if (problem) {
       respondError(id, method, new XAppsError("invalid_params", `${method}: ${problem}`));
@@ -110,7 +191,7 @@ export function createHostCore(transport: HostTransport, options: HostCoreOption
       return;
     }
     options.onRequest?.(method, params);
-    const handler = options.handlers[method] as
+    const handler = resolveHostHandler(options.handlers, method) as
       | ((p: unknown) => unknown | Promise<unknown>)
       | undefined;
     if (!handler) {
@@ -151,9 +232,20 @@ export function createHostCore(transport: HostTransport, options: HostCoreOption
     }
   });
 
+  const emit = <E extends HostEvent>(event: E, data: HostEventData<E>) => {
+    send({ xapps: PROTOCOL_VERSION, type: "event", event, data });
+  };
+
   return {
-    emit(event, data) {
-      send({ xapps: PROTOCOL_VERSION, type: "event", event, data });
+    emit,
+    emitState(state, version, by = null) {
+      emit("state.change", { state, version, by });
+    },
+    emitTurn(turn, deadline = null) {
+      emit("turn.change", { turn, deadline });
+    },
+    emitRound(round) {
+      emit("round.change", { round });
     },
     get connected() {
       return session !== null && !destroyed;
@@ -209,8 +301,8 @@ export function createHostBridge(options: HostBridgeOptions): HostBridge {
 /* Validation                                                           */
 /* -------------------------------------------------------------------- */
 
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
+const isObject = isPlainObject;
+const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 
 /** Returns a problem description, or `null` when the params are acceptable. */
 export function validateRequest(method: RequestMethod, params: unknown): string | null {
@@ -282,6 +374,37 @@ export function validateRequest(method: RequestMethod, params: unknown): string 
         return "key must be a short string";
       }
       return byteLength(params.value) > LIMITS.storageValueBytes ? "value too large" : null;
+    case "state.get":
+    case "setup.cancel":
+      return null;
+    case "state.set": {
+      if (!("state" in params)) return "state is required";
+      const problem = jsonProblem(params.state, "state");
+      if (problem) return problem;
+      if (byteLength(params.state) > LIMITS.matchStateBytes) return "state too large";
+      return isCount(params.expectedVersion) ? null : "expectedVersion must be a non-negative integer";
+    }
+    case "turn.end":
+      return params.next === undefined ||
+        params.next === null ||
+        (typeof params.next === "string" && params.next.length > 0 && params.next.length <= 64)
+        ? null
+        : "next must be a player id or null";
+    case "round.set":
+      return isCount(params.round) ? null : "round must be a non-negative integer";
+    case "setup.submit": {
+      if (!isObject(params.settings)) return "settings must be an object";
+      const problem = jsonProblem(params.settings, "settings");
+      if (problem) return problem;
+      if (byteLength(params.settings) > LIMITS.setupSettingsBytes) return "settings too large";
+      if (
+        params.summary !== undefined &&
+        (typeof params.summary !== "string" || params.summary.length > LIMITS.setupSummaryLength)
+      ) {
+        return `summary must be a string of at most ${LIMITS.setupSummaryLength} chars`;
+      }
+      return null;
+    }
   }
 }
 
@@ -289,14 +412,115 @@ export function validateRequest(method: RequestMethod, params: unknown): string 
 /* Result helpers shared by hosts                                       */
 /* -------------------------------------------------------------------- */
 
-/** Decides the winner of a score-based match. `null` → draw. */
+/** Decides the winner of a score-based match (any number of players). `null` → draw. */
 export function decideWinner(
   scores: Record<string, number | null | undefined>,
   scoring: "high" | "low",
 ): string | null {
-  const entries = Object.entries(scores).filter((e): e is [string, number] => typeof e[1] === "number");
-  if (entries.length === 0) return null;
-  const best = scoring === "high" ? Math.max(...entries.map((e) => e[1])) : Math.min(...entries.map((e) => e[1]));
-  const leaders = entries.filter((e) => e[1] === best);
-  return leaders.length === 1 ? (leaders[0] as [string, number])[0] : null;
+  return rankPlayers(
+    Object.entries(scores).map(([id, score]) => ({ id, score })),
+    scoring,
+  ).winnerId;
+}
+
+export interface RankEntry {
+  id: string;
+  /** Missing scores (didn't submit, left) place after everyone who scored. */
+  score: number | null | undefined;
+  /** Team index in team play. */
+  team?: number | null;
+}
+
+export interface Ranking {
+  /** Placement per player id: 1 = first; ties share a rank ("1, 2, 2, 4"). */
+  ranks: { [playerId: string]: number };
+  /** Player ids, best first (ties keep input order). */
+  order: string[];
+  /** The unique first place in free for all; null on a tie, with no scores, or in team play. */
+  winnerId: string | null;
+  /** The unique first team in team play, else null. */
+  winnerTeam: number | null;
+  /** Team score = sum of its members' scores (null when no member scored). Team play only. */
+  teamScores: { [team: number]: number | null } | null;
+  /** Placement per team (team play only). */
+  teamRanks: { [team: number]: number } | null;
+}
+
+/** Competition ranking: equal scores share a rank; unscored entries share the last rank. */
+function placements<K>(items: Array<{ key: K; score: number | null }>, scoring: "high" | "low"): Map<K, number> {
+  const scored = items.filter((i): i is { key: K; score: number } => typeof i.score === "number" && Number.isFinite(i.score));
+  scored.sort((a, b) => (scoring === "high" ? b.score - a.score : a.score - b.score));
+  const out = new Map<K, number>();
+  scored.forEach((item, index) => {
+    const prev = scored[index - 1];
+    out.set(item.key, prev && prev.score === item.score ? (out.get(prev.key) as number) : index + 1);
+  });
+  for (const item of items) if (!out.has(item.key)) out.set(item.key, scored.length + 1);
+  return out;
+}
+
+const uniqueFirst = <K>(ranks: Map<K, number>, eligible: (key: K) => boolean): K | null => {
+  const firsts = [...ranks].filter(([key, rank]) => rank === 1 && eligible(key));
+  return firsts.length === 1 ? (firsts[0] as [K, number])[0] : null;
+};
+
+/**
+ * Places N players (or teams) by score, for hosts, mocks and sandboxes.
+ * With `teams > 0`, each entry's `team` scores for its team (sum), every
+ * member gets the team's placement, and `winnerTeam` is set instead of
+ * `winnerId`. For `votes` scoring pass vote counts with `"high"`.
+ */
+export function rankPlayers(
+  entries: readonly RankEntry[],
+  scoring: "high" | "low",
+  options: { teams?: number } = {},
+): Ranking {
+  const scoreOf = (e: RankEntry) =>
+    typeof e.score === "number" && Number.isFinite(e.score) ? e.score : null;
+  const teams = options.teams ?? 0;
+
+  if (teams > 0) {
+    const teamScores: { [team: number]: number | null } = {};
+    for (const e of entries) {
+      if (typeof e.team !== "number") continue;
+      const score = scoreOf(e);
+      const current = teamScores[e.team] ?? null;
+      teamScores[e.team] = score === null ? current : (current ?? 0) + score;
+    }
+    const teamPlaces = placements(
+      Object.keys(teamScores).map((t) => ({ key: Number(t), score: teamScores[Number(t)] ?? null })),
+      scoring,
+    );
+    const lastPlace = teamPlaces.size + 1;
+    const ranks: { [id: string]: number } = {};
+    for (const e of entries) ranks[e.id] = typeof e.team === "number" ? (teamPlaces.get(e.team) ?? lastPlace) : lastPlace;
+    const winnerTeam = uniqueFirst(teamPlaces, (t) => teamScores[t] !== null);
+    return {
+      ranks,
+      order: orderBy(entries, ranks),
+      winnerId: null,
+      winnerTeam,
+      teamScores,
+      teamRanks: Object.fromEntries(teamPlaces),
+    };
+  }
+
+  const places = placements(entries.map((e) => ({ key: e.id, score: scoreOf(e) })), scoring);
+  const ranks = Object.fromEntries(places) as { [id: string]: number };
+  const scored = new Set(entries.filter((e) => scoreOf(e) !== null).map((e) => e.id));
+  return {
+    ranks,
+    order: orderBy(entries, ranks),
+    winnerId: uniqueFirst(places, (id) => scored.has(id)),
+    winnerTeam: null,
+    teamScores: null,
+    teamRanks: null,
+  };
+}
+
+function orderBy(entries: readonly RankEntry[], ranks: { [id: string]: number }): string[] {
+  return entries
+    .map((e, index) => ({ id: e.id, index }))
+    .sort((a, b) => (ranks[a.id] ?? 0) - (ranks[b.id] ?? 0) || a.index - b.index)
+    .map((e) => e.id);
 }

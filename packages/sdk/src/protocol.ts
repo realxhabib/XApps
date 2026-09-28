@@ -9,7 +9,7 @@
  */
 
 export const PROTOCOL_VERSION = 1 as const;
-export const SDK_VERSION = "0.1.0";
+export const SDK_VERSION = "0.2.0";
 
 export type Json =
   | string
@@ -59,9 +59,20 @@ export interface PlayerInfo {
   submitted: boolean;
   /** Final score, when known (async opponents who already played, finished matches). */
   score: number | null;
+  /** Team index (0-based) when the app plays in teams, else null. */
+  team: number | null;
+  /** Seated players play; spectators only watch (they are not listed in `players`). */
+  role: PlayerRole;
 }
 
+export type PlayerRole = "player" | "spectator";
+
+/** Why the app was opened: to play a match, or to set up a challenge (`setup: true` apps). */
+export type LaunchPurpose = "match" | "setup";
+
 export interface LaunchContext {
+  /** `setup`: render your challenge setup screen and call `setup.submit`. The match is a stub. */
+  purpose: LaunchPurpose;
   app: { id: string; slug: string; name: string };
   /** The person using this copy of your app. */
   user: { id: string; handle: string; name: string; avatarUrl: string | null };
@@ -73,9 +84,24 @@ export interface LaunchContext {
     /** Shared seed. Use `createRandom(match.seed)` so every client sees the same world. */
     seed: string;
     players: PlayerInfo[];
-    /** Seat of the local user inside `players`. */
+    /** Seat of the local user inside `players` (-1 for spectators). */
     seat: number;
     settings: { [key: string]: Json };
+    minPlayers: number;
+    maxPlayers: number;
+    /** Number of teams (0 = free for all). Seat `s` plays for team `s % teams`. */
+    teams: number;
+    /** The local user's role. Spectators can't submit, send or change state. */
+    role: PlayerRole;
+    /** Shared, persistent match state (see `state.*`). */
+    state: Json | null;
+    stateVersion: number;
+    /** Whose turn it is (player id), or null when the app doesn't use turns. */
+    turn: string | null;
+    /** When the current turn times out (ISO), for async turn-based matches. */
+    turnDeadline: string | null;
+    /** App-controlled round counter shown in the host HUD. */
+    round: number;
   };
   host: { name: string; version: string; origin: string };
   locale: string;
@@ -99,8 +125,12 @@ export type SubmissionDisplay =
 export interface MatchResult {
   matchId: string;
   status: MatchStatus;
-  /** `null` means a draw (or no result yet). */
+  /** `null` means a draw, team play, or no result yet. */
   winnerId: string | null;
+  /** Winning team in team play. */
+  winnerTeam?: number | null;
+  /** Final placement per player (1 = first; ties share a rank). */
+  ranks?: { [playerId: string]: number };
   scores: { [playerId: string]: number | null };
   votes?: { [playerId: string]: number };
   xp?: { [playerId: string]: number };
@@ -142,6 +172,17 @@ export interface RequestMap {
   /** Tiny per-user, per-app key/value store (≤ 16 KB per value). */
   "storage.get": { params: { key: string }; result: Json | null };
   "storage.set": { params: { key: string; value: Json }; result: null };
+  /** Shared, persistent match state. */
+  "state.get": { params: Record<string, never>; result: { state: Json | null; version: number } };
+  /** Compare-and-set: fails with code `conflict` if someone else wrote since `expectedVersion`. */
+  "state.set": { params: { state: Json; expectedVersion: number }; result: { version: number } };
+  /** Pass the turn (default: the next seated player). */
+  "turn.end": { params: { next?: string | null }; result: null };
+  /** Set the round counter shown in the host HUD (never goes backwards). */
+  "round.set": { params: { round: number }; result: null };
+  /** Setup purpose only: hand the host the settings for the challenge (≤ 4 KB). */
+  "setup.submit": { params: { settings: { [key: string]: Json }; summary?: string }; result: null };
+  "setup.cancel": { params: Record<string, never>; result: null };
 }
 
 export type RequestMethod = keyof RequestMap;
@@ -162,6 +203,12 @@ export const REQUEST_METHODS: readonly RequestMethod[] = [
   "social.share",
   "storage.get",
   "storage.set",
+  "state.get",
+  "state.set",
+  "turn.end",
+  "round.set",
+  "setup.submit",
+  "setup.cancel",
 ] as const;
 
 /* ------------------------------------------------------------------------ */
@@ -186,6 +233,10 @@ export interface EventMap {
   "match.end": { result: MatchResult };
   /** Somebody fired an emoji reaction from the host HUD. */
   reaction: { from: string; emoji: string };
+  /** The shared match state changed (including your own writes). */
+  "state.change": { state: Json | null; version: number; by: string | null };
+  "turn.change": { turn: string | null; deadline: string | null };
+  "round.change": { round: number };
 }
 
 export type HostEvent = keyof EventMap;
@@ -257,6 +308,7 @@ export type ErrorCode =
   | "invalid_params"
   | "forbidden"
   | "rate_limited"
+  | "conflict"
   | "internal";
 
 export class XAppsError extends Error {
@@ -279,6 +331,11 @@ export const LIMITS = {
   storageValueBytes: 16 * 1024,
   /** Max serialized size of submission data + display. */
   submissionBytes: 64 * 1024,
+  /** Max serialized size of the shared match state. */
+  matchStateBytes: 64 * 1024,
+  /** Max serialized size of challenge settings from `setup.submit`. */
+  setupSettingsBytes: 4 * 1024,
+  setupSummaryLength: 140,
   /** Room messages per second per client (burst). */
   roomMessagesPerSecond: 30,
   eventTypeLength: 64,

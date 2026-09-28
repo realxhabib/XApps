@@ -20,6 +20,11 @@ export const OFFICIAL_APPS: AppManifest[] = [
     url: "/embed/meme-duel",
     modes: ["async", "live", "practice"],
     players: { min: 2, max: 2 },
+    teams: 0,
+    spectators: true,
+    // Meme Duel will render its own setup screen once it ships one (setup purpose).
+    setup: false,
+    turnBased: false,
     scoring: "votes",
     votesToWin: 5,
     durationLabel: "2 min + voting",
@@ -47,6 +52,11 @@ export const OFFICIAL_APPS: AppManifest[] = [
     url: "/embed/quick-draw",
     modes: ["live", "practice"],
     players: { min: 2, max: 2 },
+    teams: 0,
+    spectators: true,
+    // Meme Duel will render its own setup screen once it ships one (setup purpose).
+    setup: false,
+    turnBased: false,
     scoring: "high",
     durationLabel: "~45 sec",
     howTo: [
@@ -73,6 +83,11 @@ export const OFFICIAL_APPS: AppManifest[] = [
     url: "/embed/hot-takes",
     modes: ["async", "live", "practice"],
     players: { min: 2, max: 2 },
+    teams: 0,
+    spectators: true,
+    // Meme Duel will render its own setup screen once it ships one (setup purpose).
+    setup: false,
+    turnBased: false,
     scoring: "votes",
     votesToWin: 5,
     durationLabel: "90 sec + voting",
@@ -91,21 +106,26 @@ export const OFFICIAL_APPS: AppManifest[] = [
   {
     slug: "four-in-a-row",
     name: "Four in a Row",
-    tagline: "Drop, stack, connect. Classic strategy, zero lag.",
+    tagline: "Drop, stack, connect. Live or over days.",
     description:
-      "The timeless connect-four duel with buttery physics. Take turns dropping discs into a seven-column grid; connect four horizontally, vertically or diagonally to win. Practice against a bot that actually thinks ahead.",
+      "The timeless connect-four duel with buttery physics. Take turns dropping discs into a seven-column grid; connect four horizontally, vertically or diagonally to win. Play live on a 30-second clock, or play anytime and take your move whenever it suits you. Practice against a bot that actually thinks ahead.",
     category: "games",
     icon: "🔴",
     accent: ["#3d7bff", "#35e0ff"],
     url: "/embed/four-in-a-row",
-    modes: ["live", "practice"],
+    modes: ["live", "async", "practice"],
     players: { min: 2, max: 2 },
+    teams: 0,
+    spectators: true,
+    // Meme Duel will render its own setup screen once it ships one (setup purpose).
+    setup: false,
+    turnBased: true,
     scoring: "high",
     durationLabel: "~3 min",
     howTo: [
       "Players alternate dropping discs into any column.",
       "Line up four of your discs in any direction to win.",
-      "You have 30 seconds per move — the clock is ruthless.",
+      "Live: 30 seconds per move. Play anytime: up to 3 days per move, and we'll tell you when it's your turn.",
     ],
     official: true,
     developer: OFFICIAL_DEV,
@@ -126,6 +146,11 @@ export const OFFICIAL_APPS: AppManifest[] = [
     url: "/embed/emoji-decode",
     modes: ["live", "async", "practice"],
     players: { min: 2, max: 2 },
+    teams: 0,
+    spectators: true,
+    // Meme Duel will render its own setup screen once it ships one (setup purpose).
+    setup: false,
+    turnBased: false,
     scoring: "high",
     durationLabel: "~90 sec",
     howTo: [
@@ -141,6 +166,37 @@ export const OFFICIAL_APPS: AppManifest[] = [
     tags: ["trivia", "speed", "emoji"],
   },
   {
+    slug: "trivia-royale",
+    name: "Trivia Royale",
+    tagline: "Up to 8 players. 8 rounds. One crown.",
+    description:
+      "A live trivia battle royale for 2–8 players. Everyone gets the same question at the same moment: lock in fast for more points, chain correct answers for streak bonuses, and watch the leaderboard reshuffle after every round. The final round scores double. Friends can drop in to spectate with live answer counts.",
+    category: "trivia",
+    icon: "👑",
+    accent: ["#ffd84d", "#ff5c7a"],
+    url: "/embed/trivia-royale",
+    modes: ["live", "practice"],
+    players: { min: 2, max: 8 },
+    teams: 0,
+    spectators: true,
+    setup: false,
+    turnBased: false,
+    scoring: "high",
+    durationLabel: "~2 min",
+    howTo: [
+      "Everyone sees the same question with four answers and 12 seconds on the clock.",
+      "Lock in fast: correct answers score up to 1,000, and streaks add up to +300.",
+      "Eight rounds across science, geography, arts and more. The last one counts double.",
+      "Highest total takes the crown.",
+    ],
+    official: true,
+    developer: OFFICIAL_DEV,
+    status: "published",
+    playCount: 0,
+    createdAt: "2026-09-30T00:00:00.000Z",
+    tags: ["trivia", "multiplayer", "party", "live"],
+  },
+  {
     slug: "rps-showdown",
     name: "RPS Showdown",
     tagline: "Rock, paper, scissors — best of three, no mercy.",
@@ -152,6 +208,11 @@ export const OFFICIAL_APPS: AppManifest[] = [
     url: "/examples/rps/index.html",
     modes: ["live", "practice"],
     players: { min: 2, max: 2 },
+    teams: 0,
+    spectators: true,
+    // Meme Duel will render its own setup screen once it ships one (setup purpose).
+    setup: false,
+    turnBased: false,
     scoring: "high",
     durationLabel: "~30 sec",
     howTo: [
@@ -167,6 +228,51 @@ export const OFFICIAL_APPS: AppManifest[] = [
     tags: ["example", "open-source", "vanilla-js"],
   },
 ];
+
+/** Manifest defaults for the v2 fields (players 2–2, free for all, watchable, no setup, no turns). */
+export const MANIFEST_DEFAULTS = {
+  players: { min: 2, max: 2 },
+  teams: 0,
+  spectators: true,
+  setup: false,
+  turnBased: false,
+} as const;
+
+/** Fills in any v2 manifest fields an older row or registration left out. */
+export function withManifestDefaults(app: AppManifest): AppManifest {
+  return {
+    ...app,
+    players: app.players ?? { ...MANIFEST_DEFAULTS.players },
+    teams: app.teams ?? MANIFEST_DEFAULTS.teams,
+    spectators: app.spectators ?? MANIFEST_DEFAULTS.spectators,
+    setup: app.setup ?? MANIFEST_DEFAULTS.setup,
+    turnBased: app.turnBased ?? MANIFEST_DEFAULTS.turnBased,
+  };
+}
+
+export interface ManifestShape {
+  players?: { min: number; max: number };
+  teams?: number;
+  spectators?: boolean;
+  setup?: boolean;
+  turnBased?: boolean;
+}
+
+/**
+ * Validates the multiplayer part of a manifest: 2 ≤ min ≤ max ≤ 8, teams 0 or
+ * 2–4 with `max` a multiple of `teams`. Returns an error message, or null.
+ */
+export function manifestShapeError(shape: ManifestShape): string | null {
+  const players = shape.players ?? MANIFEST_DEFAULTS.players;
+  const { min, max } = players;
+  if (!Number.isInteger(min) || !Number.isInteger(max) || min < 2 || max > 8 || min > max) {
+    return "Players must be a range within 2–8";
+  }
+  const teams = shape.teams ?? 0;
+  if (teams !== 0 && (!Number.isInteger(teams) || teams < 2 || teams > 4)) return "Teams must be 0 or 2–4";
+  if (teams && max % teams !== 0) return "Max players must be a multiple of the team count";
+  return null;
+}
 
 export function getOfficialApp(slug: string): AppManifest | undefined {
   return OFFICIAL_APPS.find((app) => app.slug === slug);

@@ -107,12 +107,15 @@ const DiscSprite = memo(function DiscSprite({
   dim,
   reduced,
   delay,
+  settled,
 }: {
   disc: Disc;
   ids: BoardIds;
   dim: boolean;
   reduced: boolean;
   delay: number;
+  /** Already on the board when we opened it: no drop, it's just there. */
+  settled: boolean;
 }) {
   const plan = useMemo(() => dropPlan(disc.row, reduced), [disc.row, reduced]);
   return (
@@ -120,7 +123,7 @@ const DiscSprite = memo(function DiscSprite({
       <motion.g animate={{ opacity: dim ? 0.26 : 1 }} transition={{ duration: 0.45 }}>
         <motion.g
           style={SVG_ORIGIN}
-          initial={{ y: plan.y[0], scaleX: 1, scaleY: 1 }}
+          initial={settled ? false : { y: plan.y[0], scaleX: 1, scaleY: 1 }}
           animate={{ y: plan.y, scaleX: plan.scaleX, scaleY: plan.scaleY }}
           transition={{
             y: { duration: plan.totalMs / 1000, times: plan.yTimes, ease: plan.yEase, delay },
@@ -147,10 +150,16 @@ export interface BoardProps {
   /** It's our move: show our ghost and accept input. */
   canPlay: boolean;
   aim: number;
-  opponentTurn: boolean;
-  opponentAim: number | null;
+  /** Where the player to move (not us) is aiming: a live opponent, the bot. */
+  otherAim: { seat: Seat; col: number } | null;
   /** Win/draw effects are showing. */
   reveal: boolean;
+  /** Discs already on the board when it mounted (a resumed game) appear at rest. */
+  restoredCount: number;
+  /** Softly pulse a ring on the most recent disc (it has landed). */
+  highlightLast: boolean;
+  /** Bumped each time the turn arrives: a sweep of our colour around the rim. */
+  turnFlash: number;
   reduced: boolean;
   /** Bumped when a drop is rejected (full column) to wiggle the ghost. */
   bump: { col: number; key: number } | null;
@@ -170,9 +179,11 @@ export function Board({
   mySeat,
   canPlay,
   aim,
-  opponentTurn,
-  opponentAim,
+  otherAim,
   reveal,
+  restoredCount,
+  highlightLast,
+  turnFlash,
   reduced,
   bump,
   onAim,
@@ -192,8 +203,9 @@ export function Board({
 
   const winSet = useMemo(() => new Set(game.winLines.flat().map((c) => `${c.col}:${c.row}`)), [game.winLines]);
   const aimFull = (game.heights[aim] ?? 0) >= ROWS;
-  const ghostSeat: Seat | null = canPlay ? mySeat : opponentTurn && opponentAim !== null ? (mySeat === 0 ? 1 : 0) : null;
-  const ghostCol = canPlay ? aim : opponentAim;
+  const ghostSeat: Seat | null = canPlay ? mySeat : (otherAim?.seat ?? null);
+  const ghostCol = canPlay ? aim : (otherAim?.col ?? null);
+  const lastDisc = game.discs[game.discs.length - 1];
 
   const colFromEvent = (event: ReactPointerEvent<HTMLDivElement>): number | null => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -297,6 +309,7 @@ export function Board({
               reduced={reduced}
               dim={reveal && winSet.size > 0 && !winSet.has(`${disc.col}:${disc.row}`)}
               delay={disc.n >= batchStart && game.discs.length - batchStart > 1 ? (disc.n - batchStart) * 0.06 : 0}
+              settled={disc.n < restoredCount}
             />
           ))}
         </g>
@@ -329,6 +342,66 @@ export function Board({
             <circle key={`${col}:${row}`} cx={colX(col)} cy={rowY(row)} r={HOLE_R + 1.5} fill="none" stroke={`url(#${ids.rim})`} strokeWidth={3.5} />
           ))}
         </g>
+
+        {/* "Your turn": a sweep of our colour around the rim */}
+        {turnFlash > 0 && (
+          <motion.g
+            key={`flash-${turnFlash}`}
+            pointerEvents="none"
+            initial={{ opacity: reduced ? 0 : 1 }}
+            animate={{ opacity: reduced ? [0, 0.9, 0] : [1, 1, 0] }}
+            // Starts as the opponent's disc lands, not while it's still falling.
+            transition={{ duration: reduced ? 0.9 : 1.3, times: [0, 0.6, 1], ease: "easeOut", delay: reduced ? 0 : 0.3 }}
+          >
+            {[
+              { width: 20, opacity: 0.7, blur: true },
+              { width: 6, opacity: 1, blur: false },
+            ].map(({ width, opacity, blur }) => (
+              <motion.rect
+                key={width}
+                x={1.5}
+                y={LANE + 1.5}
+                width={BOARD_W - 3}
+                height={BOARD_H - 3}
+                rx={BOARD_RADIUS - 1.5}
+                fill="none"
+                stroke={blur ? SEAT_COLORS[mySeat].glow : SEAT_COLORS[mySeat].light}
+                strokeWidth={width}
+                strokeLinecap="round"
+                opacity={opacity}
+                filter={blur ? `url(#${ids.glow})` : undefined}
+                initial={reduced ? false : { pathLength: 0 }}
+                animate={reduced ? undefined : { pathLength: 1 }}
+                transition={{ duration: 0.75, ease: [0.22, 1, 0.36, 1], delay: 0.3 }}
+              />
+            ))}
+          </motion.g>
+        )}
+
+        {/* The last move: a gentle pulse so a returning player sees what changed */}
+        <AnimatePresence>
+          {highlightLast && lastDisc && !(reveal && game.winner !== null) && (
+            <motion.g
+              key={`last-${lastDisc.n}`}
+              pointerEvents="none"
+              transform={`translate(${colX(lastDisc.col)} ${rowY(lastDisc.row)})`}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0, transition: { duration: 0.2 } }}
+              transition={{ duration: 0.3 }}
+            >
+              <motion.circle
+                r={HOLE_R + 5}
+                fill="none"
+                stroke="#fff"
+                strokeWidth={4}
+                style={SVG_ORIGIN}
+                animate={reduced ? { opacity: 0.55 } : { opacity: [0.7, 0.18, 0.7], scale: [1, 1.07, 1] }}
+                transition={reduced ? { duration: 0.2 } : { duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
+              />
+            </motion.g>
+          )}
+        </AnimatePresence>
 
         {/* Where our disc will land */}
         <AnimatePresence>

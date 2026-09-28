@@ -52,6 +52,26 @@ export function useTurnRemaining(turnStartedAt: number | null, running: boolean)
 
 export const formatClock = (ms: number) => `0:${String(Math.ceil(ms / 1000)).padStart(2, "0")}`;
 
+/** "2d 4h", "5h 12m", "14m", "40s" — for play-anytime turn deadlines. */
+export function formatTimeLeft(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const d = Math.floor(s / 86_400);
+  const h = Math.floor((s % 86_400) / 3_600);
+  const m = Math.floor((s % 3_600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${s}s`;
+}
+
+/** Milliseconds until an ISO deadline (null without one). Re-renders with the shared clock. */
+export function useTimeLeft(deadline: string | null): number | null {
+  const now = useNow();
+  if (!deadline || now === 0) return null;
+  const at = Date.parse(deadline);
+  return Number.isFinite(at) ? Math.max(0, at - now) : null;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Player card                                                              */
 /* ------------------------------------------------------------------------ */
@@ -70,12 +90,18 @@ export function PlayerCard({
   variant,
   mirror = false,
   reduced,
+  timed = true,
+  deadline = null,
 }: {
   player: PlayerInfo | undefined;
   seat: Seat;
   isMe: boolean;
   active: boolean;
   turnStartedAt: number | null;
+  /** False for play-anytime (async) games: no move clock, a deadline instead. */
+  timed?: boolean;
+  /** Async turn deadline (ISO), shown on the active card. */
+  deadline?: string | null;
   thinking: boolean;
   result: CardResult;
   /** `undefined` hides the presence dot (bots, practice). */
@@ -85,8 +111,8 @@ export function PlayerCard({
   mirror?: boolean;
   reduced: boolean;
 }) {
-  const remaining = useTurnRemaining(turnStartedAt, active);
-  const danger = active && remaining <= 5_000;
+  const remaining = useTurnRemaining(turnStartedAt, active && timed);
+  const danger = timed && active && remaining <= 5_000;
   const color = SEAT_COLORS[seat];
   const side = variant === "side";
   const name = isMe ? "You" : (player?.name ?? "Opponent");
@@ -213,12 +239,20 @@ export function PlayerCard({
               </AnimatePresence>
             </div>
           </div>
-          <Clock remaining={remaining} active={active} danger={danger} large mirror={false} color={color.base} />
+          {timed ? (
+            <Clock remaining={remaining} active={active} danger={danger} large mirror={false} color={color.base} />
+          ) : (
+            <Deadline active={active} deadline={deadline} isMe={isMe} large mirror={false} color={color.base} />
+          )}
         </>
       ) : (
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <p className="truncate text-sm font-semibold leading-tight">{name}</p>
-          <Clock remaining={remaining} active={active} danger={danger} large={false} mirror={mirror} color={color.base} />
+          {timed ? (
+            <Clock remaining={remaining} active={active} danger={danger} large={false} mirror={mirror} color={color.base} />
+          ) : (
+            <Deadline active={active} deadline={deadline} isMe={isMe} large={false} mirror={mirror} color={color.base} />
+          )}
         </div>
       )}
     </motion.div>
@@ -267,6 +301,57 @@ function Clock({
           }}
         />
       </span>
+    </div>
+  );
+}
+
+/** Play-anytime turns: "Your move · 2d 23h" on the active card, a quiet dash otherwise. */
+function Deadline({
+  active,
+  deadline,
+  isMe,
+  large,
+  mirror,
+  color,
+}: {
+  active: boolean;
+  deadline: string | null;
+  isMe: boolean;
+  large: boolean;
+  mirror: boolean;
+  color: string;
+}) {
+  const left = useTimeLeft(active ? deadline : null);
+  const soon = left !== null && left < 6 * 3_600_000;
+  return (
+    <div
+      className={cn(
+        "flex min-w-0 items-center gap-1.5 leading-none",
+        large ? "w-full flex-col gap-1" : mirror && "flex-row-reverse",
+      )}
+    >
+      {/* The narrow bar card only has room for the time left. */}
+      {(large || !active || left === null) && (
+        <span
+          className={cn("truncate font-semibold", large ? "text-sm" : "text-[12px]", active ? "text-ink-50" : "text-ink-500")}
+          style={active ? { color } : undefined}
+        >
+          {active ? (isMe ? "Your move" : "Their move") : "Waiting"}
+        </span>
+      )}
+      {active && left !== null && (
+        <span
+          className={cn(
+            "shrink-0 whitespace-nowrap font-mono tabular",
+            large ? "text-xs text-ink-400" : "text-[12px] font-semibold",
+            soon && "text-danger",
+          )}
+          style={!large && !soon ? { color } : undefined}
+          title={deadline ? `Turn ends ${new Date(deadline).toLocaleString()}` : undefined}
+        >
+          {formatTimeLeft(left)} left
+        </span>
+      )}
     </div>
   );
 }

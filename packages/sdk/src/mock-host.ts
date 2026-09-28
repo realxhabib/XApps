@@ -1,12 +1,31 @@
 /**
  * A tiny in-page host used when an app is opened directly (not inside XApps).
- * It gives you a player, a bot opponent, a start signal and a result so you
- * can build and debug without the marketplace. For true two-player testing
- * use the XApps Sandbox, which runs two copies of your app side by side.
+ * It gives you a table of players (you + bots), a start signal, shared match
+ * state, turns, rounds and a result so you can build and debug without the
+ * marketplace. For true multi-player testing use the XApps Sandbox, which runs
+ * several copies of your app side by side.
+ *
+ * Handy URL switches (they override the options passed in code):
+ * - `?xapps-purpose=setup` opens your app in challenge-setup mode.
+ * - `?xapps-settings=<json>` sets `match.settings` (the setup banner links here).
+ * - `?xapps-players=4` seats 4 players (you + 3 bots); `?xapps-teams=2` plays in teams.
+ * - `?xapps-turns=1` starts with a turn (seat 0); `?xapps-role=spectator` watches bots play.
  */
-import { createHostCore, decideWinner, type HostBridge } from "./host";
-import type { Json, LaunchContext, MatchResult, Scoring, Submission } from "./protocol";
+import { createHostCore, rankPlayers, type HostBridge } from "./host";
+import {
+  XAppsError,
+  type Json,
+  type LaunchContext,
+  type LaunchPurpose,
+  type MatchMode,
+  type MatchResult,
+  type PlayerInfo,
+  type PlayerRole,
+  type Scoring,
+  type Submission,
+} from "./protocol";
 import { randomId } from "./random";
+import { cloneJson, isPlainObject } from "./rules";
 import { createMemoryTransportPair, type AppTransport } from "./transport";
 
 export interface MockHostOptions {
@@ -15,71 +34,275 @@ export interface MockHostOptions {
   seed?: string;
   /** Delay before `match.start` fires after `ready()`. Default 400 ms. */
   startDelayMs?: number;
-  /** Match settings passed to the app. */
+  /** Match settings passed to the app (`?xapps-settings=<json>` overrides). */
   settings?: { [key: string]: Json };
   /** Silence the console output. */
   quiet?: boolean;
+  /** Seats at the table, you included; bots fill the rest (2–8). Default: `minPlayers` or 2. */
+  players?: number;
+  /** Default 2 (or `players` when smaller). */
+  minPlayers?: number;
+  /** Default: `players`. */
+  maxPlayers?: number;
+  /** Number of teams (0 = free for all). Seat `s` plays for team `s % teams`. */
+  teams?: number;
+  /** Start with seat 0 holding the turn. Default false (turn is null until someone calls `turn.end`). */
+  turnBased?: boolean;
+  /** Initial shared match state. */
+  state?: Json;
+  /** `spectator` watches a table of bots (and is refused like a real spectator). */
+  role?: PlayerRole;
+  /** `setup` opens the app in challenge-setup mode. Default `match`. */
+  purpose?: LaunchPurpose;
+  mode?: MatchMode;
+  /** Read the `?xapps-*` URL switches. Default true. */
+  readUrl?: boolean;
+  /** Show a small banner when setup settings are submitted. Default true (in browsers). */
+  banner?: boolean;
+}
+
+export interface MockSetupOutcome {
+  status: "submitted" | "cancelled";
+  settings: { [key: string]: Json } | null;
+  summary: string | null;
 }
 
 export interface MockHost {
   transport: AppTransport;
   bridge: HostBridge;
   context: LaunchContext;
+  /** Pretend another player (default: the first bot) wrote the shared state. Returns the new version. */
+  setState(state: Json, by?: string): number;
+  /** Pass the turn as if its holder ended it. */
+  endTurn(next?: string | null): void;
+  setRound(round: number): void;
+  /** What the app submitted in setup purpose, if anything. */
+  readonly setup: MockSetupOutcome | null;
 }
 
-export function createMockHost(options: MockHostOptions = {}): MockHost {
+const clampInt = (value: unknown, min: number, max: number, fallback: number): number => {
+  const n = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.floor(n))) : fallback;
+};
+
+function readUrlOptions(): Partial<MockHostOptions> {
+  if (typeof location === "undefined" || !location.search) return {};
+  const params = new URLSearchParams(location.search);
+  const out: Partial<MockHostOptions> = {};
+  const purpose = params.get("xapps-purpose");
+  if (purpose === "setup" || purpose === "match") out.purpose = purpose;
+  const settings = params.get("xapps-settings");
+  if (settings) {
+    try {
+      const parsed: unknown = JSON.parse(settings);
+      if (isPlainObject(parsed)) out.settings = parsed as { [key: string]: Json };
+    } catch {
+      console.warn("[xapps mock] ignoring ?xapps-settings: not valid JSON");
+    }
+  }
+  if (params.has("xapps-players")) out.players = clampInt(params.get("xapps-players"), 2, 8, 2);
+  if (params.has("xapps-teams")) out.teams = clampInt(params.get("xapps-teams"), 0, 4, 0);
+  const role = params.get("xapps-role");
+  if (role === "spectator" || role === "player") out.role = role;
+  if (params.has("xapps-turns")) out.turnBased = params.get("xapps-turns") !== "0";
+  return out;
+}
+
+export function createMockHost(input: MockHostOptions = {}): MockHost {
+  const options: MockHostOptions = { ...input, ...(input.readUrl === false ? {} : readUrlOptions()) };
   const pair = createMemoryTransportPair();
   const log = (...args: unknown[]) => {
     if (!options.quiet) console.info("%c[xapps mock]", "color:#8b5cf6;font-weight:600", ...args);
   };
 
+  const teams = clampInt(options.teams, 0, 4, 0);
+  const minPlayers = clampInt(options.minPlayers, 2, 8, 2);
+  const seats = Math.max(minPlayers, clampInt(options.players, 2, 8, minPlayers));
+  const maxPlayers = clampInt(options.maxPlayers, seats, 8, seats);
+  const spectating = options.role === "spectator";
+  const purpose: LaunchPurpose = options.purpose === "setup" ? "setup" : "match";
+  const user = { id: "you", handle: "you", name: "You", avatarUrl: null };
+
+  const players: PlayerInfo[] = Array.from({ length: seats }, (_, seat) => {
+    const human = seat === 0 && !spectating;
+    const botNumber = spectating ? seat + 1 : seat;
+    return {
+      id: human ? user.id : botNumber === 1 ? "bot" : `bot${botNumber}`,
+      handle: human ? user.handle : botNumber === 1 ? "xapps_bot" : `xapps_bot${botNumber}`,
+      name: human ? user.name : botNumber === 1 ? "Practice Bot" : `Bot ${botNumber}`,
+      avatarUrl: null,
+      seat,
+      isBot: !human,
+      submitted: false,
+      score: null,
+      team: teams > 0 ? seat % teams : null,
+      role: "player",
+    };
+  });
+
   const context: LaunchContext = {
+    purpose,
     app: { id: "local", slug: "local", name: typeof document !== "undefined" ? document.title || "My app" : "My app" },
-    user: { id: "you", handle: "you", name: "You", avatarUrl: null },
+    user,
     match: {
       id: `mock-${randomId(6)}`,
-      mode: "sandbox",
-      status: "active",
+      mode: options.mode ?? "sandbox",
+      status: purpose === "setup" ? "open" : "active",
       scoring: options.scoring ?? "high",
       seed: options.seed ?? randomId(12),
-      seat: 0,
+      seat: spectating ? -1 : 0,
       settings: options.settings ?? {},
-      players: [
-        { id: "you", handle: "you", name: "You", avatarUrl: null, seat: 0, isBot: false, submitted: false, score: null },
-        { id: "bot", handle: "xapps_bot", name: "Practice Bot", avatarUrl: null, seat: 1, isBot: true, submitted: false, score: null },
-      ],
+      players,
+      minPlayers,
+      maxPlayers,
+      teams,
+      role: spectating ? "spectator" : "player",
+      state: options.state === undefined ? null : cloneJson(options.state),
+      stateVersion: options.state === undefined ? 0 : 1,
+      turn: options.turnBased && purpose === "match" ? (players[0]?.id ?? null) : null,
+      turnDeadline: null,
+      round: 0,
     },
-    host: { name: "XApps Mock Host", version: "0.1.0", origin: "memory://host" },
+    host: { name: "XApps Mock Host", version: "0.2.0", origin: "memory://host" },
     locale: typeof navigator !== "undefined" ? navigator.language : "en",
   };
+  const match = context.match;
 
   const submissions = new Map<string, Submission>();
+  const left = new Set<string>();
   let startedAt: number | null = null;
   let ended: MatchResult | null = null;
+  let setupOutcome: MockSetupOutcome | null = null;
+
+  const player = (id: string) => match.players.find((p) => p.id === id);
+  const active = () => match.players.filter((p) => !left.has(p.id));
+
+  const end = (result: MatchResult) => {
+    ended = result;
+    match.status = "completed";
+    log("match ended", result);
+    setTimeout(() => bridge.emit("match.end", { result }), 250);
+  };
 
   const finish = () => {
     const scores: Record<string, number | null> = {};
-    for (const p of context.match.players) scores[p.id] = submissions.get(p.id)?.score ?? null;
-    const winnerId =
-      context.match.scoring === "votes"
-        ? context.match.players[Math.floor(Math.random() * context.match.players.length)]?.id ?? null
-        : decideWinner(scores, context.match.scoring);
-    ended = { matchId: context.match.id, status: "completed", winnerId, scores };
-    context.match.status = "completed";
-    log("match ended", ended);
-    setTimeout(() => bridge.emit("match.end", { result: ended as MatchResult }), 250);
+    for (const p of match.players) scores[p.id] = submissions.get(p.id)?.score ?? null;
+    // Votes scoring: the mock crowd votes at random.
+    const votes =
+      match.scoring === "votes"
+        ? Object.fromEntries(match.players.map((p) => [p.id, Math.floor(Math.random() * 10)]))
+        : undefined;
+    const ranked = rankPlayers(
+      match.players.map((p) => ({
+        id: p.id,
+        score: left.has(p.id) ? null : votes ? votes[p.id] : scores[p.id],
+        team: p.team,
+      })),
+      match.scoring === "low" ? "low" : "high",
+      { teams },
+    );
+    for (const p of match.players) p.score = scores[p.id] ?? null;
+    end({
+      matchId: match.id,
+      status: "completed",
+      winnerId: ranked.winnerId,
+      winnerTeam: ranked.winnerTeam,
+      ranks: ranked.ranks,
+      scores,
+      ...(votes ? { votes } : {}),
+    });
+  };
+
+  const writeState = (state: Json, by: string | null) => {
+    match.state = cloneJson(state);
+    match.stateVersion += 1;
+    bridge.emitState(cloneJson(state), match.stateVersion, by);
+    return match.stateVersion;
+  };
+
+  const nextAfter = (id: string | null): string | null => {
+    const seated = active();
+    if (seated.length === 0) return null;
+    const index = seated.findIndex((p) => p.id === id);
+    return (seated[(index + 1) % seated.length] as PlayerInfo).id;
+  };
+
+  const passTurn = (next: string | null | undefined, from: string | null) => {
+    const target = next ?? nextAfter(match.turn ?? from);
+    match.turn = target;
+    match.turnDeadline = match.mode === "async" && target ? new Date(Date.now() + 3 * 86_400_000).toISOString() : null;
+    log("turn →", target);
+    bridge.emitTurn(match.turn, match.turnDeadline);
+  };
+
+  const raiseRound = (round: number) => {
+    if (round < match.round) throw new XAppsError("invalid_params", "round.set: the round can't go backwards");
+    if (round === match.round) return;
+    match.round = round;
+    log("round", round);
+    bridge.emitRound(round);
+  };
+
+  const showBanner = (outcome: MockSetupOutcome) => {
+    if (options.banner === false || typeof document === "undefined" || !document.body) return;
+    document.getElementById("xapps-mock-banner")?.remove();
+    const el = document.createElement("div");
+    el.id = "xapps-mock-banner";
+    el.setAttribute("role", "status");
+    el.style.cssText =
+      "position:fixed;left:12px;right:12px;bottom:12px;z-index:2147483647;max-height:45vh;overflow:auto;" +
+      "padding:12px 14px;border-radius:12px;background:#17132b;color:#f4f2ff;font:13px/1.4 system-ui,sans-serif;" +
+      "box-shadow:0 8px 30px rgba(0,0,0,.35);border:1px solid #8b5cf6";
+    const title = document.createElement("strong");
+    title.textContent =
+      outcome.status === "submitted" ? "XApps mock · setup submitted" : "XApps mock · setup cancelled";
+    el.append(title);
+    if (outcome.summary) {
+      const summary = document.createElement("div");
+      summary.textContent = outcome.summary;
+      el.append(summary);
+    }
+    if (outcome.settings) {
+      const pre = document.createElement("pre");
+      pre.style.cssText = "margin:8px 0;white-space:pre-wrap;word-break:break-all;font:12px ui-monospace,monospace";
+      pre.textContent = JSON.stringify(outcome.settings, null, 2);
+      el.append(pre);
+      if (typeof location !== "undefined") {
+        const url = new URL(location.href);
+        url.searchParams.delete("xapps-purpose");
+        url.searchParams.set("xapps-settings", JSON.stringify(outcome.settings));
+        const link = document.createElement("a");
+        link.href = url.toString();
+        link.textContent = "Play a mock match with these settings →";
+        link.style.cssText = "color:#c4b5fd;font-weight:600";
+        el.append(link);
+      }
+    }
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "×";
+    close.setAttribute("aria-label", "Dismiss");
+    close.style.cssText =
+      "position:absolute;top:6px;right:8px;background:none;border:0;color:inherit;font-size:18px;cursor:pointer";
+    close.addEventListener("click", () => el.remove());
+    el.append(close);
+    document.body.append(el);
   };
 
   const bridge = createHostCore(pair.host, {
     context: () => context,
-    onConnect: () => log("app connected", context),
+    onConnect: () => log(purpose === "setup" ? "app connected (setup mode)" : "app connected", context),
     handlers: {
       ready: () => {
+        if (purpose === "setup") {
+          log("setup mode: call xapps.setup.submit(settings, summary) when the player is done");
+          return { startedAt: null };
+        }
         if (startedAt === null) {
           setTimeout(() => {
             startedAt = Date.now();
             log("match.start");
-            bridge.emit("room.presence", { online: context.match.players.map((p) => p.id) });
+            bridge.emit("room.presence", { online: match.players.map((p) => p.id) });
             bridge.emit("match.start", { at: startedAt });
           }, options.startDelayMs ?? 400);
         }
@@ -90,26 +313,42 @@ export function createMockHost(options: MockHostOptions = {}): MockHost {
         return null;
       },
       "match.submit": ({ playerId, ...submission }) => {
-        const id = playerId ?? context.user.id;
-        const player = context.match.players.find((p) => p.id === id);
-        if (!player) throw new Error(`Unknown player ${id}`);
-        if (id !== context.user.id && !player.isBot) throw new Error("You can only submit for yourself or a bot");
+        const id = playerId ?? user.id;
+        const target = player(id);
+        if (!target) throw new Error(`Unknown player ${id}`);
+        if (id !== user.id && !target.isBot) throw new Error("You can only submit for yourself or a bot");
+        if (target.submitted) throw new XAppsError("forbidden", `${id} already submitted`);
         submissions.set(id, submission);
-        player.submitted = true;
-        player.score = submission.score ?? null;
+        target.submitted = true;
+        target.score = submission.score ?? null;
         log("submit", id, submission);
-        bridge.emit("match.update", { match: context.match });
-        if (!ended && context.match.players.every((p) => p.submitted)) finish();
+        bridge.emit("match.update", { match });
+        if (!ended && active().every((p) => p.submitted)) finish();
         return { state: ended ? "final" : "waiting", result: ended };
       },
       "match.forfeit": () => {
-        ended = {
-          matchId: context.match.id,
+        if (ended) return null;
+        left.add(user.id);
+        const others = active();
+        const ranked = rankPlayers(
+          match.players.map((p) => ({ id: p.id, score: left.has(p.id) ? null : 1, team: p.team })),
+          "high",
+          { teams },
+        );
+        const me = player(user.id);
+        const scores: Record<string, number | null> = {};
+        for (const p of match.players) scores[p.id] = submissions.get(p.id)?.score ?? null;
+        const result: MatchResult = {
+          matchId: match.id,
           status: "completed",
-          winnerId: "bot",
-          scores: { you: null, bot: null },
+          winnerId: teams > 0 ? null : others.length === 1 ? (others[0] as PlayerInfo).id : null,
+          winnerTeam: teams === 2 && typeof me?.team === "number" ? 1 - me.team : null,
+          ranks: ranked.ranks,
+          scores,
         };
-        setTimeout(() => bridge.emit("match.end", { result: ended as MatchResult }), 100);
+        ended = result;
+        match.status = "completed";
+        setTimeout(() => bridge.emit("match.end", { result }), 100);
         return null;
       },
       "ui.toast": ({ message, tone }) => (log(`toast (${tone ?? "info"})`, message), null),
@@ -137,8 +376,64 @@ export function createMockHost(options: MockHostOptions = {}): MockHost {
         if (typeof localStorage !== "undefined") localStorage.setItem(`xapps-mock:${key}`, JSON.stringify(value));
         return null;
       },
+      "state.get": () => ({ state: cloneJson(match.state), version: match.stateVersion }),
+      "state.set": ({ state, expectedVersion }) => {
+        if (match.status !== "active") throw new XAppsError("forbidden", "the match is not active");
+        if (expectedVersion !== match.stateVersion) {
+          throw new XAppsError(
+            "conflict",
+            `state.set: version is ${match.stateVersion}, expected ${expectedVersion} — re-read and retry`,
+          );
+        }
+        return { version: writeState(state, user.id) };
+      },
+      "turn.end": ({ next }) => {
+        // In the mock your app drives the bots, so it may also end a bot's turn.
+        const holder = match.turn ? player(match.turn) : undefined;
+        if (match.turn && match.turn !== user.id && !holder?.isBot) {
+          throw new XAppsError("forbidden", "turn.end: it's not your turn");
+        }
+        if (next != null && !active().some((p) => p.id === next)) {
+          throw new XAppsError("invalid_params", "turn.end: next must be a seated player");
+        }
+        passTurn(next, user.id);
+        return null;
+      },
+      "round.set": ({ round }) => {
+        raiseRound(round);
+        return null;
+      },
+      "setup.submit": ({ settings, summary }) => {
+        setupOutcome = { status: "submitted", settings, summary: summary ?? null };
+        log("setup submitted", summary ?? "", settings);
+        log("play a match with them: add ?xapps-settings=" + encodeURIComponent(JSON.stringify(settings)));
+        showBanner(setupOutcome);
+        return null;
+      },
+      "setup.cancel": () => {
+        setupOutcome = { status: "cancelled", settings: null, summary: null };
+        log("setup cancelled");
+        showBanner(setupOutcome);
+        return null;
+      },
     },
   });
 
-  return { transport: pair.app, bridge, context };
+  return {
+    transport: pair.app,
+    bridge,
+    context,
+    setState(state, by) {
+      return writeState(state, by ?? players.find((p) => p.isBot)?.id ?? null);
+    },
+    endTurn(next) {
+      passTurn(next, match.turn);
+    },
+    setRound(round) {
+      raiseRound(round);
+    },
+    get setup() {
+      return setupOutcome;
+    },
+  };
 }

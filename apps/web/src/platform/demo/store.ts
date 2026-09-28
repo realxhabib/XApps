@@ -11,6 +11,7 @@ import type {
   MatchMode,
   MatchStatus,
   PlayerResult,
+  PlayerRole,
   PlayerState,
   Profile,
   Scoring,
@@ -19,7 +20,11 @@ import type {
 
 export interface PlayerRow {
   userId: string;
-  seat: number;
+  /** Null for spectators. */
+  seat: number | null;
+  team: number | null;
+  role: PlayerRole;
+  rank: number | null;
   state: PlayerState;
   isBot: boolean;
   score: number | null;
@@ -48,7 +53,17 @@ export interface MatchRow {
   votesNeeded: number;
   votingEndsAt: string | null;
   simulatedVotes: boolean;
+  /** Seated players and spectators. */
   players: PlayerRow[];
+  minPlayers: number;
+  maxPlayers: number;
+  teams: number;
+  winnerTeam: number | null;
+  state: Json | null;
+  stateVersion: number;
+  turnUserId: string | null;
+  turnDeadline: string | null;
+  round: number;
 }
 
 export interface VoteRow {
@@ -67,7 +82,7 @@ export interface AppStatsRow {
 }
 
 export interface DemoDb {
-  version: 3;
+  version: 4;
   profiles: Record<string, Profile>;
   apps: Record<string, AppManifest>;
   playCounts: Record<string, number>;
@@ -77,7 +92,10 @@ export interface DemoDb {
   appStats: Record<string, AppStatsRow>;
 }
 
-export const DB_KEY = "xapps:demo-db:v3";
+export const DB_VERSION = 4 as const;
+export const DB_KEY = "xapps:demo-db:v4";
+/** Older databases we try to upgrade (newest first) before reseeding. */
+const LEGACY_KEYS = ["xapps:demo-db:v3"];
 const VIEWER_KEY = "xapps:demo-viewer";
 const LAST_VIEWER_KEY = "xapps:demo-last-viewer";
 const HUMANS_KEY = "xapps:demo-humans";
@@ -86,9 +104,12 @@ type Listener = () => void;
 const listeners = new Set<Listener>();
 let cache: { raw: string | null; db: DemoDb } | null = null;
 let seeder: (() => DemoDb) | null = null;
+let upgrader: ((old: unknown) => DemoDb | null) | null = null;
 
-export function setSeeder(fn: () => DemoDb): void {
+/** `upgrade` turns an older database into the current shape, or returns null to reseed. */
+export function setSeeder(fn: () => DemoDb, upgrade?: (old: unknown) => DemoDb | null): void {
   seeder = fn;
+  upgrader = upgrade ?? null;
 }
 
 function storage(): Storage | null {
@@ -106,7 +127,7 @@ export function load(): DemoDb {
   if (raw) {
     try {
       const db = JSON.parse(raw) as DemoDb;
-      if (db.version === 3) {
+      if (db.version === DB_VERSION) {
         cache = { raw, db };
         return db;
       }
@@ -114,10 +135,42 @@ export function load(): DemoDb {
       // fall through to reseed
     }
   }
+  const upgraded = upgradeLegacy(ls);
+  if (upgraded) {
+    save(upgraded, false);
+    return upgraded;
+  }
   if (!seeder) throw new Error("demo store has no seeder");
   const db = seeder();
   save(db, false);
   return db;
+}
+
+/** Carries an older demo database forward (matches, profiles, stats) instead of wiping it. */
+function upgradeLegacy(ls: Storage | null): DemoDb | null {
+  if (!ls || !upgrader) return null;
+  for (const key of LEGACY_KEYS) {
+    let raw: string | null = null;
+    try {
+      raw = ls.getItem(key);
+    } catch {
+      return null;
+    }
+    if (!raw) continue;
+    try {
+      ls.removeItem(key);
+    } catch {
+      // ignore
+    }
+    try {
+      const db = upgrader(JSON.parse(raw));
+      if (db && db.version === DB_VERSION) return db;
+    } catch {
+      // Unreadable: reseed.
+    }
+    return null;
+  }
+  return null;
 }
 
 function save(db: DemoDb, notify = true): void {
@@ -263,6 +316,37 @@ export function hydratePlayer(db: DemoDb, row: PlayerRow): MatchPlayer {
     } satisfies Profile);
   return { ...row, profile };
 }
+
+export function newPlayerRow(userId: string, seat: number | null, extra: Partial<PlayerRow> = {}): PlayerRow {
+  return {
+    userId,
+    seat,
+    team: null,
+    role: "player",
+    rank: null,
+    state: "joined",
+    isBot: false,
+    score: null,
+    submission: null,
+    result: null,
+    xpDelta: 0,
+    lastSeenAt: null,
+    ...extra,
+  };
+}
+
+/** Defaults for the v2 match columns (a 1v1, free for all, no state/turns/rounds). */
+export const MATCH_V2_DEFAULTS = {
+  minPlayers: 2,
+  maxPlayers: 2,
+  teams: 0,
+  winnerTeam: null,
+  state: null,
+  stateVersion: 0,
+  turnUserId: null,
+  turnDeadline: null,
+  round: 0,
+} satisfies Partial<MatchRow>;
 
 export function nowIso(): string {
   return new Date().toISOString();

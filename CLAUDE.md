@@ -13,6 +13,9 @@ Monorepo (npm workspaces): `apps/web` (Next.js 16 App Router, React 19, Tailwind
 - First-party apps live in `src/first-party/<slug>` + `src/app/embed/<slug>/page.tsx` and must only use the
   public SDK (see `src/first-party/README.md` for the host contract).
 - Motion: springs from `src/lib/motion.ts`; respect `useReducedMotion()`; sounds via `src/lib/sfx.ts`.
+- Platform v2 (docs/platform-v2.md): matches seat 2–8 players with teams/spectators, a shared versioned
+  match state (`state.update`), turns and rounds, and apps may render their own challenge setup (purpose
+  "setup"). SQL, demo backend and `src/platform/scoring.ts` settlement must stay in lockstep.
 - Lint uses the React Compiler rules: no setState in effect bodies, no ref access during render.
 
 Checks: `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:e2e` (demo mode),

@@ -14,7 +14,12 @@ stays backward compatible: every v1 app keeps working unchanged.
 
 ---
 
-## Stage 1: General matches
+## Stage 1: General matches (shipped)
+
+Migrations: `20260930000000_general_matches.sql`, `…000100_trivia_royale.sql`,
+`…000200_four_in_a_row_turns.sql`, `…000300_settle_withdraws_invites.sql`.
+Showcases: Trivia Royale (2–8 players, shared state, rounds, spectators) and
+turn-based Four in a Row (live or over days).
 
 ### Concepts
 

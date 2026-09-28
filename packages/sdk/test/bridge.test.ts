@@ -6,6 +6,7 @@ import { createMemoryTransportPair } from "../src/transport";
 
 function makeContext(): LaunchContext {
   return {
+    purpose: "match",
     app: { id: "app-1", slug: "demo", name: "Demo" },
     user: { id: "alice", handle: "alice", name: "Alice", avatarUrl: null },
     match: {
@@ -17,9 +18,18 @@ function makeContext(): LaunchContext {
       seat: 0,
       settings: { rounds: 3 },
       players: [
-        { id: "alice", handle: "alice", name: "Alice", avatarUrl: null, seat: 0, isBot: false, submitted: false, score: null },
-        { id: "bob", handle: "bob", name: "Bob", avatarUrl: null, seat: 1, isBot: false, submitted: false, score: null },
+        { id: "alice", handle: "alice", name: "Alice", avatarUrl: null, seat: 0, isBot: false, submitted: false, score: null, team: null, role: "player" },
+        { id: "bob", handle: "bob", name: "Bob", avatarUrl: null, seat: 1, isBot: false, submitted: false, score: null, team: null, role: "player" },
       ],
+      minPlayers: 2,
+      maxPlayers: 2,
+      teams: 0,
+      role: "player",
+      state: null,
+      stateVersion: 0,
+      turn: null,
+      turnDeadline: null,
+      round: 0,
     },
     host: { name: "Test host", version: "0", origin: "memory://host" },
     locale: "en",

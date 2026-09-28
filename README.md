@@ -5,7 +5,7 @@ reflex duels, meme battles judged by the crowd, hot-take debates, strategy and t
 Anyone can build and list their own app with the `@xapps/sdk`.
 
 - **Marketplace**: browse, search and filter apps. Each app card is a live animated vignette.
-- **Challenges**: quick match, invite by `@handle`, or post an open challenge link to your timeline.
+- **Challenges**: quick match, invite one or several `@handles`, or post an open challenge link to your timeline. Tables seat 2–8 players, with teams and spectators.
 - **Play room**: every app runs inside a host that adds the drama: a VS intro, a 3-2-1 countdown, a HUD with presence and turn indicators, emoji reactions, results with XP and level-ups, rematch and share.
 - **The Arena**: the crowd judges meme duels and hot takes. Entries stay anonymous until you vote, and every vote earns XP.
 - **Profiles and leaderboards**: XP, levels, streaks, and rankings overall and per app.
@@ -16,11 +16,12 @@ Anyone can build and list their own app with the `@xapps/sdk`.
 | 🖼️ Meme Duel | Caption the same real meme template, or an image the challenger drops (upload or an X post's photo), optionally on a topic; add stickers and let the crowd vote | votes |
 | ⚡ Reflexes | Best-of-five reflex duel, with reaction times measured on each device | rounds won |
 | 🔥 Hot Takes | You're assigned a side; argue it in 280 characters, and the crowd picks the better argument | votes |
-| 🔴 Four in a Row | Classic connect-four with physics and a minimax bot | win/draw/loss |
+| 🔴 Four in a Row | Connect-four with physics and a minimax bot; play live or turn by turn over days | win/draw/loss |
+| 🎯 Trivia Royale | 2–8 players, eight rounds, faster right answers score more; spectators welcome | points |
 | 🧩 Emoji Decode | Eight emoji puzzles, where both speed and accuracy score | points |
 | ✊ RPS Showdown | Example community app: **one HTML file**, commit-reveal included | rounds won |
 
-The five default apps are built on the **same public SDK** that third-party developers use. They're only special in that they're served from `/embed/*`.
+The default apps are built on the **same public SDK** that third-party developers use. They're only special in that they're served from `/embed/*`.
 
 ---
 

@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { seatedPlayers } from "@/platform/match-utils";
 import { useViewer } from "@/platform/client";
 import { useActivity, useApps, useMyMatches, useVotingMatches } from "@/platform/queries";
 
@@ -141,9 +142,14 @@ export function FeaturedApps() {
 
 export function ArenaTeaser() {
   const { data } = useVotingMatches();
-  const match = data?.find((m) => m.players.every((p) => p.submission?.display));
+  const match = data?.find((m) => {
+    const seated = seatedPlayers(m);
+    return seated.length >= 2 && seated.every((p) => p.submission?.display || p.state === "left");
+  });
   if (!match) return null;
-  const [a, b] = match.players;
+  const entries = seatedPlayers(match).filter((p) => p.submission?.display);
+  const shown = entries.slice(0, 4);
+  const more = entries.length - shown.length;
   return (
     <section className="mt-24">
       <div className="relative overflow-hidden rounded-[2.5rem] border border-white/[0.08] bg-ink-850/70 p-6 sm:p-10">
@@ -166,16 +172,21 @@ export function ArenaTeaser() {
               <span className="text-sm text-ink-400">{data?.length ?? 0} contests waiting</span>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3 sm:gap-4">
-            {[a, b].map((p, i) =>
+          <div className="relative grid grid-cols-2 gap-3 sm:gap-4">
+            {more > 0 && (
+              <span className="absolute -right-2 -top-3 z-10 rounded-full bg-flare px-2.5 py-1 text-xs font-bold text-ink-950 shadow-lg">
+                +{more} more
+              </span>
+            )}
+            {shown.map((p, i) =>
               p ? (
                 <motion.div
                   key={p.userId}
-                  initial={{ opacity: 0, y: 40, rotate: i ? 4 : -4 }}
-                  whileInView={{ opacity: 1, y: 0, rotate: i ? 2 : -2 }}
+                  initial={{ opacity: 0, y: 40, rotate: i % 2 ? 4 : -4 }}
+                  whileInView={{ opacity: 1, y: 0, rotate: i % 2 ? 2 : -2 }}
                   viewport={{ once: true }}
                   whileHover={{ rotate: 0, scale: 1.03, y: -6 }}
-                  transition={{ type: "spring", stiffness: 180, damping: 18, delay: i * 0.1 }}
+                  transition={{ type: "spring", stiffness: 180, damping: 18, delay: i * 0.08 }}
                   className="rounded-3xl glass p-2.5"
                 >
                   <EntryView display={p.submission?.display} compact />

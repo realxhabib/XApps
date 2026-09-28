@@ -13,16 +13,17 @@ import {
   findWinner,
   isBoardFull,
   legalColumns,
-  mergeSync,
   newGame,
-  parseMoves,
   playMove,
   randomLegalColumn,
   rankMoves,
-  receiveMove,
+  readBoardState,
   replay,
+  resumeClockAt,
   scoreFor,
+  applyStateMove,
   validateMove,
+  type BoardState,
   type Cell,
   type GameState,
 } from "./logic";
@@ -225,82 +226,167 @@ describe("win detection", () => {
   });
 });
 
-describe("live sync protocol", () => {
-  const base = game([3, 3]); // seat 0 to move, n = 2
+describe("shared match state", () => {
+  const SEATS = ["alice", "bob"] as const;
+  const T0 = 1_760_000_000_000;
 
-  it("applies the next move from the right player", () => {
-    const r = receiveMove(base, { n: 2, col: 4 }, 0);
-    expect(r.kind).toBe("applied");
-    if (r.kind === "applied") expect(r.state.moves).toEqual([3, 3, 4]);
-  });
+  /** Plays `cols` through the reducer, alternating seats, starting from `state`. */
+  function playState(cols: number[], state: unknown = null): BoardState {
+    let cur = state;
+    for (const col of cols) {
+      const read = readBoardState(cur, SEATS);
+      if (!read) throw new Error("unreadable state");
+      const by = SEATS[read.game.turn];
+      const res = applyStateMove(cur, { col, by, at: T0 + read.moves.length * 1000 }, SEATS, by);
+      if (!res.ok) throw new Error(`move ${col} rejected: ${res.reason}`);
+      cur = res.state;
+    }
+    return cur as BoardState;
+  }
 
-  it("ignores duplicates and flags conflicts", () => {
-    expect(receiveMove(base, { n: 1, col: 3 }, 1)).toEqual({ kind: "duplicate" });
-    expect(receiveMove(base, { n: 1, col: 5 }, 1)).toEqual({ kind: "conflict" });
-  });
-
-  it("detects gaps", () => {
-    expect(receiveMove(base, { n: 3, col: 0 }, 1)).toEqual({ kind: "gap" });
-  });
-
-  it("rejects out-of-turn, full-column, post-game and malformed moves", () => {
-    expect(receiveMove(base, { n: 2, col: 4 }, 1)).toEqual({ kind: "invalid", reason: "wrong-turn" });
-    const full = game([0, 0, 0, 0, 0, 0]);
-    expect(receiveMove(full, { n: 6, col: 0 }, 0)).toEqual({ kind: "invalid", reason: "column-full" });
-    const won = game([0, 6, 1, 6, 2, 6, 3]);
-    expect(receiveMove(won, { n: 7, col: 6 }, 1)).toEqual({ kind: "invalid", reason: "game-over" });
-    for (const junk of [null, 3, "x", {}, { n: -1, col: 0 }, { n: 2, col: 7 }, { n: 2.5, col: 1 }, { n: "2", col: 1 }]) {
-      expect(receiveMove(base, junk, 0)).toEqual({ kind: "invalid", reason: "malformed" });
+  it("treats a missing state as a fresh game", () => {
+    for (const empty of [null, undefined, {}]) {
+      const read = readBoardState(empty, SEATS);
+      expect(read?.moves).toEqual([]);
+      expect(read?.game.turn).toBe(0);
     }
   });
 
-  it("recovers from a dropped message via sync", () => {
-    // Local missed move #2; the opponent's history is longer and consistent.
-    const local = game([3, 3]);
-    expect(receiveMove(local, { n: 3, col: 2 }, 1).kind).toBe("gap");
-    const merged = mergeSync(local, [3, 3, 4, 2]);
-    expect(merged?.moves).toEqual([3, 3, 4, 2]);
-    expect(merged?.turn).toBe(0);
+  it("applies moves, recording who played and when, and derives the board", () => {
+    const res = applyStateMove(null, { col: 3, by: "alice", at: T0 }, SEATS, "alice");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.state.moves).toEqual([{ col: 3, by: "alice", at: T0 }]);
+    expect(res.state.board[cellIndex(3, 0)]).toBe(0);
+    expect(res.state.board.filter((c) => c !== null)).toHaveLength(1);
+    expect(res.state).toMatchObject({ winner: null, draw: false, line: null });
+    expect(res.game.turn).toBe(1);
+
+    const next = applyStateMove(res.state, { col: 3, by: "bob", at: T0 + 5 }, SEATS, "bob");
+    expect(next.ok && next.state.board[cellIndex(3, 1)]).toBe(1);
   });
 
-  it("only adopts longer, consistent, legal histories", () => {
-    const local = game([3, 3, 4]);
-    expect(mergeSync(local, [3, 3])).toBeNull(); // shorter
-    expect(mergeSync(local, [3, 3, 4])).toBeNull(); // same
-    expect(mergeSync(local, [3, 2, 4, 4])).toBeNull(); // diverges
-    expect(mergeSync(game([]), [0, 0, 0, 0, 0, 0, 0])).toBeNull(); // illegal
-    expect(mergeSync(game([]), [0, 6, 1, 6, 2, 6, 3, 1])).toBeNull(); // continues after a win
-    expect(mergeSync(local, "3,3,4,5")).toBeNull();
-    expect(mergeSync(local, [3, 3, 4, "5"])).toBeNull();
-    expect(mergeSync(game([]), [3, 3])?.moves).toEqual([3, 3]); // e.g. after a reload
+  it("is JSON-safe and never mutates the previous state", () => {
+    const before = playState([3, 4]);
+    const snapshot = JSON.stringify(before);
+    const res = applyStateMove(before, { col: 2, by: "alice", at: T0 }, SEATS);
+    expect(res.ok).toBe(true);
+    expect(JSON.stringify(before)).toBe(snapshot);
+    if (res.ok) expect(JSON.parse(JSON.stringify(res.state))).toEqual(res.state);
   });
 
-  it("parses move lists defensively", () => {
-    expect(parseMoves([0, 6, 3])).toEqual([0, 6, 3]);
-    expect(parseMoves([0, 7])).toBeNull();
-    expect(parseMoves(new Array(CELLS + 1).fill(0))).toBeNull();
-    expect(parseMoves({ length: 1, 0: 1 })).toBeNull();
+  it("rejects moves out of turn", () => {
+    const s = playState([3]); // bob to move
+    expect(applyStateMove(s, { col: 2, by: "alice", at: T0 }, SEATS)).toEqual({ ok: false, reason: "wrong-turn" });
+    // The move list says bob, but the host still has alice holding the turn.
+    expect(applyStateMove(s, { col: 2, by: "bob", at: T0 }, SEATS, "alice")).toEqual({ ok: false, reason: "not-your-turn" });
+    expect(applyStateMove(s, { col: 2, by: "bob", at: T0 }, SEATS, "bob").ok).toBe(true);
+    // No host turn (null) falls back to the move list.
+    expect(applyStateMove(s, { col: 2, by: "bob", at: T0 }, SEATS, null).ok).toBe(true);
   });
 
-  it("two clients converge regardless of duplicate delivery", () => {
-    const random = seeded("converge");
-    let a = newGame();
-    let b = newGame();
-    while (!a.over) {
-      const mover = a.turn;
-      const col = randomLegalColumn(a, random) as number;
-      const payload = { n: a.moves.length, col };
-      const next = playMove(a, col, mover) as GameState;
-      a = next;
-      // Deliver twice — the second is a duplicate.
-      const first = receiveMove(b, payload, mover);
-      expect(first.kind).toBe("applied");
-      if (first.kind === "applied") b = first.state;
-      expect(receiveMove(b, payload, mover).kind).toBe("duplicate");
+  it("rejects illegal moves, strangers and corrupt states", () => {
+    const full = playState([0, 0, 0, 0, 0, 0]);
+    expect(applyStateMove(full, { col: 0, by: "alice", at: T0 }, SEATS)).toEqual({ ok: false, reason: "column-full" });
+    for (const col of [-1, 7, 2.5, "3", null]) {
+      expect(applyStateMove(null, { col, by: "alice", at: T0 }, SEATS)).toEqual({ ok: false, reason: "bad-column" });
     }
-    expect(b.moves).toEqual(a.moves);
-    expect(b.winner).toBe(a.winner);
-    expect(b.draw).toBe(a.draw);
+    expect(applyStateMove(null, { col: 3, by: "mallory", at: T0 }, SEATS)).toEqual({ ok: false, reason: "not-a-player" });
+    const won = playState([0, 6, 1, 6, 2, 6, 3]);
+    expect(applyStateMove(won, { col: 5, by: "bob", at: T0 }, SEATS, "bob")).toEqual({ ok: false, reason: "game-over" });
+    for (const junk of ["x", 3, [], { moves: "3,3" }, { moves: [{ col: 3, by: "alice" }] }]) {
+      expect(applyStateMove(junk, { col: 3, by: "alice", at: T0 }, SEATS)).toEqual({ ok: false, reason: "bad-state" });
+    }
+  });
+
+  it("refuses to read a history with an illegal or misattributed move", () => {
+    const ok = playState([3, 3, 4]);
+    expect(readBoardState(ok, SEATS)?.game.moves).toEqual([3, 3, 4]);
+    const swapped = { ...ok, moves: ok.moves.map((m, i) => (i === 1 ? { ...m, by: "alice" } : m)) };
+    expect(readBoardState(swapped, SEATS)).toBeNull();
+    const overfull = { moves: Array.from({ length: 7 }, (_, i) => ({ col: 0, by: SEATS[i % 2], at: T0 })) };
+    expect(readBoardState(overfull, SEATS)).toBeNull();
+    const pastWin = playState([0, 6, 1, 6, 2, 6, 3]);
+    expect(readBoardState({ ...pastWin, moves: [...pastWin.moves, { col: 5, by: "bob", at: T0 }] }, SEATS)).toBeNull();
+    expect(readBoardState({ moves: new Array(CELLS + 1).fill({ col: 0, by: "alice", at: T0 }) }, SEATS)).toBeNull();
+  });
+
+  it("detects a win from state and records the winner and line", () => {
+    const s = playState([0, 6, 1, 6, 2, 6, 3]);
+    expect(s.winner).toBe("alice");
+    expect(s.draw).toBe(false);
+    expect(s.line).toEqual([
+      { col: 0, row: 0 },
+      { col: 1, row: 0 },
+      { col: 2, row: 0 },
+      { col: 3, row: 0 },
+    ]);
+    const read = readBoardState(s, SEATS);
+    expect(read?.game.over).toBe(true);
+    expect(read && scoreFor(read.game, 0)).toBe(1);
+    expect(read && scoreFor(read.game, 1)).toBe(0);
+
+    const bobWins = playState([0, 6, 0, 6, 1, 6, 2, 6]);
+    expect(bobWins.winner).toBe("bob");
+    expect(bobWins.line?.every((c) => c.col === 6)).toBe(true);
+  });
+
+  it("detects a draw from state", () => {
+    const s = playState(DRAW);
+    expect(s).toMatchObject({ winner: null, draw: true, line: null });
+    expect(s.board.every((c) => c !== null)).toBe(true);
+    const read = readBoardState(s, SEATS);
+    expect(read && scoreFor(read.game, 0)).toBe(0.5);
+    expect(read && scoreFor(read.game, 1)).toBe(0.5);
+  });
+
+  it("replays exactly the same position after a reload (a JSON round trip)", () => {
+    const random = seeded("reload");
+    let state: unknown = null;
+    let live = newGame();
+    for (let i = 0; i < 17; i++) {
+      const col = randomLegalColumn(live, random) as number;
+      const by = SEATS[live.turn];
+      const res = applyStateMove(state, { col, by, at: T0 + i }, SEATS, by);
+      if (!res.ok) throw new Error(res.reason);
+      state = res.state;
+      live = res.game;
+      if (live.over) break;
+    }
+    const reloaded = readBoardState(JSON.parse(JSON.stringify(state)), SEATS);
+    expect(reloaded?.game).toEqual(live);
+    expect(reloaded?.moves.map((m) => m.col)).toEqual([...live.moves]);
+    // The last disc is the one to highlight.
+    expect(reloaded?.game.discs.at(-1)?.n).toBe(live.moves.length - 1);
+  });
+
+  it("trusts the move list over a tampered board", () => {
+    const s = playState([3, 3]);
+    const tampered = { ...s, board: new Array(CELLS).fill(1), winner: "bob" };
+    const read = readBoardState(tampered, SEATS);
+    expect(read?.game.board).toEqual(s.board);
+    expect(read?.game.winner).toBeNull();
+  });
+
+  it("resumes the move clock from the last move, within limits", () => {
+    const now = T0 + 100_000;
+    expect(resumeClockAt([], now)).toBe(now);
+    expect(resumeClockAt([{ col: 0, by: "a", at: now - 10_000 }], now)).toBe(now - 10_000);
+    expect(resumeClockAt([{ col: 0, by: "a", at: now - 3_600_000 }], now, 30_000, 8_000)).toBe(now - 22_000);
+    expect(resumeClockAt([{ col: 0, by: "a", at: now + 5_000 }], now)).toBe(now); // skewed clock
+  });
+
+  it("two clients writing through the reducer converge; a stale write is refused", () => {
+    // Both clients read version 1, alice moves; bob's client (stale) tries to move as alice again.
+    const v1 = playState([3]);
+    const bobMove = applyStateMove(v1, { col: 4, by: "bob", at: T0 }, SEATS, "bob");
+    expect(bobMove.ok).toBe(true);
+    if (!bobMove.ok) return;
+    // On conflict the SDK re-runs the updater on the newer state: a repeat of bob's move is now out of turn.
+    expect(applyStateMove(bobMove.state, { col: 4, by: "bob", at: T0 }, SEATS, "alice")).toEqual({
+      ok: false,
+      reason: "wrong-turn",
+    });
   });
 });
 

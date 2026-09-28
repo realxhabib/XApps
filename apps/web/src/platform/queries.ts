@@ -1,10 +1,11 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { getOfficialApp } from "./catalog";
 import { useBackend, useViewer } from "./client";
-import type { CreateChallengeInput, Match, RegisterAppInput } from "./types";
+import { isYourTurn, needsAttention } from "./match-utils";
+import type { CreateChallengeInput, Json, Match, RegisterAppInput } from "./types";
 
 export function useApps() {
   const backend = useBackend();
@@ -82,6 +83,31 @@ export function useMyMatches() {
   return query;
 }
 
+/**
+ * The viewer's inbox, split for badges: `yourTurn` are turn-based async matches
+ * waiting on the viewer's move, `attention` everything that needs them (invites,
+ * their turn, async matches they haven't played yet).
+ */
+export function useInbox() {
+  const query = useMyMatches();
+  const { viewer } = useViewer();
+  const viewerId = viewer?.id;
+  const data = query.data;
+  const split = useMemo(() => {
+    const matches = data ?? [];
+    return {
+      yourTurn: matches.filter((m) => isYourTurn(m, viewerId)),
+      attention: matches.filter((m) => needsAttention(m, viewerId)),
+    };
+  }, [data, viewerId]);
+  return { ...query, ...split };
+}
+
+/** Turn-based async matches waiting on the viewer ("Your turn in …"). */
+export function useYourTurnMatches(): Match[] {
+  return useInbox().yourTurn;
+}
+
 export function useVotingMatches() {
   const backend = useBackend();
   const { viewer } = useViewer();
@@ -137,21 +163,31 @@ export function useQuickMatch() {
   });
 }
 
+export type PracticeInput = string | { appSlug: string; players?: number };
+
+/** Practice against bots: `mutate(appSlug)` or `mutate({ appSlug, players })` for a bigger table. */
 export function usePractice() {
   const backend = useBackend();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (appSlug: string) => backend.startPractice(appSlug),
+    mutationFn: (input: PracticeInput) =>
+      typeof input === "string" ? backend.startPractice(input) : backend.startPractice(input.appSlug, input.players),
     onSuccess: (match) => refreshMatchLists(queryClient, match),
   });
 }
+
+export type MatchAction = "join" | "decline" | "cancel" | "forfeit" | "claim" | "start" | "spectate";
 
 export function useMatchAction() {
   const backend = useBackend();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ action, matchId }: { action: "join" | "decline" | "cancel" | "forfeit" | "claim"; matchId: string }) => {
+    mutationFn: ({ action, matchId }: { action: MatchAction; matchId: string }) => {
       switch (action) {
+        case "start":
+          return backend.startMatch(matchId);
+        case "spectate":
+          return backend.spectate(matchId);
         case "join":
           return backend.joinMatch(matchId);
         case "decline":
@@ -165,6 +201,69 @@ export function useMatchAction() {
       }
     },
     onSuccess: (match) => refreshMatchLists(queryClient, match),
+  });
+}
+
+/** The creator starts a lobby early once the minimum is seated. */
+export function useStartMatch() {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (matchId: string) => backend.startMatch(matchId),
+    onSuccess: (match) => refreshMatchLists(queryClient, match),
+  });
+}
+
+/** Invite more people (by handle) into a match's free seats. */
+export function useInviteToMatch() {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ matchId, handles }: { matchId: string; handles: string[] }) => backend.inviteToMatch(matchId, handles),
+    onSuccess: (match) => refreshMatchLists(queryClient, match),
+  });
+}
+
+/** Watch a match without a seat. */
+export function useSpectate() {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (matchId: string) => backend.spectate(matchId),
+    onSuccess: (match) => queryClient.setQueryData(["match", match.id], match),
+  });
+}
+
+/**
+ * Compare-and-set the shared match state. Rejects with BackendError code
+ * "conflict" when someone else wrote first — re-read and retry.
+ */
+export function useUpdateState() {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ matchId, state, expectedVersion }: { matchId: string; state: Json; expectedVersion: number }) =>
+      backend.updateState(matchId, state, expectedVersion),
+    onSuccess: ({ match }) => queryClient.setQueryData(["match", match.id], match),
+  });
+}
+
+/** Pass the turn (default: the next seated player still in the match). */
+export function useEndTurn() {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ matchId, next }: { matchId: string; next?: string | null }) => backend.endTurn(matchId, next),
+    onSuccess: (match) => refreshMatchLists(queryClient, match),
+  });
+}
+
+export function useSetRound() {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ matchId, round }: { matchId: string; round: number }) => backend.setRound(matchId, round),
+    onSuccess: (match) => queryClient.setQueryData(["match", match.id], match),
   });
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
-import { motion } from "motion/react";
-import { Bot, Clock3, Gavel, Share2, Swords, Target, Users, Zap } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
+import { Bot, Clock3, Eye, Gavel, Repeat, Share2, Swords, Target, Users, Zap } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -20,6 +20,8 @@ import { spring } from "@/lib/motion";
 import { openXIntent } from "@/lib/share";
 import { cn, formatCompact, formatNumber } from "@/lib/utils";
 import { useResolveViewer, useViewer } from "@/platform/client";
+import { isMultiplayer, seatedPlayers, tableSizeLabel, tableSizeLabelForMatch } from "@/components/play/match-view";
+import { play } from "@/lib/sfx";
 import { MODE_LABEL } from "@/platform/match-utils";
 import { useActivity, useApp, useLeaderboard, usePractice, useQuickMatch } from "@/platform/queries";
 import { CATEGORIES } from "@/platform/types";
@@ -32,6 +34,7 @@ export function AppDetail({ slug }: { slug: string }) {
   const quick = useQuickMatch();
   const practice = usePractice();
   const [sheet, setSheet] = useState(false);
+  const [practiceSeats, setPracticeSeats] = useState<number | null>(null);
   const { data: leaders } = useLeaderboard(slug);
   const { data: activity } = useActivity();
 
@@ -46,17 +49,28 @@ export function AppDetail({ slug }: { slug: string }) {
   }
 
   const category = CATEGORIES.find((c) => c.id === app.category);
+  const step = (app.teams ?? 0) >= 2 ? app.teams! : 1;
+  const seatChoices: number[] = [];
+  for (let n = Math.ceil(app.players.min / step) * step; n <= app.players.max; n += step) seatChoices.push(n);
+  const seats = practiceSeats ?? seatChoices[0] ?? app.players.min;
   const needSignIn = () => router.push(`/login?next=${encodeURIComponent(`/apps/${slug}`)}`);
   const go = async (kind: "quick" | "practice") => {
     if (!(viewer ?? (await resolveViewer()))) return needSignIn();
     try {
-      const match = kind === "quick" ? await quick.mutateAsync(app.slug) : await practice.mutateAsync(app.slug);
+      const match =
+        kind === "quick"
+          ? await quick.mutateAsync(app.slug)
+          : await practice.mutateAsync(seatChoices.length > 1 ? { appSlug: app.slug, players: seats } : app.slug);
       router.push(`/play/${match.id}`);
     } catch (error) {
       toast(error instanceof Error ? error.message : "Couldn't start a match", { tone: "danger" });
     }
   };
   const recent = (activity ?? []).filter((m) => m.appSlug === app.slug).slice(0, 6);
+  const watchable =
+    app.spectators !== false
+      ? (activity ?? []).filter((m) => m.appSlug === app.slug && m.status === "active" && m.mode !== "practice" && !m.players.some((p) => p.userId === viewer?.id)).slice(0, 3)
+      : [];
   const canChallenge = app.modes.some((m) => m !== "practice");
 
   return (
@@ -109,8 +123,18 @@ export function AppDetail({ slug }: { slug: string }) {
               transition={{ delay: 0.25 }}
             >
               <span className="flex items-center gap-1.5">
-                <Users className="size-4" /> 1v1
+                <Users className="size-4" /> {tableSizeLabel(app)}
               </span>
+              {app.turnBased && (
+                <span className="flex items-center gap-1.5">
+                  <Repeat className="size-4" /> Turn-based
+                </span>
+              )}
+              {app.spectators !== false && (
+                <span className="flex items-center gap-1.5">
+                  <Eye className="size-4" /> Spectators welcome
+                </span>
+              )}
               <span className="flex items-center gap-1.5">
                 <Clock3 className="size-4" /> {app.durationLabel}
               </span>
@@ -147,9 +171,38 @@ export function AppDetail({ slug }: { slug: string }) {
                 </Button>
               )}
               <Button size="xl" variant="ghost" icon={<Bot className="size-5" />} loading={practice.isPending} onClick={() => go("practice")}>
-                Practice
+                {seatChoices.length > 1 ? `Practice · ${seats}` : "Practice"}
               </Button>
             </motion.div>
+            {seatChoices.length > 1 && (
+              <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-ink-400">
+                <span>Practice table</span>
+                <div className="flex items-center gap-1 rounded-full glass p-1" role="radiogroup" aria-label="Practice table size">
+                  {seatChoices.map((n) => {
+                    const active = n === seats;
+                    return (
+                      <button
+                        key={n}
+                        role="radio"
+                        aria-checked={active}
+                        onClick={() => {
+                          if (!active) play("tick");
+                          setPracticeSeats(n);
+                        }}
+                        className={cn(
+                          "relative flex h-7 min-w-9 items-center justify-center rounded-full px-2 font-semibold tabular transition-colors",
+                          active ? "text-ink-950" : "text-ink-300 hover:text-ink-50",
+                        )}
+                      >
+                        {active && <motion.span layoutId="practice-seats" className="absolute inset-0 rounded-full bg-ink-50" transition={spring.layout} />}
+                        <span className="relative">{(app.teams ?? 0) >= 2 ? tableSizeLabel({ players: { min: n, max: n }, teams: app.teams }) : n}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <span>{(app.teams ?? 0) >= 2 ? "" : "seats · bots fill the rest"}</span>
+              </div>
+            )}
             <p className="mt-3 text-xs text-ink-400">
               Modes: {app.modes.map((m) => MODE_LABEL[m]).join(" · ")}
             </p>
@@ -198,6 +251,53 @@ export function AppDetail({ slug }: { slug: string }) {
               </button>
             </div>
           </section>
+          <AnimatePresence initial={false}>
+            {watchable.length > 0 && (
+              <motion.section
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={spring.soft}
+              >
+                <h2 className="mb-3 flex items-center gap-2 font-display text-2xl font-extrabold">
+                  <span className="relative flex size-2.5">
+                    <span className="absolute inset-0 animate-ping-soft rounded-full bg-danger" />
+                    <span className="relative size-2.5 rounded-full bg-danger" />
+                  </span>
+                  Live now
+                </h2>
+                <div className="space-y-2">
+                  {watchable.map((m) => {
+                    const seated = seatedPlayers(m);
+                    return (
+                      <Link
+                        key={m.id}
+                        href={`/play/${m.id}`}
+                        className="group flex items-center gap-3 rounded-3xl border border-white/[0.07] bg-ink-850/70 p-2.5 pr-3 transition hover:border-white/15 hover:bg-ink-800/80"
+                      >
+                        <div className="flex -space-x-2">
+                          {seated.slice(0, 4).map((p) => (
+                            <Avatar key={p.userId} person={{ ...p.profile, isBot: p.isBot }} size={32} className="rounded-full ring-2 ring-ink-850" />
+                          ))}
+                        </div>
+                        <span className="min-w-0 flex-1 truncate text-sm">
+                          {seated
+                            .slice(0, 3)
+                            .map((p) => `@${p.profile.handle}`)
+                            .join(isMultiplayer(m) ? ", " : " vs ")}
+                          {seated.length > 3 && ` +${seated.length - 3}`}
+                          <span className="ml-1.5 text-xs text-ink-400">{isMultiplayer(m) ? tableSizeLabelForMatch(m) : MODE_LABEL[m.mode]}</span>
+                        </span>
+                        <span className="flex h-8 items-center gap-1.5 rounded-full bg-white/[0.07] px-3 text-xs font-semibold transition group-hover:bg-white/15">
+                          <Eye className="size-3.5" /> Watch
+                        </span>
+                      </Link>
+                    );
+                  })}
+                </div>
+              </motion.section>
+            )}
+          </AnimatePresence>
           {recent.length > 0 && (
             <section>
               <h2 className="mb-3 font-display text-2xl font-extrabold">Recent matches</h2>

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { TiltCard } from "@/components/motion/tilt-card";
 import { Badge } from "@/components/ui/badge";
 import { play } from "@/lib/sfx";
+import { tableSizeLabel } from "@/components/play/match-view";
 import { cn, formatCompact } from "@/lib/utils";
 import { CATEGORIES, type AppManifest } from "@/platform/types";
 import { AppArt } from "./app-art";
@@ -70,7 +71,7 @@ export function AppCard({
                 </Badge>
               )}
               <span className="flex items-center gap-1">
-                <Users className="size-3.5" /> 1v1
+                <Users className="size-3.5" /> {tableSizeLabel(app)}
               </span>
               <span className="flex items-center gap-1">
                 <Clock3 className="size-3.5" /> {app.durationLabel}

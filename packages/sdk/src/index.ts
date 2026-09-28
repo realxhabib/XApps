@@ -1,6 +1,20 @@
-export { connect, resetConnection, XAppsClient, type ConnectOptions } from "./client";
+export {
+  connect,
+  resetConnection,
+  XAppsClient,
+  type ConnectOptions,
+  type RoundApi,
+  type SetupApi,
+  type StateApi,
+  type StateChange,
+  type StateSnapshot,
+  type StateUpdateOptions,
+  type StateUpdater,
+  type TurnApi,
+  type TurnInfo,
+} from "./client";
 export { createRandom, randomId, type Random } from "./random";
-export { createMockHost, type MockHost, type MockHostOptions } from "./mock-host";
+export { createMockHost, type MockHost, type MockHostOptions, type MockSetupOutcome } from "./mock-host";
 export {
   LIMITS,
   PROTOCOL_VERSION,
@@ -12,10 +26,12 @@ export {
   type HostEventData,
   type Json,
   type LaunchContext,
+  type LaunchPurpose,
   type MatchMode,
   type MatchResult,
   type MatchStatus,
   type PlayerInfo,
+  type PlayerRole,
   type RoomMessage,
   type Scoring,
   type Submission,

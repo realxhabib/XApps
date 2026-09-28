@@ -81,3 +81,23 @@ test("two players duel live across tabs", async ({ context }) => {
   await expect(victory).toBeVisible({ timeout: 15_000 });
   await expect(bob.getByRole("dialog", { name: /Defeat/ })).toBeVisible({ timeout: 15_000 });
 });
+
+test("four-player trivia practice runs to a podium", async ({ page }) => {
+  test.setTimeout(180_000);
+  await signIn(page, "trivia_e2e");
+  await page.goto("/apps/trivia-royale");
+  await page.getByRole("radiogroup", { name: "Practice table size" }).getByRole("radio", { name: "4" }).click();
+  await page.getByRole("button", { name: /^Practice/ }).click();
+  await expect(page).toHaveURL(/\/play\//);
+
+  const app = page.frameLocator("iframe");
+  const results = page.getByRole("dialog", { name: /Trivia Royale/ });
+  // Eight rounds: tap the first answer tile whenever one is open.
+  for (let i = 0; i < 90 && !(await results.isVisible()); i++) {
+    await app.getByRole("button", { name: /^Triangle:/ }).click({ timeout: 1_500 }).catch(() => undefined);
+    await page.waitForTimeout(1_000);
+  }
+  await expect(results).toBeVisible({ timeout: 30_000 });
+  // Four seated players are ranked: the viewer plus three practice bots.
+  await expect(results.getByText(/trivia_e2e/).first()).toBeVisible();
+});

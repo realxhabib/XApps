@@ -1,0 +1,211 @@
+"use client";
+
+import { LIMITS, SDK_VERSION, XAppsError, type Json, type LaunchContext, type PlayerInfo } from "@xapps/sdk";
+import type { HostHandlers } from "@xapps/sdk/host";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { useMemo, useRef, useState } from "react";
+import { toast } from "@/components/chrome/toasts";
+import { APP_ALLOW, APP_SANDBOX, jsonBytes, useAppBridge } from "@/components/play/use-app-bridge";
+import { haptic } from "@/lib/haptics";
+import { play } from "@/lib/sfx";
+import { spring } from "@/lib/motion";
+import { cn } from "@/lib/utils";
+import { useBackend } from "@/platform/client";
+import type { AppManifest, PlayableMode, Profile } from "@/platform/types";
+import { AppGlyph } from "./app-glyph";
+
+export interface AppSetupResult {
+  settings: { [key: string]: Json };
+  summary: string | null;
+}
+
+function toPlayerInfo(p: Profile, seat: number, teams: number): PlayerInfo {
+  return {
+    id: p.id,
+    handle: p.handle,
+    name: p.name,
+    avatarUrl: p.avatarUrl,
+    seat,
+    isBot: !!p.isBot,
+    submitted: false,
+    score: null,
+    team: teams >= 2 ? seat % teams : null,
+    role: "player",
+  };
+}
+
+/**
+ * The app's own challenge setup screen (`setup: true` apps), embedded in the
+ * challenge sheet. The app is launched with `purpose: "setup"` and a stub
+ * match, and answers with `setup.submit(settings, summary)` or `setup.cancel()`.
+ */
+export function AppSetupFrame({
+  app,
+  viewer,
+  mode,
+  rivals,
+  tableSize,
+  initial,
+  onSubmit,
+  onCancel,
+  className,
+}: {
+  app: AppManifest;
+  viewer: Profile;
+  mode: Exclude<PlayableMode, "practice">;
+  rivals: Profile[];
+  tableSize: number;
+  /** Settings from an earlier submit, so the app can prefill its form. */
+  initial?: { [key: string]: Json };
+  onSubmit: (result: AppSetupResult) => void;
+  onCancel: () => void;
+  className?: string;
+}) {
+  const reduced = useReducedMotion();
+  const backend = useBackend();
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [ready, setReady] = useState(false);
+  const [seed] = useState(() => Math.random().toString(36).slice(2, 14));
+
+  const appUrl = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const url = new URL(app.url, window.location.origin);
+      return { href: url.toString(), origin: url.origin };
+    } catch {
+      return null;
+    }
+  }, [app.url]);
+
+  const context = (): LaunchContext => {
+    const teams = app.teams ?? 0;
+    const people = [viewer, ...rivals];
+    return {
+      purpose: "setup",
+      app: { id: app.slug, slug: app.slug, name: app.name },
+      user: { id: viewer.id, handle: viewer.handle, name: viewer.name, avatarUrl: viewer.avatarUrl },
+      match: {
+        id: "setup",
+        mode,
+        status: "open",
+        scoring: app.scoring,
+        seed,
+        players: people.map((p, seat) => toPlayerInfo(p, seat, teams)),
+        seat: 0,
+        settings: initial ?? {},
+        minPlayers: app.players.min,
+        maxPlayers: tableSize,
+        teams,
+        role: "player",
+        state: null,
+        stateVersion: 0,
+        turn: null,
+        turnDeadline: null,
+        round: 0,
+      },
+      host: { name: "XApps", version: SDK_VERSION, origin: window.location.origin },
+      locale: navigator.language,
+    };
+  };
+
+  const notHere = (method: string) => () => {
+    throw new XAppsError("forbidden", `${method} isn't available while setting up a challenge`);
+  };
+
+  const handlers: HostHandlers = {
+    // Setup never starts a match: ready() only reveals the frame.
+    ready: () => {
+      setReady(true);
+      return { startedAt: null };
+    },
+    "setup.submit": ({ settings, summary }) => {
+      if (jsonBytes(settings) > LIMITS.setupSettingsBytes) {
+        throw new XAppsError("invalid_params", `setup.submit: settings must be ≤ ${LIMITS.setupSettingsBytes / 1024} KB`);
+      }
+      const text = typeof summary === "string" ? summary.trim().slice(0, LIMITS.setupSummaryLength) : "";
+      play("pop");
+      haptic("success");
+      onSubmit({ settings, summary: text || null });
+      return null;
+    },
+    "setup.cancel": () => {
+      onCancel();
+      return null;
+    },
+    "ui.toast": ({ message, tone }) => {
+      toast(message, { tone: tone ?? "info" });
+      return null;
+    },
+    "ui.haptic": ({ style }) => {
+      haptic(style ?? "light");
+      return null;
+    },
+    "ui.status": () => null,
+    "ui.scores": () => null,
+    "ui.turn": () => null,
+    "ui.celebrate": () => null,
+    "storage.get": ({ key }) => backend.storageGet(app.slug, key),
+    "storage.set": async ({ key, value }) => {
+      await backend.storageSet(app.slug, key, value);
+      return null;
+    },
+    "room.send": notHere("room.send"),
+    "match.submit": notHere("match.submit"),
+    "match.forfeit": notHere("match.forfeit"),
+    "social.share": notHere("social.share"),
+    "state.get": () => ({ state: null, version: 0 }),
+    "state.set": notHere("state.set"),
+    "turn.end": notHere("turn.end"),
+    "round.set": notHere("round.set"),
+  };
+
+  const { connected } = useAppBridge({
+    iframeRef,
+    appOrigin: appUrl?.origin ?? null,
+    enabled: !!appUrl,
+    context,
+    handlers,
+  });
+
+  return (
+    <motion.div
+      className={cn(
+        "relative h-[24rem] overflow-hidden rounded-3xl bg-ink-900 ring-1 ring-white/10 sm:h-[26rem]",
+        className,
+      )}
+      initial={reduced ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 8 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      exit={reduced ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: -8 }}
+      transition={spring.soft}
+      style={{ "--accent-from": app.accent[0], "--accent-to": app.accent[1] } as React.CSSProperties}
+    >
+      {appUrl && (
+        <iframe
+          ref={iframeRef}
+          src={appUrl.href}
+          title={`${app.name} setup`}
+          className="absolute inset-0 size-full border-0"
+          sandbox={APP_SANDBOX}
+          allow={APP_ALLOW}
+        />
+      )}
+      <AnimatePresence>
+        {!(connected && ready) && (
+          <motion.div
+            key="loading"
+            className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-ink-900"
+            exit={{ opacity: 0, transition: { duration: 0.25 } }}
+          >
+            <motion.div
+              animate={reduced ? undefined : { scale: [1, 1.08, 1], rotate: [0, -3, 3, 0] }}
+              transition={{ duration: 1.5, repeat: Infinity }}
+            >
+              <AppGlyph app={app} size={56} />
+            </motion.div>
+            <p className="text-xs text-ink-300">Opening {app.name} setup…</p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}

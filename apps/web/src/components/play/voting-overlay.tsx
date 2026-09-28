@@ -10,6 +10,7 @@ import { XLogo } from "@/components/ui/x-logo";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import type { AppManifest, Match } from "@/platform/types";
+import { SEAT_COLORS, seatedPlayers } from "./match-view";
 
 /** Live tally while the crowd judges a contest. */
 export function VotingOverlay({
@@ -25,8 +26,10 @@ export function VotingOverlay({
   onShare: () => void;
   onLeave: () => void;
 }) {
-  const players = [...match.players].sort((a, b) => a.seat - b.seat);
+  const players = seatedPlayers(match).filter((p) => p.state !== "invited" && p.state !== "left");
   const target = match.votesNeeded;
+  const many = players.length > 2;
+  const best = Math.max(0, ...players.map((x) => match.votes[x.userId] ?? 0));
   return (
     <motion.div
       className="fixed inset-0 z-[55] flex items-start justify-center overflow-y-auto px-4 pb-10 pt-24"
@@ -42,27 +45,30 @@ export function VotingOverlay({
           </Badge>
           <h2 className="mt-3 font-display text-4xl font-extrabold tracking-tight sm:text-5xl">The crowd is voting</h2>
           <p className="mt-2 text-sm text-ink-300">
-            First to <b className="text-ink-50">{target} votes</b> takes the {app.name}.
+            First to <b className="text-ink-50">{target} votes</b> takes the {app.name}
+            {many ? <> · {players.length} entries</> : null}.
           </p>
         </motion.div>
 
-        <div className="mt-8 grid gap-4 sm:grid-cols-2">
+        <div className={cn("mt-8 grid gap-4", !many ? "sm:grid-cols-2" : players.length === 4 ? "mx-auto max-w-2xl grid-cols-2 gap-3" : "grid-cols-2 gap-3 lg:grid-cols-3")}>
           {players.map((p, i) => {
             const count = match.votes[p.userId] ?? 0;
-            const leading = count > 0 && count === Math.max(...players.map((x) => match.votes[x.userId] ?? 0));
+            const leading = count > 0 && count === best;
+            const color = many ? (SEAT_COLORS[i % SEAT_COLORS.length] ?? app.accent[0]) : app.accent[i % 2];
             return (
               <motion.div
+                layout
                 key={p.userId}
-                className={cn("rounded-[1.75rem] glass p-3 text-left transition-shadow", leading && "ring-1 ring-white/30")}
-                initial={{ opacity: 0, y: 30, rotate: i === 0 ? -2 : 2 }}
+                className={cn("rounded-[1.75rem] glass p-3 text-left transition-shadow", many && "rounded-3xl p-2.5", leading && "ring-1 ring-white/30")}
+                initial={{ opacity: 0, y: 30, rotate: i % 2 === 0 ? -2 : 2 }}
                 animate={{ opacity: 1, y: 0, rotate: 0 }}
                 transition={{ delay: 0.15 + i * 0.1, ...spring.bouncy }}
               >
                 <EntryView display={p.submission?.display} compact />
-                <div className="mt-3 flex items-center gap-2.5 px-1">
-                  <Avatar person={{ ...p.profile, isBot: p.isBot }} size={32} />
+                <div className={cn("mt-3 flex items-center gap-2.5 px-1", many && "mt-2 gap-2")}>
+                  <Avatar person={{ ...p.profile, isBot: p.isBot }} size={many ? 24 : 32} />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold">
+                    <p className={cn("truncate text-sm font-semibold", many && "text-xs")}>
                       {p.profile.name}
                       {p.userId === viewerId && <span className="ml-1 text-xs text-ink-400">(you)</span>}
                     </p>
@@ -74,7 +80,7 @@ export function VotingOverlay({
                       animate={{ y: 0, opacity: 1, scale: 1 }}
                       exit={{ y: 14, opacity: 0 }}
                       transition={spring.wobbly}
-                      className="font-mono text-2xl font-bold tabular"
+                      className={cn("font-mono font-bold tabular", many ? "text-lg" : "text-2xl")}
                     >
                       {count}
                     </motion.span>
@@ -86,7 +92,7 @@ export function VotingOverlay({
                       key={n}
                       className="h-1.5 flex-1 rounded-full"
                       animate={{
-                        backgroundColor: n < count ? app.accent[i % 2] : "rgb(255 255 255 / 0.1)",
+                        backgroundColor: n < count ? color : "rgb(255 255 255 / 0.1)",
                         scaleY: n === count - 1 ? [1, 2, 1] : 1,
                       }}
                       transition={{ duration: 0.4 }}
