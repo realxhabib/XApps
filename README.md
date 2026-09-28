@@ -56,6 +56,12 @@ Without Supabase keys, XApps runs in **demo mode**. Everything lives in your bro
 
 If the keys are set but the schema isn't installed yet, the app says so and offers a one-click switch to demo mode.
 
+## Deploy
+
+**Vercel** (recommended): import the repo and set **Root Directory** to `apps/web`. Leave *Include files outside the root directory* on, because the app imports `packages/sdk`. [`apps/web/vercel.json`](apps/web/vercel.json) already installs from the monorepo root and runs `npm run build`, which bundles the SDK and then runs `next build`. Use Node 22 (anything from 20.9 works). Add the four variables from step 6 in *Settings → Environment Variables*, with `NEXT_PUBLIC_SITE_URL` set to your production URL. Then add `https://<your-domain>/auth/callback` to the Supabase redirect URLs. Without the Supabase variables, the deployment runs in demo mode.
+
+**Anywhere else**: `npm ci && npm run build && npm start` on Node 20.9+ serves on port 3000 (set `PORT` to change it).
+
 **Reviewing community apps.** New submissions start as `pending` and are only visible to their developer. To publish one, run this in the SQL editor:
 
 ```sql
