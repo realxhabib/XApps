@@ -7,6 +7,7 @@ import { RotatingWord } from "@/components/motion/rotating-word";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { XLogo } from "@/components/ui/x-logo";
 import { BLUR_TWEEN, spring } from "@/lib/motion";
 import { OFFICIAL_APPS } from "@/platform/catalog";
 import { useViewer } from "@/platform/client";
@@ -72,7 +73,8 @@ function GuestCopy() {
           <RotatingWord words={WORDS} colors={["#a9b8ff", "#a35cff", "#ff5ca8"]} />
         </motion.span>
         <motion.span className="block" initial={{ opacity: 0, y: 30, filter: "blur(12px)" }} animate={{ opacity: 1, y: 0, filter: "blur(0px)" }} transition={{ delay: 0.3, ...spring.soft, filter: { ...BLUR_TWEEN, delay: 0.3 } }}>
-          on X.
+          on <XLogo className="inline-block h-[0.7em] w-auto align-baseline" />
+          <span className="sr-only">X</span>.
         </motion.span>
       </h1>
       <motion.p
