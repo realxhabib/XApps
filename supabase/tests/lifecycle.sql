@@ -1045,6 +1045,28 @@ begin
   assert m->>'turnUserId' = pg_temp.uid('alice_x')::text, 'turn unchanged by joins';
 end $$;
 
+-- Settling withdraws multiplayer invites nobody answered (they aren't ranked)
+set role authenticated;
+select pg_temp.login('alice_x');
+insert into ctx values ('unanswered', (select public.create_challenge('golf-four', 'async', null, '{}', array['bob', 'carol'], 4)::text));
+select pg_temp.login('bob');
+select public.join_match(pg_temp.mid('unanswered'));
+select pg_temp.login('alice_x');
+select public.submit_entry(pg_temp.mid('unanswered'), null, 40);
+select pg_temp.login('bob');
+select public.submit_entry(pg_temp.mid('unanswered'), null, 55);
+reset role;
+select public.settle_match(pg_temp.mid('unanswered'));
+do $$
+begin
+  assert (select status from public.matches where id = pg_temp.mid('unanswered')) = 'completed', 'settled';
+  assert not exists (select 1 from public.match_players where match_id = pg_temp.mid('unanswered') and user_id = pg_temp.uid('carol')),
+    'unanswered invite withdrawn';
+  assert (select rank from public.match_players where match_id = pg_temp.mid('unanswered') and user_id = pg_temp.uid('alice_x')) = 1, 'low score first';
+  assert (select rank from public.match_players where match_id = pg_temp.mid('unanswered') and user_id = pg_temp.uid('bob')) = 2, 'second';
+end $$;
+set role authenticated;
+
 -- Internal v2 helpers are not callable by clients
 do $$
 begin
