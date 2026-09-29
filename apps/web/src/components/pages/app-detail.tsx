@@ -21,6 +21,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { spring } from "@/lib/motion";
 import { openXIntent } from "@/lib/share";
 import { cn, formatCompact, formatNumber } from "@/lib/utils";
+import { appImageSrc } from "@/lib/app-images";
 import { useResolveViewer, useViewer } from "@/platform/client";
 import { isMultiplayer, seatedPlayers, tableSizeLabel, tableSizeLabelForMatch } from "@/components/play/match-view";
 import { play } from "@/lib/sfx";
@@ -52,6 +53,7 @@ export function AppDetail({ slug }: { slug: string }) {
   }
 
   const category = CATEGORIES.find((c) => c.id === app.category);
+  const cover = !!appImageSrc(app.coverImage);
   const step = (app.teams ?? 0) >= 2 ? app.teams! : 1;
   const seatChoices: number[] = [];
   for (let n = Math.ceil(app.players.min / step) * step; n <= app.players.max; n += step) seatChoices.push(n);
@@ -84,13 +86,21 @@ export function AppDetail({ slug }: { slug: string }) {
 
       {/* Hero */}
       <section className="relative overflow-hidden rounded-[2.5rem] border border-white/[0.08] bg-ink-850/80">
-        <div
-          aria-hidden
-          className="absolute inset-0 opacity-50"
-          style={{ background: `radial-gradient(ellipse at 85% 0%, ${app.accent[0]}55, transparent 55%), radial-gradient(ellipse at 100% 100%, ${app.accent[1]}44, transparent 55%)` }}
-        />
-        <div className="relative grid grid-cols-1 gap-6 p-6 sm:p-10 lg:grid-cols-[1.2fr_1fr]">
-          <div>
+        {cover ? (
+          // The cover fills the hero; the name and actions sit on top of it.
+          <motion.div aria-hidden className="absolute inset-0" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.6 }}>
+            <AppArt app={app} className="size-full" />
+            <div className="absolute inset-0 bg-gradient-to-t from-ink-950 via-ink-950/75 to-ink-950/10 lg:bg-gradient-to-r lg:from-ink-950/95 lg:via-ink-950/70 lg:to-transparent" />
+          </motion.div>
+        ) : (
+          <div
+            aria-hidden
+            className="absolute inset-0 opacity-50"
+            style={{ background: `radial-gradient(ellipse at 85% 0%, ${app.accent[0]}55, transparent 55%), radial-gradient(ellipse at 100% 100%, ${app.accent[1]}44, transparent 55%)` }}
+          />
+        )}
+        <div className={cn("relative grid grid-cols-1 gap-6 p-6 sm:p-10", cover ? "min-h-[34rem] content-end pt-48 sm:pt-56 lg:content-center lg:pt-10" : "lg:grid-cols-[1.2fr_1fr]")}>
+          <div className={cn(cover && "max-w-2xl")}>
             <div className="flex items-center gap-4">
               <AppGlyph app={app} size={96} morph />
               <div className="flex flex-wrap gap-2">
@@ -210,14 +220,16 @@ export function AppDetail({ slug }: { slug: string }) {
               Modes: {app.modes.map((m) => MODE_LABEL[m]).join(" · ")}
             </p>
           </div>
-          <motion.div
-            className={cn("relative", app.coverImage ? "aspect-video overflow-hidden rounded-[1.75rem] border border-white/10 shadow-2xl lg:aspect-auto lg:min-h-72" : "hidden min-h-72 lg:block")}
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: 0.2, ...spring.soft }}
-          >
-            <AppArt app={app} className={cn("absolute inset-0", !app.coverImage && "scale-125")} />
-          </motion.div>
+          {!cover && (
+            <motion.div
+              className="relative hidden min-h-72 lg:block"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ delay: 0.2, ...spring.soft }}
+            >
+              <AppArt app={app} className="absolute inset-0 scale-125" />
+            </motion.div>
+          )}
         </div>
       </section>
 
