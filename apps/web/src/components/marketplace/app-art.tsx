@@ -28,8 +28,8 @@ function CoverArt({ src, onError, className }: { src: string; onError: () => voi
         draggable={false}
         onError={onError}
         className="absolute inset-0 size-full object-cover"
-        initial={{ scale: 1.08 }}
-        animate={reduced ? { scale: 1.02 } : { scale: [1.04, 1.12, 1.04], x: ["0%", "-2%", "0%"] }}
+        initial={{ scale: 1.04 }}
+        animate={reduced ? { scale: 1 } : { scale: [1.01, 1.05, 1.01] }}
         transition={reduced ? { duration: 0 } : { duration: 18, repeat: Infinity, ease: "easeInOut" }}
       />
       <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-ink-850/90" />

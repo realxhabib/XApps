@@ -23,7 +23,7 @@ import { play } from "@/lib/sfx";
 import { useMounted } from "@/lib/use-mounted";
 import { cn } from "@/lib/utils";
 import { useBackend, useViewer } from "@/platform/client";
-import { useIsAdmin, useReviewQueue, useReviewVersion } from "@/platform/queries";
+import { useIsAdmin, usePublishVersion, useReviewQueue, useReviewVersion } from "@/platform/queries";
 import { REVIEW_NOTES_MAX, applyVersionToApp } from "@/platform/shipping";
 import type { ReviewItem } from "@/platform/types";
 import { ConfirmDialog } from "./confirm";
@@ -217,6 +217,10 @@ function ReviewDetail({ item, onBack, onDecided }: { item: ReviewItem; onBack: (
   const closeConfirm = useCallback(() => setDecision(null), []);
   const { version, app, developer, published, replaces } = item;
   const preview = applyVersionToApp(app, version);
+  const { viewer } = useViewer();
+  const publish = usePublishVersion(app.slug);
+  // Approving an update to a live app doesn't publish it: the developer does. Reviewing your own app, do both.
+  const publishToo = !!published && !!viewer && developer.id === viewer.id;
 
   const ask = (d: "approve" | "reject") => {
     if (d === "reject" && !notes.trim()) {
@@ -232,12 +236,26 @@ function ReviewDetail({ item, onBack, onDecided }: { item: ReviewItem; onBack: (
     if (!decision) return;
     try {
       await review.mutateAsync({ versionId: version.id, decision, notes: notes.trim() });
+      const live = decision === "approve" && publishToo ? await publish.mutateAsync(version.id) : null;
       play(decision === "approve" ? "win" : "thump");
       haptic("success");
-      toast(decision === "approve" ? `Approved ${version.manifest.name} v${version.version}` : `Sent v${version.version} back with notes`, {
-        tone: "success",
-        description: decision === "approve" ? (published ? "The developer can publish it now." : "The app is listed.") : "The developer gets your notes in their inbox.",
-      });
+      toast(
+        live
+          ? `${version.manifest.name} v${version.version} is live`
+          : decision === "approve"
+            ? `Approved ${version.manifest.name} v${version.version}`
+            : `Sent v${version.version} back with notes`,
+        {
+          tone: "success",
+          description: live
+            ? "Approved and published: players get it on their next match."
+            : decision === "approve"
+              ? published
+                ? "Not live yet: the developer publishes it from their console (Versions → Publish)."
+                : "The app is listed."
+              : "The developer gets your notes in their inbox.",
+        },
+      );
       setDecision(null);
       onDecided();
     } catch (error) {
@@ -335,7 +353,7 @@ function ReviewDetail({ item, onBack, onDecided }: { item: ReviewItem; onBack: (
       <ConfirmDialog
         open={decision !== null}
         onClose={closeConfirm}
-        busy={review.isPending}
+        busy={review.isPending || publish.isPending}
         onConfirm={decide}
         tone={decision === "reject" ? "danger" : "volt"}
         icon={decision === "reject" ? <X className="size-4" /> : <Check className="size-4" />}
@@ -343,11 +361,13 @@ function ReviewDetail({ item, onBack, onDecided }: { item: ReviewItem; onBack: (
         description={
           decision === "reject"
             ? "The version goes back to the developer with your notes."
-            : published
-              ? "The developer can publish it whenever they're ready."
-              : `${version.manifest.name} gets listed in the marketplace.`
+            : publishToo
+              ? `It's your app, so it's published right away: players get v${version.version} on their next match.`
+              : published
+                ? "It won't be live yet: the developer publishes it from their console when they're ready."
+                : `${version.manifest.name} gets listed in the marketplace.`
         }
-        confirmLabel={decision === "reject" ? "Send notes" : "Approve"}
+        confirmLabel={decision === "reject" ? "Send notes" : publishToo ? "Approve & publish" : "Approve"}
       >
         {notes.trim() && <p className="whitespace-pre-wrap rounded-2xl bg-white/[0.04] px-4 py-3 text-sm text-ink-200">{notes.trim()}</p>}
       </ConfirmDialog>

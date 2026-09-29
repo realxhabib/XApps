@@ -54,12 +54,10 @@ test("a developer ships a new version through review", async ({ page }) => {
   await page.getByRole("button", { name: new RegExp(`Tap Race ${suffix}.*1\\.1\\.1`) }).first().click();
   await expect(page.getByText(/this replaces v1\.1\.0, which left the queue/)).toBeVisible();
   await page.getByRole("button", { name: "Approve" }).first().click();
-  await page.getByRole("dialog").getByRole("button", { name: "Approve" }).click();
-
-  // Publish; 1.1.1 becomes the live version.
+  // Reviewing your own live app approves and publishes in one step.
+  await page.getByRole("dialog").getByRole("button", { name: "Approve & publish" }).click();
+  await expect(page.getByText(/is live/).first()).toBeVisible({ timeout: 10_000 });
   await page.goto(`/developers/apps/${slug}?tab=versions`);
-  await page.getByRole("button", { name: "Publish", exact: true }).click();
-  await page.getByRole("button", { name: "Publish now" }).click();
   await expect(page.getByText(/1\.1\.1/).first()).toBeVisible();
   await page.goto(`/apps/${slug}`);
   await expect(page.getByText("Ten seconds. Fastest thumbs win. Now with streaks!").first()).toBeVisible({ timeout: 15_000 });
