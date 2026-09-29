@@ -151,6 +151,8 @@ export interface DemoDb {
   /** Unlock time by `app:user:achievementId`. */
   achievements?: Record<string, string>;
   mediaUploads?: MediaUploadRow[];
+  /** Showcase community apps already added once (so deleting one keeps it gone). */
+  showcaseSeeded?: string[];
   /** Stage 4 (optional too): versions by id, the published version per app, testers per app, logs. */
   versions?: Record<string, VersionRow>;
   publishedVersions?: Record<string, string>;

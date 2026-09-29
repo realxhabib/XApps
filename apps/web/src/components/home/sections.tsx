@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { FEATURED_APPS, FEATURED_FALLBACK } from "@/platform/catalog";
 import { seatedPlayers } from "@/platform/match-utils";
 import { useViewer } from "@/platform/client";
 import { useActivity, useApps, useMyMatches, useVotingMatches } from "@/platform/queries";
@@ -89,12 +90,12 @@ export function YourMove() {
 export function FeaturedApps() {
   const { data: apps } = useApps();
   const byslug = (slug: string) => apps?.find((a) => a.slug === slug);
+  // Two big cards (skipping featured apps this deployment doesn't list yet), then a row of favorites.
+  const big = apps ? [...FEATURED_APPS, ...FEATURED_FALLBACK].filter((slug) => byslug(slug)).slice(0, 2) : FEATURED_APPS;
+  const rest = ["meme-duel", "quick-draw", "hot-takes", "trivia-royale", "four-in-a-row"].filter((slug) => !big.includes(slug)).slice(0, 5);
   const layout: { slug: string; className: string; size?: "lg" }[] = [
-    { slug: "meme-duel", className: "md:col-span-4 md:row-span-2", size: "lg" },
-    { slug: "quick-draw", className: "md:col-span-2" },
-    { slug: "hot-takes", className: "md:col-span-2" },
-    { slug: "four-in-a-row", className: "md:col-span-2" },
-    { slug: "emoji-decode", className: "md:col-span-2" },
+    ...big.map((slug) => ({ slug, className: "md:col-span-3", size: "lg" as const })),
+    ...rest.map((slug) => ({ slug, className: "md:col-span-2" })),
   ];
   return (
     <section className="mt-20">

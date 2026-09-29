@@ -32,6 +32,8 @@ export const DEMO_APP_IMAGE_MAX_CHARS = 400_000;
 /** Mirrors the `app_image_key_ok` SQL check. */
 export const STORAGE_KEY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[0-9a-f]{32}\.(webp|jpg|png)$/;
 const DATA_KEY_PATTERN = /^data:image\/(webp|jpeg|png);base64,[A-Za-z0-9+/]+={0,2}$/;
+/** Art shipped with the site (public/showcase): first-party apps and demo-mode seed apps. */
+const SHOWCASE_KEY_PATTERN = /^\/showcase\/[a-z0-9-]+\.(webp|jpg|png)$/;
 
 /** Accepted uploads (before processing). */
 export const APP_IMAGE_INPUT_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/avif"];
@@ -42,6 +44,7 @@ export function appImageKeyError(key: unknown, { demo = false }: { demo?: boolea
   if (typeof key !== "string") return "Images must be uploaded";
   if (STORAGE_KEY_PATTERN.test(key)) return null;
   if (demo && key.length <= DEMO_APP_IMAGE_MAX_CHARS && DATA_KEY_PATTERN.test(key)) return null;
+  if (demo && SHOWCASE_KEY_PATTERN.test(key)) return null;
   return "Images must be uploaded through XApps";
 }
 
@@ -49,6 +52,7 @@ export function appImageKeyError(key: unknown, { demo = false }: { demo?: boolea
 export function appImageSrc(key: string | null | undefined, supabaseUrl = env.supabaseUrl): string | null {
   if (!key) return null;
   if (DATA_KEY_PATTERN.test(key) && key.length <= DEMO_APP_IMAGE_MAX_CHARS) return key;
+  if (SHOWCASE_KEY_PATTERN.test(key)) return key;
   if (STORAGE_KEY_PATTERN.test(key) && supabaseUrl) return `${supabaseUrl}/storage/v1/object/public/${APP_IMAGES_BUCKET}/${key}`;
   return null;
 }

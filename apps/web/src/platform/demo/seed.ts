@@ -4,7 +4,7 @@ import { renderMemeSvg } from "@/first-party/meme-duel/render";
 import { HOT_TAKE_PROMPTS, hotTakeDisplay } from "@/first-party/hot-takes/prompts";
 import { OFFICIAL_APPS } from "../catalog";
 import { settle } from "../scoring";
-import type { Profile } from "../types";
+import type { AppManifest, Profile } from "../types";
 import { DB_VERSION, MATCH_V2_DEFAULTS, newPlayerRow, type DemoDb, type MatchRow, type PlayerRow } from "./store";
 import { recordWebhook } from "./server-settings";
 
@@ -72,6 +72,86 @@ function iso(msAgo: number): string {
 
 function player(userId: string, seat: number, extra: Partial<PlayerRow> = {}): PlayerRow {
   return newPlayerRow(userId, seat, { isBot: true, ...extra });
+}
+
+/** Community apps listed in demo mode, like any developer's (they aren't part of the first-party catalog). */
+const SHOWCASE_DEVELOPER: Profile = {
+  id: "p-realxhabib",
+  handle: "realxhabib",
+  name: "xhabib",
+  avatarUrl: null,
+  bio: "Building Starship League 🚀",
+  xp: 1240,
+  wins: 0,
+  losses: 0,
+  draws: 0,
+  streak: 0,
+  bestStreak: 0,
+  createdAt: "2026-09-01T00:00:00.000Z",
+};
+
+export const SHOWCASE_APPS: AppManifest[] = [
+  {
+    slug: "starship-league",
+    name: "Starship League",
+    tagline: "Rocket League in orbit. Bonk the Doge into the wormhole.",
+    description:
+      "Fly a Starship, boost, dodge and aerial to knock a sleeping Doge ball into the other team's wormhole goal. 1v1 up to 3v3 in low Earth orbit; bots fill empty ships. Three-minute matches with overtime.",
+    category: "games",
+    icon: "🚀",
+    iconImage: "/showcase/starship-league-icon.webp",
+    coverImage: "/showcase/starship-league-cover.webp",
+    accent: ["#3b82f6", "#f97316"],
+    url: "https://starshipleague.vercel.app/?xapps",
+    modes: ["live", "practice"],
+    players: { min: 2, max: 6 },
+    teams: 2,
+    spectators: false,
+    setup: false,
+    turnBased: false,
+    stats: [
+      { key: "goals", label: "Goals", aggregate: "sum" },
+      { key: "saves", label: "Saves", aggregate: "sum" },
+      { key: "demos", label: "Demolitions", aggregate: "sum" },
+      { key: "wins", label: "Wins", aggregate: "sum" },
+    ],
+    achievements: [
+      { id: "first_goal", name: "First goal", description: "Score your first goal", icon: "⚽", xp: 10 },
+      { id: "hat_trick", name: "Hat trick", description: "Score three goals in one match", icon: "🎩", xp: 40 },
+      { id: "demolition", name: "Demolition", description: "Blow up another Starship", icon: "💥", xp: 15 },
+      { id: "clean_sheet", name: "Clean sheet", description: "Win without conceding", icon: "🧤", xp: 30 },
+      { id: "overtime_hero", name: "Overtime hero", description: "Win a match in overtime", icon: "⏱️", xp: 25 },
+    ],
+    scoring: "high",
+    durationLabel: "3 min",
+    howTo: [
+      "Both teams launch from the same kickoff spots.",
+      "Drive, jump, boost and aerial to hit the Doge.",
+      "More goals wins; ties go to overtime.",
+    ],
+    official: false,
+    developer: { id: SHOWCASE_DEVELOPER.id, handle: SHOWCASE_DEVELOPER.handle, name: SHOWCASE_DEVELOPER.name },
+    status: "published",
+    playCount: 3_180,
+    createdAt: "2026-09-29T00:00:00.000Z",
+    tags: ["community", "3d"],
+  },
+];
+
+/** Adds the showcase developer and apps to a demo database that doesn't have them. Returns whether it changed. */
+export function ensureShowcase(db: DemoDb): boolean {
+  let changed = false;
+  if (!Object.values(db.profiles).some((p) => p.handle === SHOWCASE_DEVELOPER.handle)) {
+    db.profiles[SHOWCASE_DEVELOPER.id] = { ...SHOWCASE_DEVELOPER };
+    changed = true;
+  }
+  for (const app of SHOWCASE_APPS) {
+    if (db.apps[app.slug] || (db.showcaseSeeded ?? []).includes(app.slug)) continue;
+    db.apps[app.slug] = structuredClone(app);
+    (db.showcaseSeeded ??= []).push(app.slug);
+    changed = true;
+  }
+  return changed;
 }
 
 /** Builds a fresh demo world: personas, match history, and contests waiting for votes. */

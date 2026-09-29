@@ -8,6 +8,14 @@ const LAUNCH = "2026-09-01T00:00:00.000Z";
  * First-party apps. They are built with the public @xapps/sdk exactly like
  * community apps — the only difference is that they are served from /embed.
  */
+/**
+ * The two big cards on the home page, in order. A slug that isn't listed
+ * (a community app not yet published on this deployment) is skipped and the
+ * next of FEATURED_FALLBACK takes its place.
+ */
+export const FEATURED_APPS = ["starship-league", "wedge-wars"];
+export const FEATURED_FALLBACK = ["meme-duel", "trivia-royale", "four-in-a-row"];
+
 export const OFFICIAL_APPS: AppManifest[] = [
   {
     slug: "meme-duel",
@@ -381,6 +389,7 @@ export const OFFICIAL_APPS: AppManifest[] = [
       "A real-time 3D robot-combat arena for 2–4 players. Build your wedge truck in the garage — bar spinner, flipper, axe hammer or flamethrower, plus armor and paint — then brawl in a steel arena with a KO pit, pop-up saws, flame vents and a pulverizer. Ram, flip and torch your way to last truck standing before the 2:30 bell.",
     category: "games",
     icon: "🛻",
+    coverImage: "/showcase/wedge-wars-cover.webp",
     accent: ["#c6ff3d", "#ff5a1f"],
     url: "/embed/wedge-wars",
     modes: ["live", "practice"],

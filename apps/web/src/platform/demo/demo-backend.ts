@@ -65,7 +65,7 @@ import type {
 } from "../types";
 import { computeAnalytics } from "./analytics";
 import { createDemoRoom } from "./room";
-import { addPersonaContest, applySettlement, buildSeed, isPracticeBot, newMatchId, PRACTICE_BOTS, upgradeDb } from "./seed";
+import { addPersonaContest, applySettlement, buildSeed, ensureShowcase, isPracticeBot, newMatchId, PRACTICE_BOTS, upgradeDb } from "./seed";
 import {
   credentialsFor,
   deliveriesFor,
@@ -477,6 +477,8 @@ export class DemoBackend implements Backend {
 
   constructor() {
     if (typeof window !== "undefined") {
+      // Community apps every demo lists (added to databases from before they existed too).
+      mutateIfChanged(ensureShowcase);
       this.timer = setInterval(() => this.tick(), 1_200);
       // Keep our persona marked as human-controlled.
       const id = getViewerId();
