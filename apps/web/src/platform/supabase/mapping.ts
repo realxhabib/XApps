@@ -4,7 +4,16 @@
  * v2 field has a default until the stage-1 migration is applied.
  */
 import { getOfficialApp, toAchievementDefs, toStatDefs, withManifestDefaults } from "../catalog";
+import { CATEGORIES } from "../types";
 import type {
+  AppAnalytics,
+  AppLogEntry,
+  AppVersion,
+  AppVersionStatus,
+  DeveloperNotice,
+  LogLevel,
+  ReviewItem,
+  VersionManifest,
   AppAuthority,
   AppCategory,
   AppServerConfig,
@@ -188,7 +197,19 @@ export function normalizeMatch(raw: RawMatch): Match {
     round: raw.round ?? 0,
     settings: raw.settings ?? {},
     votes: raw.votes ?? {},
+    // Stage 4: test builds (absent before the shipping migration).
+    versionId: stringOrNull(looseOf(raw).versionId ?? looseOf(raw).version_id),
+    versionUrl: stringOrNull(looseOf(raw).versionUrl ?? looseOf(raw).version_url),
+    versionLabel: stringOrNull(looseOf(raw).versionLabel ?? looseOf(raw).versionName ?? looseOf(raw).version),
   };
+}
+
+function looseOf(raw: unknown): Record<string, unknown> {
+  return raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 /** Maps a Postgres/PostgREST error code (and message) to a BackendError code. */
@@ -253,7 +274,21 @@ export function challengeArgs(input: CreateChallengeInput): Record<string, unkno
   };
   if (handles.length > 1) args.p_opponents = handles;
   if (typeof input.maxPlayers === "number") args.p_max_players = input.maxPlayers;
+  if (input.versionId) args.p_version = input.versionId;
   return args;
+}
+
+/** `start_practice` arguments; p_players / p_version are only named when used (older signatures). */
+export function practiceArgs(appSlug: string, players?: number, versionId?: string | null): Record<string, unknown> {
+  const args: Record<string, unknown> = { p_app: appSlug };
+  if (players !== undefined) args.p_players = players;
+  if (versionId) args.p_version = versionId;
+  return args;
+}
+
+/** `quick_match` arguments. */
+export function quickMatchArgs(appSlug: string, versionId?: string | null): Record<string, unknown> {
+  return versionId ? { p_app: appSlug, p_version: versionId } : { p_app: appSlug };
 }
 
 /* ---------------------------------------------------------------------- */
@@ -365,6 +400,7 @@ export function toProfile(raw: unknown): Profile | null {
     bestStreak: num(pick(p, "bestStreak")) ?? 0,
     createdAt: str(pick(p, "createdAt")) ?? new Date(0).toISOString(),
     isBot: pick(p, "isBot") === true,
+    ...(pick(p, "isAdmin") === true ? { isAdmin: true } : {}),
   };
 }
 
@@ -435,4 +471,252 @@ export function toStorageKeys(data: unknown): string[] {
     .map((k) => (typeof k === "string" ? k : k && typeof k === "object" ? str((k as Loose).key) : null))
     .filter((k): k is string => !!k);
   return [...new Set(keys)].sort();
+}
+
+/* ---------------------------------------------------------------------- */
+/* Stage 4: versions, review, analytics & logs                            */
+/* ---------------------------------------------------------------------- */
+
+const VERSION_STATUSES: readonly AppVersionStatus[] = ["draft", "in_review", "approved", "rejected", "published", "retired"];
+const LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];
+
+function bool(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((x): x is string => typeof x === "string") : [];
+}
+
+/** A version's `manifest` jsonb (camelCase as the RPCs take it; snake_case tolerated). */
+export function toVersionManifest(raw: unknown): VersionManifest {
+  const m = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Loose) : {};
+  const accent = Array.isArray(m.accent) ? m.accent : [m.accent_from ?? m.accentFrom, m.accent_to ?? m.accentTo];
+  const players = m.players && typeof m.players === "object" ? (m.players as Loose) : { min: m.min_players ?? m.minPlayers, max: m.max_players ?? m.maxPlayers };
+  const category = str(m.category) as AppCategory | null;
+  const scoring = m.scoring === "low" || m.scoring === "votes" ? m.scoring : "high";
+  const modes = strings(m.modes).filter((x): x is PlayableMode => x === "live" || x === "async" || x === "practice");
+  const manifest: VersionManifest = {
+    name: str(m.name) ?? "",
+    tagline: str(m.tagline) ?? "",
+    description: typeof m.description === "string" ? m.description : "",
+    category: category && CATEGORIES.some((c) => c.id === category) ? category : "games",
+    icon: str(m.icon) ?? "✨",
+    accent: [str(accent[0]) ?? "#5b74ff", str(accent[1]) ?? "#a35cff"],
+    modes: modes.length ? modes : ["live", "practice"],
+    players: { min: num(players.min) ?? 2, max: num(players.max) ?? 2 },
+    teams: num(m.teams ?? m.team_count ?? m.teamCount) ?? 0,
+    spectators: bool(m.spectators ?? m.allow_spectators ?? m.allowSpectators, true),
+    setup: bool(m.setup ?? m.has_setup ?? m.hasSetup, false),
+    turnBased: bool(m.turnBased ?? m.turn_based, false),
+    scoring,
+    howTo: strings(m.howTo ?? m.how_to),
+    stats: toStatDefs(m.stats),
+    achievements: toAchievementDefs(m.achievements),
+  };
+  const votes = num(m.votesToWin ?? m.votes_to_win);
+  if (votes !== null) manifest.votesToWin = votes;
+  return manifest;
+}
+
+/** One `app_versions` row / version json → `AppVersion`, or null when it isn't one. */
+export function toAppVersion(raw: unknown): AppVersion | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Loose;
+  const id = str(pick(r, "id"));
+  const version = str(r.version);
+  if (!id || !version) return null;
+  const status = pick(r, "status");
+  return {
+    id,
+    appSlug: str(pick(r, "appSlug")) ?? str(r.app) ?? "",
+    version,
+    url: str(r.url) ?? "",
+    manifest: toVersionManifest(r.manifest),
+    status: VERSION_STATUSES.includes(status as AppVersionStatus) ? (status as AppVersionStatus) : "draft",
+    notes: typeof r.notes === "string" ? r.notes : "",
+    reviewNotes: str(pick(r, "reviewNotes")),
+    createdAt: str(pick(r, "createdAt")) ?? new Date(0).toISOString(),
+    submittedAt: str(pick(r, "submittedAt")),
+    reviewedAt: str(pick(r, "reviewedAt")),
+    publishedAt: str(pick(r, "publishedAt")),
+  };
+}
+
+/** A version-returning RPC: the version json, a one-row array, or `{ version: {…} }`. */
+export function toAppVersionResult(data: unknown): AppVersion | null {
+  const row = firstRow(data);
+  if (!row) return null;
+  return toAppVersion(row) ?? (row.version && typeof row.version === "object" ? toAppVersion(row.version) : null);
+}
+
+/** `list_app_versions` → versions (jsonb array or rows, or `{ versions: [...] }`). */
+export function toAppVersions(data: unknown): AppVersion[] {
+  const list = Array.isArray(data) ? data : data && typeof data === "object" && Array.isArray((data as Loose).versions) ? ((data as Loose).versions as unknown[]) : [];
+  return list.map(toAppVersion).filter((v): v is AppVersion => !!v);
+}
+
+/** Profile lists (`list_app_testers`, `add_app_tester`, `remove_app_tester`), tolerating `{ profile }` rows. */
+export function toProfiles(data: unknown): Profile[] {
+  const list = Array.isArray(data) ? data : data && typeof data === "object" && Array.isArray((data as Loose).testers) ? ((data as Loose).testers as unknown[]) : [];
+  return list
+    .map((r) => toProfile(r && typeof r === "object" && "profile" in (r as Loose) ? (r as Loose).profile : r))
+    .filter((p): p is Profile => !!p);
+}
+
+/** An app embedded in an RPC result: an `apps` row (snake_case) or a camelCase manifest. */
+export function toAppLoose(raw: unknown): AppManifest | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Loose;
+  const slug = str(r.slug);
+  if (!slug) return null;
+  if ("accent_from" in r || "min_players" in r || "how_to" in r) return toApp(r as unknown as AppRow);
+  const manifest = toVersionManifest(r);
+  const developer = r.developer && typeof r.developer === "object" ? (r.developer as Loose) : {};
+  const status = r.status === "published" || r.status === "rejected" ? r.status : "pending";
+  return withManifestDefaults({
+    ...manifest,
+    slug,
+    url: str(r.url) ?? "",
+    authority: toAuthority(r.authority),
+    durationLabel: str(pick(r, "durationLabel")) ?? "Community",
+    official: r.official === true,
+    developer: {
+      id: str(developer.id) ?? str(pick(r, "developerId")),
+      handle: str(developer.handle) ?? "community",
+      name: str(developer.name) ?? "Community developer",
+    },
+    status,
+    playCount: num(pick(r, "playCount")) ?? 0,
+    createdAt: str(pick(r, "createdAt")) ?? new Date(0).toISOString(),
+    tags: strings(r.tags),
+  });
+}
+
+/** `list_review_queue` → items (oldest first as the RPC orders them). */
+export function toReviewQueue(data: unknown): ReviewItem[] {
+  const out: ReviewItem[] = [];
+  for (const r of rows(data)) {
+    // `{ version, app, developer, published }`, or the version's fields at the top level.
+    const version = toAppVersion(r.version && typeof r.version === "object" ? r.version : r);
+    const app = toAppLoose(r.app);
+    if (!version || !app) continue;
+    const developer =
+      toProfile(r.developer) ??
+      ({
+        id: app.developer.id ?? "unknown",
+        handle: app.developer.handle,
+        name: app.developer.name,
+        avatarUrl: null,
+        bio: "",
+        xp: 0,
+        wins: 0,
+        losses: 0,
+        draws: 0,
+        streak: 0,
+        bestStreak: 0,
+        createdAt: new Date(0).toISOString(),
+      } satisfies Profile);
+    out.push({
+      version: { ...version, appSlug: version.appSlug || app.slug },
+      app,
+      developer,
+      published: toAppVersion(r.published ?? pick(r, "publishedVersion")),
+    });
+  }
+  return out;
+}
+
+function objects(value: unknown): Loose[] {
+  return rows(value);
+}
+
+/** `app_analytics` → `AppAnalytics` (every part defaulted, so a partial result still renders). */
+export function toAnalytics(data: unknown, days: number): AppAnalytics {
+  const raw = firstRow(data) ?? {};
+  const totals = raw.totals && typeof raw.totals === "object" ? (raw.totals as Loose) : {};
+  const retention = raw.retention && typeof raw.retention === "object" ? (raw.retention as Loose) : {};
+  const series = objects(raw.series).map((d) => ({
+    date: (str(d.date) ?? str(d.day) ?? "").slice(0, 10),
+    matchesCreated: num(pick(d, "matchesCreated")) ?? 0,
+    matchesCompleted: num(pick(d, "matchesCompleted")) ?? 0,
+    matchesAbandoned: num(pick(d, "matchesAbandoned")) ?? 0,
+    players: num(d.players) ?? 0,
+    newPlayers: num(pick(d, "newPlayers")) ?? 0,
+  }));
+  const sum = (key: "matchesCreated" | "matchesCompleted" | "newPlayers") => series.reduce((n, d) => n + d[key], 0);
+  const rate = num(pick(raw, "completionRate"));
+  return {
+    days: num(raw.days) ?? days,
+    series,
+    totals: {
+      matches: num(totals.matches) ?? sum("matchesCreated"),
+      completed: num(totals.completed) ?? sum("matchesCompleted"),
+      players: num(totals.players) ?? 0,
+      newPlayers: num(pick(totals, "newPlayers")) ?? sum("newPlayers"),
+    },
+    // Tolerate a percentage (0–100) as well as a fraction.
+    completionRate: rate === null ? 0 : rate > 1 ? rate / 100 : rate,
+    medianDurationSec: num(pick(raw, "medianDurationSec")),
+    modes: objects(raw.modes)
+      .map((m) => ({ mode: str(m.mode) ?? "unknown", matches: num(m.matches) ?? 0 })),
+    tableSizes: objects(pick(raw, "tableSizes"))
+      .map((t) => ({ players: num(t.players) ?? 0, matches: num(t.matches) ?? 0 })),
+    retention: { d1: num(retention.d1), d7: num(retention.d7) },
+    topPlayers: objects(pick(raw, "topPlayers"))
+      .map((t) => ({ profile: toProfile(t.profile), matches: num(t.matches) ?? 0, wins: num(t.wins) ?? 0 }))
+      .filter((t): t is { profile: Profile; matches: number; wins: number } => !!t.profile),
+    versions: objects(raw.versions).map((v) => ({
+      versionId: str(pick(v, "versionId")),
+      version: str(v.version),
+      matches: num(v.matches) ?? 0,
+    })),
+  };
+}
+
+/** `list_app_logs` → entries (newest first). */
+export function toAppLogs(data: unknown): AppLogEntry[] {
+  const out: AppLogEntry[] = [];
+  for (const r of rows(data)) {
+    const id = r.id === undefined || r.id === null ? null : String(r.id);
+    const level = r.level;
+    if (!id || !LEVELS.includes(level as LogLevel)) continue;
+    out.push({
+      id,
+      appSlug: str(pick(r, "appSlug")) ?? str(r.app) ?? "",
+      versionId: str(pick(r, "versionId")),
+      matchId: str(pick(r, "matchId")),
+      userId: str(pick(r, "userId")),
+      level: level as LogLevel,
+      message: typeof r.message === "string" ? r.message : "",
+      data: r.data === undefined ? null : (r.data as AppLogEntry["data"]),
+      source: pick(r, "source") === "host" ? "host" : "app",
+      createdAt: str(pick(r, "createdAt")) ?? new Date(0).toISOString(),
+    });
+  }
+  return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+
+const NOTICE_KINDS: readonly DeveloperNotice["kind"][] = ["version_approved", "version_rejected", "version_published"];
+
+/** `list_my_notices` → notices, newest first (unknown kinds dropped). */
+export function toNotices(data: unknown): DeveloperNotice[] {
+  const out: DeveloperNotice[] = [];
+  for (const r of rows(data)) {
+    const id = r.id === undefined || r.id === null ? null : String(r.id);
+    const kind = r.kind as DeveloperNotice["kind"];
+    if (!id || !NOTICE_KINDS.includes(kind)) continue;
+    out.push({
+      id,
+      kind,
+      appSlug: str(pick(r, "appSlug")) ?? "",
+      versionId: str(pick(r, "versionId")),
+      version: str(r.version),
+      message: typeof r.message === "string" ? r.message : "",
+      createdAt: str(pick(r, "createdAt")) ?? new Date(0).toISOString(),
+      readAt: str(pick(r, "readAt")),
+    });
+  }
+  return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }

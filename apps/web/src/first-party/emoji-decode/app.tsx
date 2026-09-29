@@ -6,6 +6,7 @@ import { AnimatePresence, motion, useAnimate, useReducedMotion } from "motion/re
 import { useEffect, useEffectEvent, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Avatar } from "@/components/ui/avatar";
 import { useBot, useLiveOpponent, useTimeouts } from "@/first-party/shared/hooks";
+import { reportStats, unlockAchievements } from "@/first-party/shared/progress";
 import { AnimatedDots, Eyebrow, Screen, WaitingFor } from "@/first-party/shared/ui";
 import { ease, spring } from "@/lib/motion";
 import { play } from "@/lib/sfx";
@@ -18,9 +19,12 @@ import {
   STREAK_BONUS,
   STREAK_BONUS_FROM,
   buildMatch,
+  earnedAchievements,
   paceScore,
   recordAnswer,
   remainingAt,
+  resultProgress,
+  runStats,
   splitEmoji,
   submissionData,
   summarize,
@@ -219,6 +223,7 @@ function Game() {
     play("whoosh");
     if (submittedRef.current) return;
     submittedRef.current = true;
+    reportStats(xapps, runStats(final), "emoji-decode");
     const s = summarize(final);
     xapps
       .submit({
@@ -247,6 +252,7 @@ function Game() {
     const { run: next, answer } = recordAnswer(runRef.current, question, choice, remainingMs, elapsedMs);
     runRef.current = next;
     setRun(next);
+    unlockAchievements(xapps, earnedAchievements(next, questions.length), "emoji-decode");
 
     // Feedback: sound, haptic, screen flash.
     if (answer.correct) play("vote");
@@ -285,6 +291,18 @@ function Game() {
       }
     }, REVEAL_MS);
   };
+
+  // The match settled while we were here: a win (and how close it was) counts
+  // once. A result that was already in when the app opened was counted back then.
+  const [settledAtOpen] = useState(() => xapps.finalResult !== null);
+  const resultCounted = useRef(false);
+  useEffect(() => {
+    if (!result || settledAtOpen || resultCounted.current) return;
+    resultCounted.current = true;
+    const progress = resultProgress(result, xapps.me.id);
+    reportStats(xapps, progress.stats, "emoji-decode");
+    unlockAchievements(xapps, progress.achievements, "emoji-decode");
+  }, [result, settledAtOpen, xapps]);
 
   // Host HUD: scores + status line.
   const meId = xapps.me.id;

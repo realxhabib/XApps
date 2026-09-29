@@ -9,6 +9,7 @@ import {
   type AchievementDef,
   type Json,
   type LaunchContext,
+  type LogLevel,
   type MediaRef,
   type RequestMethod,
   type StatDef,
@@ -311,4 +312,46 @@ export function aggregateStat(aggregate: StatDef["aggregate"], previous: number 
     default:
       return value;
   }
+}
+
+/* -------------------------------------------------------------------- */
+/* Stage 4: logs                                                        */
+/* -------------------------------------------------------------------- */
+
+export const LOG_LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];
+
+export const isLogLevel = (value: unknown): value is LogLevel =>
+  typeof value === "string" && (LOG_LEVELS as readonly string[]).includes(value);
+
+/** Why a `log` entry is refused (hosts), or `null`. The SDK trims entries before sending, so this only trips on hand-made requests. */
+export function logProblem(level: unknown, message: unknown, data: unknown): string | null {
+  if (!isLogLevel(level)) return `level must be one of ${LOG_LEVELS.join(", ")}`;
+  if (typeof message !== "string") return "message must be a string";
+  if (message.length > LIMITS.logMessageLength) return `message must be at most ${LIMITS.logMessageLength} chars`;
+  if (data === undefined) return null;
+  const problem = jsonProblem(data, "data");
+  if (problem) return problem;
+  return byteLength(data) > LIMITS.logDataBytes ? `data must be at most ${LIMITS.logDataBytes} bytes of JSON` : null;
+}
+
+/** A token bucket: `capacity` tokens, refilled continuously at `perMs`. `take()` is false when empty. */
+export function createTokenBucket(capacity: number, perMs: number, now: () => number = Date.now) {
+  let tokens = capacity;
+  let at = now();
+  return {
+    take(): boolean {
+      const t = now();
+      tokens = Math.min(capacity, tokens + ((t - at) / perMs) * capacity);
+      at = t;
+      if (tokens < 1) return false;
+      tokens -= 1;
+      return true;
+    },
+  };
+}
+
+/** A `ui.resize` height as hosts apply it: a whole number of CSS px within `LIMITS.frameHeight`. */
+export function clampFrameHeight(height: number): number {
+  const { min, max } = LIMITS.frameHeight;
+  return Math.min(max, Math.max(min, Math.ceil(height)));
 }

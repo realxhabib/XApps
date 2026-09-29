@@ -17,6 +17,16 @@ import {
   toUnlocked,
   toUserAchievements,
   toUserStats,
+  practiceArgs,
+  quickMatchArgs,
+  toAnalytics,
+  toAppLogs,
+  toAppVersion,
+  toAppVersionResult,
+  toAppVersions,
+  toProfiles,
+  toReviewQueue,
+  toNotices,
 } from "./mapping";
 
 const profile = (id: string): Profile => ({
@@ -140,7 +150,7 @@ describe("apps", () => {
   it("gives official apps their catalog manifest with defaults", () => {
     expect(toApp({ ...appRow, slug: "meme-duel", official: true, play_count: 9 })).toMatchObject({
       name: "Meme Duel",
-      setup: false,
+      setup: true,
       spectators: true,
       playCount: 9,
     });
@@ -275,5 +285,151 @@ describe("Stage 3 mapping", () => {
   it("maps limits (54000) to rate_limited", () => {
     expect(errorKind("54000", "Too many stat reports — slow down")).toBe("rate_limited");
     expect(toBackendError({ code: "54000", message: "Storage is full (200 keys)" }).code).toBe("rate_limited");
+  });
+});
+
+describe("Stage 4 mapping", () => {
+  const manifest = {
+    name: "Gizmo",
+    tagline: "Tap fast",
+    description: "",
+    category: "games",
+    icon: "🎲",
+    accent: ["#000000", "#ffffff"],
+    modes: ["live", "practice"],
+    players: { min: 2, max: 4 },
+    teams: 0,
+    spectators: true,
+    setup: false,
+    turnBased: false,
+    scoring: "high",
+    howTo: ["Tap"],
+    stats: [],
+    achievements: [],
+  };
+  const versionJson = {
+    id: "v1",
+    appSlug: "gizmo",
+    version: "1.1.0",
+    url: "https://example.com/next",
+    manifest,
+    status: "in_review",
+    notes: "Bigger tables",
+    reviewNotes: null,
+    createdAt: "2026-10-01T00:00:00Z",
+    submittedAt: "2026-10-01T01:00:00Z",
+    reviewedAt: null,
+    publishedAt: null,
+  };
+
+  it("maps versions from camelCase json or snake_case rows", () => {
+    expect(toAppVersion(versionJson)).toEqual(versionJson);
+    const snake = toAppVersion({
+      id: "v2",
+      app_slug: "gizmo",
+      version: "1.0.0",
+      url: "https://example.com",
+      manifest: { ...manifest, accent: undefined, accent_from: "#111111", accent_to: "#222222", how_to: ["x"], howTo: undefined, turn_based: true, turnBased: undefined },
+      status: "weird",
+      notes: null,
+      review_notes: "ok",
+      created_at: "2026-09-01T00:00:00Z",
+      published_at: "2026-09-02T00:00:00Z",
+    });
+    expect(snake).toMatchObject({ id: "v2", appSlug: "gizmo", status: "draft", notes: "", reviewNotes: "ok", publishedAt: "2026-09-02T00:00:00Z", submittedAt: null });
+    expect(snake!.manifest).toMatchObject({ accent: ["#111111", "#222222"], howTo: ["x"], turnBased: true, players: { min: 2, max: 4 } });
+    expect(toAppVersion({ id: "x" })).toBeNull();
+    expect(toAppVersions([versionJson, null, { nope: 1 }])).toHaveLength(1);
+    expect(toAppVersions({ versions: [versionJson] })).toHaveLength(1);
+    expect(toAppVersions(null)).toEqual([]);
+    expect(toAppVersionResult([versionJson])!.id).toBe("v1");
+    expect(toAppVersionResult({ version: versionJson })!.id).toBe("v1");
+    expect(toAppVersionResult("v1")).toBeNull();
+  });
+
+  it("maps tester lists and admin profiles", () => {
+    const ada = { ...profile("u1"), isAdmin: true };
+    expect(toProfiles([ada, { profile: profile("u2") }, { junk: true }]).map((p) => [p.id, p.isAdmin])).toEqual([
+      ["u1", true],
+      ["u2", undefined],
+    ]);
+    expect(toProfiles({ testers: [profile("u3")] })).toHaveLength(1);
+    expect(toProfiles(null)).toEqual([]);
+  });
+
+  it("maps the review queue with an apps row or a camelCase app", () => {
+    const queue = toReviewQueue([
+      { version: versionJson, app: { ...appRow, slug: "gizmo" }, developer: profile("dev"), published: { ...versionJson, id: "v0", version: "1.0.0", status: "published" } },
+      { ...versionJson, id: "v9", appSlug: "", app: { slug: "camel", ...manifest, url: "https://c.example", developer: { id: "d2", handle: "dee", name: "Dee" }, status: "published" } },
+      { version: versionJson, app: null },
+    ]);
+    expect(queue).toHaveLength(2);
+    expect(queue[0]).toMatchObject({ version: { id: "v1" }, app: { slug: "gizmo" }, developer: { id: "dev" }, published: { id: "v0" } });
+    expect(queue[1]).toMatchObject({ version: { id: "v9", appSlug: "camel" }, app: { slug: "camel", name: "Gizmo", url: "https://c.example" }, developer: { handle: "dee" }, published: null });
+  });
+
+  it("maps analytics with defaults for missing parts", () => {
+    const stats = toAnalytics(
+      {
+        days: 7,
+        series: [{ date: "2026-09-29", matchesCreated: 3, matchesCompleted: "2", matchesAbandoned: 1, players: 4, newPlayers: 1 }],
+        totals: { matches: 3, completed: 2, players: 4, newPlayers: 1 },
+        completionRate: 66.7,
+        medianDurationSec: 95,
+        modes: [{ mode: "live", matches: 3 }],
+        tableSizes: [{ players: 2, matches: 3 }],
+        retention: { d1: 0.5, d7: null },
+        topPlayers: [{ profile: profile("u1"), matches: 3, wins: 2 }, { profile: null, matches: 1, wins: 0 }],
+        versions: [{ versionId: null, version: null, matches: 2 }, { version_id: "v1", version: "1.1.0", matches: 1 }],
+      },
+      7,
+    );
+    expect(stats.series[0]).toEqual({ date: "2026-09-29", matchesCreated: 3, matchesCompleted: 2, matchesAbandoned: 1, players: 4, newPlayers: 1 });
+    expect(stats.completionRate).toBeCloseTo(0.667);
+    expect(stats.retention).toEqual({ d1: 0.5, d7: null });
+    expect(stats.topPlayers).toHaveLength(1);
+    expect(stats.versions[1]).toEqual({ versionId: "v1", version: "1.1.0", matches: 1 });
+    expect(toAnalytics(null, 30)).toMatchObject({ days: 30, series: [], totals: { matches: 0 }, completionRate: 0, medianDurationSec: null, retention: { d1: null, d7: null } });
+  });
+
+  it("maps logs (newest first, bad levels dropped)", () => {
+    const logs = toAppLogs([
+      { id: 1, app_slug: "gizmo", version_id: "v1", match_id: null, user_id: "u1", level: "info", message: "a", data: null, source: "app", created_at: "2026-09-29T00:00:01Z" },
+      { id: "2", appSlug: "gizmo", level: "error", message: "b", data: { x: 1 }, source: "host", createdAt: "2026-09-29T00:00:02Z" },
+      { id: "3", level: "loud", message: "c" },
+    ]);
+    expect(logs.map((l) => [l.id, l.level, l.source])).toEqual([
+      ["2", "error", "host"],
+      ["1", "info", "app"],
+    ]);
+    expect(logs[1]).toMatchObject({ appSlug: "gizmo", versionId: "v1", userId: "u1", data: null });
+  });
+
+  it("maps developer notices", () => {
+    const notices = toNotices([
+      { id: "n1", kind: "version_approved", appSlug: "gizmo", versionId: "v1", version: "1.1.0", message: "ok", createdAt: "2026-09-29T00:00:01Z", readAt: null },
+      { id: "n2", kind: "version_rejected", app_slug: "gizmo", version: "1.2.0", message: "no", created_at: "2026-09-29T00:00:02Z", read_at: "2026-09-29T01:00:00Z" },
+      { id: "n3", kind: "other" },
+    ]);
+    expect(notices.map((n) => [n.id, n.appSlug, n.readAt])).toEqual([
+      ["n2", "gizmo", "2026-09-29T01:00:00Z"],
+      ["n1", "gizmo", null],
+    ]);
+    expect(toNotices(null)).toEqual([]);
+  });
+
+  it("carries test-build fields on matches and p_version on match RPCs", () => {
+    expect(normalizeMatch(v1Match as never)).toMatchObject({ versionId: null, versionUrl: null, versionLabel: null });
+    expect(normalizeMatch({ ...v1Match, versionId: "v1", versionUrl: "https://example.com/next", version: "1.1.0" } as never)).toMatchObject({
+      versionId: "v1",
+      versionUrl: "https://example.com/next",
+      versionLabel: "1.1.0",
+    });
+    expect(challengeArgs({ appSlug: "gizmo", mode: "live", versionId: "v1" })).toMatchObject({ p_version: "v1" });
+    expect(challengeArgs({ appSlug: "gizmo", mode: "live" })).not.toHaveProperty("p_version");
+    expect(practiceArgs("gizmo")).toEqual({ p_app: "gizmo" });
+    expect(practiceArgs("gizmo", 3, "v1")).toEqual({ p_app: "gizmo", p_players: 3, p_version: "v1" });
+    expect(quickMatchArgs("gizmo", null)).toEqual({ p_app: "gizmo" });
+    expect(quickMatchArgs("gizmo", "v1")).toEqual({ p_app: "gizmo", p_version: "v1" });
   });
 });

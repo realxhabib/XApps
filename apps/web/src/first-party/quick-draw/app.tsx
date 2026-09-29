@@ -6,6 +6,7 @@ import { AnimatePresence, motion, useAnimate, useReducedMotion } from "motion/re
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 import { Avatar } from "@/components/ui/avatar";
 import { useBot, useLiveOpponent } from "@/first-party/shared/hooks";
+import { reportStats, unlockAchievements } from "@/first-party/shared/progress";
 import { AnimatedDots, Eyebrow, Screen } from "@/first-party/shared/ui";
 import { fadeUp, spring, staggerChildren } from "@/lib/motion";
 import { play } from "@/lib/sfx";
@@ -19,6 +20,8 @@ import {
   bestMs,
   classify,
   describeOutcome,
+  duelStats,
+  earnedAchievements,
   heartbeatIntervalMs,
   matchWinner,
   steadyDelayMs,
@@ -214,6 +217,12 @@ export function QuickDraw() {
         break;
       case "reveal":
         scores(event.score);
+        // Round-level badges (fast taps, photo finish…) land with the verdict.
+        unlockAchievements(
+          xapps,
+          earnedAchievements(engineRef.current?.getSnapshot().outcomes ?? [event.outcome], false),
+          "quick-draw",
+        );
         if (event.outcome.winner === "me") {
           play("vote");
           haptic("success");
@@ -231,6 +240,8 @@ export function QuickDraw() {
         quietly(xapps.ui.setStatus(`Duel over · ${event.score.me}–${event.score.opp}`));
         if (!submittedRef.current) {
           submittedRef.current = true;
+          reportStats(xapps, duelStats(event.outcomes), "quick-draw");
+          unlockAchievements(xapps, earnedAchievements(event.outcomes, true), "quick-draw");
           lastFinalRef.current = { score: event.score, outcomes: event.outcomes };
           submitNow();
         }

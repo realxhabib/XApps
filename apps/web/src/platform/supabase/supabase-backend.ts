@@ -6,6 +6,13 @@ import { APP_MEDIA_BUCKET, baseMime, displayProblem, mediaExtension, mediaKindOf
 import { BackendError, type Backend, type RoomTransport } from "../backend";
 import { OFFICIAL_APPS, getOfficialApp, manifestShapeError, withManifestDefaults } from "../catalog";
 import type {
+  AppAnalytics,
+  AppLogEntry,
+  AppVersion,
+  DeveloperNotice,
+  LogLevel,
+  ReviewItem,
+  VersionManifest,
   AppAuthority,
   AppManifest,
   AppServerConfig,
@@ -29,7 +36,17 @@ import {
   challengeArgs,
   isSchemaMissing,
   normalizeMatch,
+  practiceArgs,
+  quickMatchArgs,
+  toAnalytics,
   toApp,
+  toAppLogs,
+  toAppVersion,
+  toAppVersionResult,
+  toAppVersions,
+  toNotices,
+  toProfiles,
+  toReviewQueue,
   toBackendError,
   toStatLeaderRows,
   toStatValues,
@@ -58,6 +75,8 @@ interface ProfileRow {
   best_streak: number;
   created_at: string;
   is_bot: boolean;
+  /** Stage 4 (absent before the shipping migration). */
+  is_admin?: boolean | null;
 }
 
 const APP_COLUMNS = "*, developer:profiles!apps_developer_id_fkey(handle, name)";
@@ -77,6 +96,7 @@ function toProfile(row: ProfileRow): Profile {
     bestStreak: row.best_streak,
     createdAt: row.created_at,
     isBot: row.is_bot,
+    isAdmin: row.is_admin === true,
   };
 }
 
@@ -268,6 +288,128 @@ export class SupabaseBackend implements Backend {
   }
 
   /* ---------------------------------------------------------------- */
+  /* Shipping (Stage 4)                                               */
+  /* ---------------------------------------------------------------- */
+
+  /** A version-returning RPC; when it only returns the id, read the row back (owners can). */
+  private async versionRpc(fn: string, args: Record<string, unknown>, fallbackId?: string): Promise<AppVersion> {
+    const data = await this.ownerRpc(fn, args);
+    const version = toAppVersionResult(data);
+    if (version) return version;
+    const id = typeof data === "string" ? data : fallbackId;
+    if (id) {
+      const { data: row, error } = await this.sb.from("app_versions").select("*").eq("id", id).maybeSingle();
+      if (error) fail(error);
+      const read = toAppVersion(row);
+      if (read) return read;
+    }
+    throw new BackendError("The server didn't return the version", "internal");
+  }
+
+  async listAppVersions(appSlug: string): Promise<AppVersion[]> {
+    return toAppVersions(await this.ownerRpc("list_app_versions", { p_app: appSlug }));
+  }
+
+  createAppVersion(appSlug: string, input: { version: string; url: string; manifest: VersionManifest; notes?: string }): Promise<AppVersion> {
+    return this.versionRpc("create_app_version", {
+      p_app: appSlug,
+      p_version: input.version.trim(),
+      // Nulls copy the app's current url / manifest.
+      p_url: input.url?.trim() || null,
+      p_manifest: input.manifest ?? null,
+      p_notes: input.notes ?? "",
+    });
+  }
+
+  updateAppVersion(versionId: string, input: { url?: string; manifest?: VersionManifest; notes?: string }): Promise<AppVersion> {
+    // Nulls leave a field as it is.
+    return this.versionRpc(
+      "update_app_version",
+      { p_version_id: versionId, p_url: input.url?.trim() ?? null, p_manifest: input.manifest ?? null, p_notes: input.notes ?? null },
+      versionId,
+    );
+  }
+
+  submitAppVersion(versionId: string): Promise<AppVersion> {
+    return this.versionRpc("submit_app_version", { p_version_id: versionId }, versionId);
+  }
+
+  withdrawAppVersion(versionId: string): Promise<AppVersion> {
+    return this.versionRpc("withdraw_app_version", { p_version_id: versionId }, versionId);
+  }
+
+  publishAppVersion(versionId: string): Promise<AppVersion> {
+    return this.versionRpc("publish_app_version", { p_version_id: versionId }, versionId);
+  }
+
+  async listAppTesters(appSlug: string): Promise<Profile[]> {
+    return toProfiles(await this.ownerRpc("list_app_testers", { p_app: appSlug }));
+  }
+
+  async addAppTester(appSlug: string, handle: string): Promise<Profile[]> {
+    const data = await this.ownerRpc("add_app_tester", { p_app: appSlug, p_handle: handle.replace(/^@/, "").trim().toLowerCase() });
+    return Array.isArray(data) ? toProfiles(data) : this.listAppTesters(appSlug);
+  }
+
+  async removeAppTester(appSlug: string, userId: string): Promise<Profile[]> {
+    const data = await this.ownerRpc("remove_app_tester", { p_app: appSlug, p_user: userId });
+    return Array.isArray(data) ? toProfiles(data) : this.listAppTesters(appSlug);
+  }
+
+  async listReviewQueue(): Promise<ReviewItem[]> {
+    return toReviewQueue(await this.ownerRpc("list_review_queue", {}));
+  }
+
+  reviewAppVersion(versionId: string, decision: "approve" | "reject", notes: string): Promise<AppVersion> {
+    return this.versionRpc("review_app_version", { p_version_id: versionId, p_decision: decision, p_notes: notes }, versionId);
+  }
+
+  async appAnalytics(appSlug: string, days = 30): Promise<AppAnalytics> {
+    return toAnalytics(await this.ownerRpc("app_analytics", { p_app: appSlug, p_days: days }), days);
+  }
+
+  async logAppEvent(entry: {
+    appSlug: string;
+    matchId: string | null;
+    level: LogLevel;
+    message: string;
+    data?: Json;
+    source: "app" | "host";
+  }): Promise<void> {
+    await this.ownerRpc("log_app_event", {
+      p_app: entry.appSlug,
+      p_match: entry.matchId,
+      p_level: entry.level,
+      p_message: entry.message,
+      p_data: entry.data ?? null,
+      p_source: entry.source,
+    });
+  }
+
+  async listMyNotices(limit = 50): Promise<DeveloperNotice[]> {
+    return toNotices(await this.ownerRpc("list_my_notices", { p_limit: limit }));
+  }
+
+  async markNoticesRead(ids?: string[]): Promise<number> {
+    const data = await this.ownerRpc("mark_notices_read", { p_ids: ids?.length ? ids : null });
+    const n = typeof data === "number" ? data : Number(data);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  /** `level` is a minimum (warn = warn + error), like `list_app_logs`. */
+  async listAppLogs(appSlug: string, filter: { level?: LogLevel; matchId?: string; before?: string; limit?: number } = {}): Promise<AppLogEntry[]> {
+    return toAppLogs(
+      await this.ownerRpc("list_app_logs", {
+        p_app: appSlug,
+        p_level: filter.level ?? null,
+        p_match: filter.matchId ?? null,
+        p_before: filter.before ?? null,
+        p_limit: filter.limit ?? 100,
+      }),
+    );
+  }
+
+  /* ---------------------------------------------------------------- */
   /* People                                                           */
   /* ---------------------------------------------------------------- */
 
@@ -338,13 +480,13 @@ export class SupabaseBackend implements Backend {
     return this.sb.storage.from("meme-drops").getPublicUrl(path).data.publicUrl;
   }
 
-  quickMatch(appSlug: string): Promise<Match> {
-    return this.rpcId("quick_match", { p_app: appSlug });
+  quickMatch(appSlug: string, versionId?: string | null): Promise<Match> {
+    return this.rpcId("quick_match", quickMatchArgs(appSlug, versionId));
   }
 
-  startPractice(appSlug: string, players?: number): Promise<Match> {
-    // Only name p_players when asked, so a v1 schema still resolves the call.
-    return this.rpcId("start_practice", players === undefined ? { p_app: appSlug } : { p_app: appSlug, p_players: players });
+  startPractice(appSlug: string, players?: number, versionId?: string | null): Promise<Match> {
+    // Only name p_players / p_version when asked, so older schemas still resolve the call.
+    return this.rpcId("start_practice", practiceArgs(appSlug, players, versionId));
   }
 
   startMatch(matchId: string): Promise<Match> {

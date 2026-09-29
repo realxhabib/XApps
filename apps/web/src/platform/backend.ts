@@ -1,4 +1,11 @@
 import type {
+  AppAnalytics,
+  AppLogEntry,
+  AppVersion,
+  DeveloperNotice,
+  LogLevel,
+  ReviewItem,
+  VersionManifest,
   AppAuthority,
   MediaRef,
   StatLeaderRow,
@@ -79,6 +86,28 @@ export interface Backend {
   listWebhookDeliveries(appSlug: string): Promise<WebhookDelivery[]>;
   sendTestWebhook(appSlug: string): Promise<void>;
 
+  // Shipping (Stage 4) ---------------------------------------------------
+  listAppVersions(appSlug: string): Promise<AppVersion[]>;
+  createAppVersion(appSlug: string, input: { version: string; url: string; manifest: VersionManifest; notes?: string }): Promise<AppVersion>;
+  updateAppVersion(versionId: string, input: { url?: string; manifest?: VersionManifest; notes?: string }): Promise<AppVersion>;
+  submitAppVersion(versionId: string): Promise<AppVersion>;
+  withdrawAppVersion(versionId: string): Promise<AppVersion>;
+  publishAppVersion(versionId: string): Promise<AppVersion>;
+  listAppTesters(appSlug: string): Promise<Profile[]>;
+  addAppTester(appSlug: string, handle: string): Promise<Profile[]>;
+  removeAppTester(appSlug: string, userId: string): Promise<Profile[]>;
+  /** Admins only. */
+  listReviewQueue(): Promise<ReviewItem[]>;
+  reviewAppVersion(versionId: string, decision: "approve" | "reject", notes: string): Promise<AppVersion>;
+  /** Owner/admin analytics for the last `days` days. */
+  appAnalytics(appSlug: string, days?: number): Promise<AppAnalytics>;
+  logAppEvent(entry: { appSlug: string; matchId: string | null; level: LogLevel; message: string; data?: Json; source: "app" | "host" }): Promise<void>;
+  listAppLogs(appSlug: string, filter?: { level?: LogLevel; matchId?: string; before?: string; limit?: number }): Promise<AppLogEntry[]>;
+  /** Review decisions for the viewer's apps, newest first. */
+  listMyNotices(limit?: number): Promise<DeveloperNotice[]>;
+  /** Marks these notices (default: all unread) read; resolves to how many changed. */
+  markNoticesRead(ids?: string[]): Promise<number>;
+
   // People -------------------------------------------------------------
   getProfile(handle: string): Promise<Profile | null>;
   searchProfiles(query: string): Promise<Profile[]>;
@@ -88,10 +117,10 @@ export interface Backend {
   createChallenge(input: CreateChallengeInput): Promise<Match>;
   /** Stores an image the viewer dropped into a challenge and returns its URL (a data URL in demo mode). */
   uploadImage(image: Blob): Promise<string>;
-  /** Join someone who's waiting, or open a new public lobby. */
-  quickMatch(appSlug: string): Promise<Match>;
+  /** Join someone who's waiting, or open a new public lobby (with `versionId`: a test-build lobby for owner/testers). */
+  quickMatch(appSlug: string, versionId?: string | null): Promise<Match>;
   /** Solo match against bots the app drives (`players` seats, default the app's minimum). */
-  startPractice(appSlug: string, players?: number): Promise<Match>;
+  startPractice(appSlug: string, players?: number, versionId?: string | null): Promise<Match>;
   /** Creator starts a lobby early once the minimum is seated. */
   startMatch(matchId: string): Promise<Match>;
   /** Watch a match without a seat. */
@@ -153,6 +182,8 @@ export interface DemoControls {
   personas(): Profile[];
   signInAs(input: { handle: string; name?: string }): Promise<Profile>;
   switchTo(profileId: string): Promise<void>;
+  /** Make the signed-in demo user a reviewer (admin) or not. */
+  setAdmin(on: boolean): Promise<Profile>;
   reset(): void;
 }
 

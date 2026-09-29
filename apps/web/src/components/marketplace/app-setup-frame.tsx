@@ -196,7 +196,9 @@ export function AppSetupFrame({
   return (
     <motion.div
       className={cn(
-        "relative h-[24rem] overflow-hidden rounded-3xl bg-ink-900 ring-1 ring-white/10 sm:h-[26rem]",
+        // Tall enough for a real setup screen, short enough that the sheet around it
+        // still has room to scroll on phones (touches on the frame scroll the app).
+        "relative h-[clamp(22rem,calc(100dvh-19rem),32rem)] overflow-hidden rounded-3xl bg-ink-900 ring-1 ring-white/10",
         className,
       )}
       initial={reduced ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 8 }}

@@ -9,7 +9,7 @@
  */
 
 export const PROTOCOL_VERSION = 1 as const;
-export const SDK_VERSION = "0.3.0";
+export const SDK_VERSION = "0.4.0";
 
 export type Json =
   | string
@@ -170,6 +170,8 @@ export interface AchievementDef {
 
 export type StorageScope = "user" | "app";
 
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
 export interface MatchResult {
   matchId: string;
   status: MatchStatus;
@@ -215,6 +217,8 @@ export interface RequestMap {
   "ui.scores": { params: { scores: { [playerId: string]: number | string } }; result: null };
   /** Highlights whose turn it is in the host HUD. */
   "ui.turn": { params: { playerId: string | null }; result: null };
+  /** Tell the host how tall your content is (CSS px, clamped to 120–2000) so it can size your frame. */
+  "ui.resize": { params: { height: number }; result: null };
   /** Opens a pre-filled post composer on X. */
   "social.share": { params: { text: string; url?: string }; result: null };
   /** Key/value store: `user` scope is private to the player (default); `app` scope is public, written by your server. */
@@ -229,6 +233,8 @@ export interface RequestMap {
   "stats.report": { params: { values: { [key: string]: number } }; result: { [key: string]: number } };
   /** Unlock an achievement from your manifest. `unlocked` is false if the player already had it. */
   "achievements.unlock": { params: { id: string }; result: { unlocked: boolean } };
+  /** Write to your app's log (visible to you in the developer console). Rate-limited; excess entries are dropped. */
+  log: { params: { level: LogLevel; message: string; data?: Json }; result: null };
   /** Shared, persistent match state. */
   "state.get": { params: Record<string, never>; result: { state: Json | null; version: number } };
   /** Compare-and-set: fails with code `conflict` if someone else wrote since `expectedVersion`. */
@@ -271,6 +277,8 @@ export const REQUEST_METHODS: readonly RequestMethod[] = [
   "media.upload",
   "stats.report",
   "achievements.unlock",
+  "log",
+  "ui.resize",
 ] as const;
 
 /* ------------------------------------------------------------------------ */
@@ -406,6 +414,11 @@ export const LIMITS = {
   maxStats: 8,
   maxAchievements: 30,
   maxAchievementXpPerApp: 500,
+  logMessageLength: 500,
+  logDataBytes: 4 * 1024,
+  logsPerMinute: 60,
+  /** `ui.resize` heights are clamped to this range (CSS px). */
+  frameHeight: { min: 120, max: 2000 },
   /** Max serialized size of submission data + display. */
   submissionBytes: 64 * 1024,
   /** Max serialized size of the shared match state. */

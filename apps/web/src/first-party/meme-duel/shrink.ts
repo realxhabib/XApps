@@ -1,4 +1,7 @@
-/** Browser-side image helpers for things people drop into the app. */
+/**
+ * Browser-side: the setup screen shrinks a dropped image before `media.upload`.
+ * (A copy of the host's old helper: first-party apps only use the public SDK.)
+ */
 
 export interface ScaledImage {
   blob: Blob;
@@ -20,6 +23,7 @@ export async function shrinkImage(file: Blob, { maxSide = 1080, maxBytes = 900_0
     throw new Error("Couldn't read that image");
   }
   try {
+    if (bitmap.width < 16 || bitmap.height < 16) throw new Error("That image is too small");
     let side = maxSide;
     for (let attempt = 0; attempt < 6; attempt++) {
       const scale = Math.min(1, side / Math.max(bitmap.width, bitmap.height));

@@ -1,0 +1,118 @@
+:root {
+  color-scheme: dark;
+  --bg: #07080d;
+  --ink: #f6f7fb;
+  --muted: #8d96ad;
+  --x: #8b5cf6;
+  --o: #22d3ee;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: radial-gradient(ellipse at 80% 0%, #10345a 0%, transparent 55%), var(--bg);
+  color: var(--ink);
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.app {
+  width: min(420px, 100% - 32px);
+  margin: 0 auto;
+  padding: 24px 0;
+  display: grid;
+  gap: 18px;
+  text-align: center;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(26px, 7vw, 36px);
+  letter-spacing: -0.03em;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.center {
+  text-align: center;
+  padding: 24px;
+}
+
+.players {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.players .active {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 6px;
+}
+
+.board {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  aspect-ratio: 1;
+}
+
+.cell {
+  border: 1px solid rgb(255 255 255 / 0.1);
+  border-radius: 18px;
+  background: rgb(255 255 255 / 0.05);
+  color: inherit;
+  font-family: inherit;
+  font-size: clamp(40px, 14vw, 64px);
+  font-weight: 900;
+  cursor: pointer;
+  transition: background 150ms, transform 150ms;
+}
+
+.cell:hover:not(:disabled) {
+  background: rgb(255 255 255 / 0.1);
+}
+
+.cell:disabled {
+  cursor: default;
+}
+
+.cell.mark-0 {
+  color: var(--x);
+}
+
+.cell.mark-1 {
+  color: var(--o);
+}
+
+.cell.win {
+  background: rgb(255 255 255 / 0.16);
+  transform: scale(1.04);
+}
+
+.status {
+  min-height: 24px;
+  margin: 0;
+  font-weight: 700;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cell {
+    transition: none;
+  }
+}

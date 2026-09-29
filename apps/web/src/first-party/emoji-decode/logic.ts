@@ -2,7 +2,7 @@
  * Emoji Decode — pure game logic. No React, no SDK calls: everything here is
  * deterministic given its inputs, so both clients (and the tests) agree.
  */
-import type { Json, Random } from "@xapps/sdk";
+import type { Json, MatchResult, Random } from "@xapps/sdk";
 import { PUZZLES, type Puzzle } from "./puzzles";
 
 /* ---------------------------------------------------------------------- */
@@ -333,4 +333,82 @@ export function planBot(
     shownAt = atMs + REVEAL_MS + TRANSITION_MS;
   }
   return steps;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Progress: stats & achievements                                         */
+/* ---------------------------------------------------------------------- */
+
+/** Achievement ids (declared in the app's manifest). */
+export type DecodeAchievement =
+  | "first_win"
+  | "fluent"
+  | "lightning"
+  | "on_a_roll"
+  | "score_1500"
+  | "speed_reader"
+  | "photo_finish"
+  | "lost_in_translation";
+
+export const PROGRESS = {
+  /** "Lightning read": decoded within this long of the puzzle appearing. */
+  lightningMs: 2_000,
+  /** "On a roll": this many in a row. */
+  rollStreak: 5,
+  /** "1,500 club": near-perfect and quick (the ceiling is 1,750). */
+  bigScore: 1_500,
+  /** "Speed reader": at least this many decoded… */
+  speedReaderCorrect: 6,
+  /** …averaging at most this long each. */
+  speedReaderAvgMs: 4_000,
+  /** "Photo finish": win by at most this many points. */
+  photoFinishPoints: 25,
+} as const;
+
+/**
+ * Achievements the run so far has earned. Per-answer ones (lightning, streak)
+ * unlock the moment the answer lands; whole-match ones once all eight puzzles
+ * are answered.
+ */
+export function earnedAchievements(run: RunState, count = QUESTION_COUNT): DecodeAchievement[] {
+  const earned: DecodeAchievement[] = [];
+  if (run.answers.some((a) => a.correct && a.elapsedMs <= PROGRESS.lightningMs)) earned.push("lightning");
+  if (run.bestStreak >= PROGRESS.rollStreak) earned.push("on_a_roll");
+  if (run.answers.length < count) return earned;
+  const s = summarize(run);
+  if (s.correct === count) earned.push("fluent");
+  if (run.total >= PROGRESS.bigScore) earned.push("score_1500");
+  if (s.correct >= PROGRESS.speedReaderCorrect && s.avgCorrectMs !== null && s.avgCorrectMs < PROGRESS.speedReaderAvgMs) {
+    earned.push("speed_reader");
+  }
+  if (s.correct === 0) earned.push("lost_in_translation");
+  return earned;
+}
+
+/** Stats to report when the run is over (zero counters are left out). */
+export function runStats(run: RunState): { [key: string]: number } {
+  const correct = run.answers.filter((a) => a.correct);
+  const stats: { [key: string]: number } = { best_score: run.total };
+  if (correct.length > 0) {
+    stats.puzzles_decoded = correct.length;
+    stats.fastest_decode = Math.min(...correct.map((a) => a.elapsedMs));
+  }
+  return stats;
+}
+
+/** Achievements and stats from the settled match: a win, and how close it was. */
+export function resultProgress(
+  result: Pick<MatchResult, "winnerId" | "scores">,
+  me: string,
+): { achievements: DecodeAchievement[]; stats: { [key: string]: number } } {
+  if (result.winnerId !== me) return { achievements: [], stats: {} };
+  const mine = result.scores[me];
+  const others = Object.entries(result.scores)
+    .filter(([id, score]) => id !== me && typeof score === "number")
+    .map(([, score]) => score as number);
+  const achievements: DecodeAchievement[] = ["first_win"];
+  if (typeof mine === "number" && others.length > 0 && mine - Math.max(...others) <= PROGRESS.photoFinishPoints) {
+    achievements.push("photo_finish");
+  }
+  return { achievements, stats: { wins: 1 } };
 }

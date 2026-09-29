@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { MODE_LABEL } from "@/platform/match-utils";
 import type { AppManifest, Match, MatchPlayer } from "@/platform/types";
 import { isMultiplayer, seatedPlayers, teamOf, teamStyle, type TeamStyle } from "./match-view";
+import { TestBuildBadge } from "./test-build-badge";
 
 export const REACTIONS = ["🔥", "😂", "😱", "👏", "💀", "🫡"] as const;
 
@@ -306,6 +307,8 @@ function MatchTitle({ app, match, hud, spectating, spectatorCount }: { app: AppM
         >
           {MODE_LABEL[match.mode]}
         </Badge>
+        <TestBuildBadge match={match} compact className="sm:hidden" />
+        <TestBuildBadge match={match} className="hidden sm:inline-flex" />
         <RoundCounter round={match.round ?? 0} />
         <WatchersChip spectating={spectating} count={spectatorCount} />
       </div>
@@ -414,6 +417,7 @@ export function Hud({
               <MatchTitle app={app} match={match} hud={hud} spectating={spectating} spectatorCount={spectatorCount} />
             </div>
             <div className="flex items-center gap-1.5 md:hidden">
+              <TestBuildBadge match={match} compact />
               <RoundCounter round={match.round ?? 0} />
               <WatchersChip spectating={spectating} count={spectatorCount} />
             </div>

@@ -11,7 +11,7 @@ import {
   isPhotoTemplateId,
 } from "./photo-templates";
 import { positionedSlot, slotCenter, slotFrame, STICKER_SIZE } from "./render";
-import { parseRound, type MemeRound } from "./round";
+import { isDemoMediaSrc, parseRound, type MemeRound } from "./round";
 import {
   BOT_CAPTIONS,
   CANVAS,
@@ -375,7 +375,7 @@ export function entryToJson(entry: MemeEntry, template?: MemeTemplate, round?: M
   if (base?.id === DROP_TEMPLATE_ID && base.photo) {
     const src = base.photo.src;
     json.drop = {
-      src: src.startsWith("https://") && src.length <= DROP_REF_MAX ? src : null,
+      src: (src.startsWith("https://") || isDemoMediaSrc(src)) && src.length <= DROP_REF_MAX ? src : null,
       width: base.photo.width,
       height: base.photo.height,
       ...(round?.drop?.name ? { name: round.drop.name } : {}),

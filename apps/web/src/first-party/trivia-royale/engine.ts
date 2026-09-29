@@ -9,6 +9,8 @@ import {
   answerMs,
   botProfile,
   decide,
+  earnedAchievements,
+  finalStats,
   initialState,
   planBotAnswer,
   submissionFor,
@@ -18,6 +20,7 @@ import {
   type Seat,
   type Standing,
 } from "./logic";
+import { reportStats, unlockAchievements } from "../shared/progress";
 import type { Reducer, Snapshot, TriviaStore } from "./store";
 
 const warn = (what: string) => (error: unknown) => console.warn(`[trivia-royale] ${what} failed`, error);
@@ -128,6 +131,16 @@ export function useTriviaEngine(options: EngineOptions): { answer: (choice: numb
     xapps.round.set(round).catch(ignore);
   }, [drivingRound, round, xapps]);
 
+  /* Achievements: as each answer is revealed, and with the final standings - */
+
+  const revealed = state !== null && state.phase !== "question";
+  const revealKey = revealed ? `${state.phase}:${state.round}` : null;
+  useEffect(() => {
+    if (!revealKey || !canWrite || sim) return;
+    const ids = seats.map((s) => s.id);
+    unlockAchievements(xapps, earnedAchievements(questions, store.get().state, ids, meId), "trivia-royale");
+  }, [revealKey, canWrite, sim, seats, questions, meId, store, xapps]);
+
   /* Submissions: once, when the final standings are in -------------------- */
 
   const final = state?.phase === "final";
@@ -140,7 +153,12 @@ export function useTriviaEngine(options: EngineOptions): { answer: (choice: numb
       send().catch(warn(`submit ${id}`));
     };
     const mine = standings.find((s) => s.id === meId);
-    if (mine) submitOnce(meId, () => xapps.submit(submissionFor(questions, mine)));
+    if (mine) {
+      submitOnce(meId, () => {
+        reportStats(xapps, finalStats(standings, meId), "trivia-royale");
+        return xapps.submit(submissionFor(questions, mine));
+      });
+    }
     if (store.get().state?.driver === meId) {
       for (const seat of seats) {
         if (!seat.isBot) continue;

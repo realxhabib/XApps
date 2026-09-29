@@ -14,6 +14,7 @@ import { play } from "@/lib/sfx";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { levelInfo } from "@/platform/scoring";
+import { isTestBuild, testBuildLabel } from "@/platform/shipping";
 import type { AppManifest, Match, MatchPlayer, Profile } from "@/platform/types";
 import { isMultiplayer, ordinal, rankings, seatedPlayers, teamRankings, viewerOutcome, type Placement, type TeamRanking } from "./match-view";
 
@@ -52,6 +53,7 @@ export function ResultsOverlay({
   const outcome: Outcome = view.kind;
   const players = seatedPlayers(match);
   const votes = match.scoring === "votes";
+  const testBuild = isTestBuild(match);
   const ranked = rankings(match);
   const podium = multi && !teamPlay && outcome !== "win" && view.rank !== null && view.rank <= 3;
   const title = multi && !teamPlay && outcome !== "spectator" && view.rank !== null
@@ -126,7 +128,7 @@ export function ResultsOverlay({
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
         >
-          {app.name} · {match.mode === "practice" ? "Practice" : votes ? "Crowd verdict" : "Final"}
+          {app.name} · {testBuild ? testBuildLabel(match) : match.mode === "practice" ? "Practice" : votes ? "Crowd verdict" : "Final"}
         </motion.p>
         <motion.h2
           className={cn(
@@ -209,10 +211,16 @@ export function ResultsOverlay({
                 transition={{ delay: 1.2, type: "spring", stiffness: 50, damping: 14 }}
               />
             </div>
-            {match.mode === "practice" && (
-              <p className="mt-2 text-xs text-ink-400">
-                Practice match — no rank change{match.simulatedVotes ? " · judged by a simulated crowd" : ""}.
+            {testBuild ? (
+              <p className="mt-2 text-xs text-gold">
+                Test build — no rank change{match.versionLabel ? ` (v${match.versionLabel})` : ""}. XP, stats and records aren&apos;t touched.
               </p>
+            ) : (
+              match.mode === "practice" && (
+                <p className="mt-2 text-xs text-ink-400">
+                  Practice match — no rank change{match.simulatedVotes ? " · judged by a simulated crowd" : ""}.
+                </p>
+              )
             )}
           </motion.div>
         )}

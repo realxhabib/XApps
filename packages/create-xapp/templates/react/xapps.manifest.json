@@ -1,0 +1,25 @@
+{
+  "name": "{{name}}",
+  "version": "1.0.0",
+  "url": "https://your-app.example.com/",
+  "tagline": "Tap faster than your rival in 10 seconds.",
+  "description": "A 10-second tap race. Tap as fast as you can; the most taps wins. Play live against anyone on X, or practice against a bot.",
+  "category": "games",
+  "icon": "👆",
+  "accent": ["#8b5cf6", "#22d3ee"],
+  "modes": ["live", "practice"],
+  "players": { "min": 2, "max": 2 },
+  "teams": 0,
+  "spectators": true,
+  "setup": false,
+  "turnBased": false,
+  "scoring": "high",
+  "durationLabel": "10 sec",
+  "howTo": [
+    "Wait for the countdown.",
+    "Tap the big button as fast as you can for 10 seconds.",
+    "Most taps wins."
+  ],
+  "stats": [],
+  "achievements": []
+}

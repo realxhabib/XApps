@@ -15,6 +15,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { play } from "@/lib/sfx";
 import { useBot } from "../shared/hooks";
+import { reportStats, unlockAchievements } from "../shared/progress";
 import { boardAlt, boardSvg } from "./display";
 import { dropPlan } from "./geometry";
 import {
@@ -22,6 +23,8 @@ import {
   TURN_MS,
   applyStateMove,
   chooseBotMove,
+  earnedAchievements,
+  gameStats,
   isColumn,
   newGame,
   other,
@@ -453,6 +456,24 @@ export function useFourInARow() {
   }, [botToMove, botSeat, base.moves.length, commitMove]);
 
   /* ---------------------------------------------------------------- */
+  /* Achievements: the moment a stored move earns one                 */
+  /* ---------------------------------------------------------------- */
+
+  // Only moves made while we're watching count as "now" — reopening a game
+  // days later doesn't replay old moments (they were unlocked back then).
+  const moveCount = base.moves.length;
+  const winnerSeat = outcome?.winner ?? null;
+  useEffect(() => {
+    if (!started || spectating || mySeat === null || unreadable) return;
+    if (startCount.current === null || moveCount <= startCount.current) return;
+    unlockAchievements(
+      xapps,
+      earnedAchievements(latest.current.base, mySeat, { async, winner: winnerSeat }),
+      "four-in-a-row",
+    );
+  }, [started, spectating, mySeat, unreadable, moveCount, winnerSeat, async, xapps]);
+
+  /* ---------------------------------------------------------------- */
   /* Submission: once per player when the state shows a result        */
   /* ---------------------------------------------------------------- */
 
@@ -475,6 +496,8 @@ export function useFourInARow() {
       const display = { kind: "svg" as const, svg: boardSvg(cur), alt: boardAlt(cur, names) };
       const data = { moves: [...cur.moves], winnerSeat: final.winner, reason: final.reason };
       if (!xapps.me.submitted) {
+        reportStats(xapps, gameStats(cur, mySeat, final.winner), "four-in-a-row");
+        unlockAchievements(xapps, earnedAchievements(cur, mySeat, { async, winner: final.winner }), "four-in-a-row");
         xapps
           .submit({ score: scoreOf(final, mySeat), data: { ...data, seat: mySeat }, display })
           .then(() => setSubmitted(true))

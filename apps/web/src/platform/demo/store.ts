@@ -5,7 +5,10 @@
  * tabs behave like two players on a live server.
  */
 import type {
+  AppLogEntry,
+  DeveloperNotice,
   AppManifest,
+  AppVersion,
   Json,
   MatchPlayer,
   MatchMode,
@@ -64,6 +67,10 @@ export interface MatchRow {
   turnUserId: string | null;
   turnDeadline: string | null;
   round: number;
+  /** Stage 4: a test build of this app version (never ranked). Absent on older rows. */
+  versionId?: string | null;
+  /** Stage 4: the app's live version when the match was created (analytics' per-version split). */
+  publishedVersionId?: string | null;
 }
 
 export interface VoteRow {
@@ -120,6 +127,11 @@ export interface MediaUploadRow {
   createdAt: string;
 }
 
+/** Stage 4: `app_versions` (plus who reviewed it). */
+export interface VersionRow extends AppVersion {
+  reviewedBy: string | null;
+}
+
 export interface DemoDb {
   version: 4;
   profiles: Record<string, Profile>;
@@ -139,6 +151,13 @@ export interface DemoDb {
   /** Unlock time by `app:user:achievementId`. */
   achievements?: Record<string, string>;
   mediaUploads?: MediaUploadRow[];
+  /** Stage 4 (optional too): versions by id, the published version per app, testers per app, logs. */
+  versions?: Record<string, VersionRow>;
+  publishedVersions?: Record<string, string>;
+  testers?: Record<string, string[]>;
+  logs?: AppLogEntry[];
+  /** Review decisions for developers (`developer_notices`). */
+  notices?: (DeveloperNotice & { userId: string })[];
 }
 
 export const DB_VERSION = 4 as const;

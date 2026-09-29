@@ -305,7 +305,7 @@ function MyAppCard({ app }: { app: AppManifest }) {
   const authority = server?.authority ?? app.authority ?? "client";
   return (
     <div className="rounded-3xl glass p-2 transition hover:bg-white/[0.05]">
-      <Link href={`/apps/${app.slug}`} className="flex items-center gap-3 rounded-2xl p-2">
+      <Link href={`/developers/apps/${app.slug}`} className="flex items-center gap-3 rounded-2xl p-2">
         <AppGlyph app={app} size={44} />
         <div className="min-w-0 flex-1">
           <p className="truncate font-semibold">{app.name}</p>
@@ -324,8 +324,11 @@ function MyAppCard({ app }: { app: AppManifest }) {
         <span className={cn("flex items-center gap-1.5", server?.hasWebhook && "text-ink-200")}>
           <Webhook className="size-3.5" /> {server ? (server.hasWebhook ? "Webhook on" : "No webhook") : "…"}
         </span>
-        <Link href={`/apps/${app.slug}#server`} className="ml-auto inline-flex items-center gap-1 font-semibold text-nova-300 hover:underline">
-          Server settings <ArrowRight className="size-3" />
+        <Link href={`/developers/apps/${app.slug}?tab=server`} className="inline-flex items-center gap-1 font-semibold text-ink-300 hover:text-ink-100 hover:underline">
+          Server
+        </Link>
+        <Link href={`/developers/apps/${app.slug}`} className="ml-auto inline-flex items-center gap-1 font-semibold text-nova-300 hover:underline">
+          Console <ArrowRight className="size-3" />
         </Link>
       </div>
     </div>

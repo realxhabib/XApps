@@ -24,9 +24,12 @@ import {
 import {
   accessProblem,
   achievementProblem,
+  clampFrameHeight,
+  createTokenBucket,
   displayProblem,
   isPlainObject,
   jsonProblem,
+  logProblem,
   mediaProblem,
   statsProblem,
   storageKeyProblem,
@@ -45,6 +48,10 @@ export {
   mediaUrlProblem,
   statsProblem,
   achievementProblem,
+  clampFrameHeight,
+  isLogLevel,
+  logProblem,
+  LOG_LEVELS,
   type MediaKind,
   ALT_TEXT_LENGTH,
   MANIFEST_ID_PATTERN,
@@ -59,8 +66,8 @@ export type HostHandler<M extends RequestMethod> = (
  * `unknown_method`. The v2/v3 methods can also be given by their friendly
  * names (`getState`, `setState`, `endTurn`, `setRound`, `submitSetup`,
  * `cancelSetup`, `uploadMedia`, `reportStats`, `unlockAchievement`,
- * `storageDelete`, `storageList`); the method-name key wins when both are
- * present.
+ * `storageDelete`, `storageList`, `logEvent`, `resize`); the method-name key
+ * wins when both are present.
  */
 export type HostHandlers = {
   [M in RequestMethod]?: HostHandler<M>;
@@ -91,6 +98,17 @@ export type HostHandlers = {
   storageDelete?: HostHandler<"storage.delete">;
   /** `storage.list` → keys (`scope` defaults to `user`). */
   storageList?: HostHandler<"storage.list">;
+  /**
+   * `log` → `null`. Already validated (level, message ≤ 500 chars, data ≤ 4 KB)
+   * and rate limited (`LIMITS.logsPerMinute` per app instance; the excess is
+   * dropped silently before it reaches you). Allowed for every purpose and role.
+   */
+  logEvent?: HostHandler<"log">;
+  /**
+   * `ui.resize` → `null`. `params.height` is already a whole number of CSS px
+   * clamped to `LIMITS.frameHeight` (120–2000). Allowed for every purpose and role.
+   */
+  resize?: HostHandler<"ui.resize">;
 };
 
 /** Friendly handler names for the v2/v3 methods. */
@@ -106,6 +124,8 @@ export const HANDLER_ALIASES = {
   "achievements.unlock": "unlockAchievement",
   "storage.delete": "storageDelete",
   "storage.list": "storageList",
+  log: "logEvent",
+  "ui.resize": "resize",
 } as const satisfies Partial<Record<RequestMethod, keyof HostHandlers>>;
 
 /** The handler for `method`, by protocol name or friendly alias. */
@@ -138,8 +158,10 @@ export interface HostCoreOptions {
    * Purpose/role used to refuse requests (`forbidden`): spectators can't
    * submit, send, write state, end turns, set rounds, upload media, report
    * stats, unlock achievements or write storage; setup-purpose apps can only
-   * use `setup.*` (plus ready/ui/storage/social/media.upload), and match apps
-   * can't use `setup.*`. Defaults to reading `context()` on each request.
+   * use `setup.*` (plus ready/ui/storage/social/media.upload/log), and match apps
+   * can't use `setup.*`. `log` and `ui.resize` are allowed everywhere,
+   * spectators included.
+   * Defaults to reading `context()` on each request.
    */
   access?: () => { purpose?: LaunchContext["purpose"]; role?: LaunchContext["match"]["role"] };
 }
@@ -167,6 +189,8 @@ export function createHostCore(transport: HostTransport, options: HostCoreOption
   let buffer: HostToApp[] = [];
   let budget: number = LIMITS.roomMessagesPerSecond;
   let refilledAt = Date.now();
+  // Logs: ≤ LIMITS.logsPerMinute per app instance; the excess is answered `ok` and dropped.
+  const logBudget = createTokenBucket(LIMITS.logsPerMinute, 60_000);
 
   const send = (message: HostToApp) => {
     if (destroyed) return;
@@ -213,7 +237,8 @@ export function createHostCore(transport: HostTransport, options: HostCoreOption
   };
 
   const handleRequest = async (message: RequestMessage) => {
-    const { id, method, params } = message;
+    const { id, method } = message;
+    let { params } = message;
     if (typeof id !== "number") return;
     if (!isRequestMethod(method)) {
       respondError(id, String(method), new XAppsError("unknown_method", `Unknown method ${String(method)}`));
@@ -251,6 +276,13 @@ export function createHostCore(transport: HostTransport, options: HostCoreOption
     if (method === "room.send" && !takeBudget()) {
       respondError(id, method, new XAppsError("rate_limited", "room.send: slow down"));
       return;
+    }
+    if (method === "log" && !logBudget.take()) {
+      transport.post({ xapps: PROTOCOL_VERSION, type: "response", id, ok: true, result: null });
+      return;
+    }
+    if (method === "ui.resize") {
+      params = { height: clampFrameHeight((params as RequestParams<"ui.resize">).height) };
     }
     options.onRequest?.(method, params);
     const handler = resolveHostHandler(options.handlers, method) as
@@ -415,6 +447,10 @@ export function validateRequest(method: RequestMethod, params: unknown): string 
     }
     case "ui.turn":
       return params.playerId === null || typeof params.playerId === "string" ? null : "playerId must be a string";
+    case "ui.resize":
+      return typeof params.height === "number" && Number.isFinite(params.height)
+        ? null
+        : "height must be a finite number (CSS px)";
     case "social.share":
       if (typeof params.text !== "string" || params.text.length > LIMITS.shareTextLength) return "text too long";
       if (params.url !== undefined && (typeof params.url !== "string" || !/^https?:\/\//.test(params.url))) {
@@ -439,6 +475,8 @@ export function validateRequest(method: RequestMethod, params: unknown): string 
       return statsProblem(params.values);
     case "achievements.unlock":
       return achievementProblem(params.id);
+    case "log":
+      return logProblem(params.level, params.message, params.data);
     case "state.get":
     case "setup.cancel":
       return null;

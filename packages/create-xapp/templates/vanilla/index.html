@@ -1,0 +1,160 @@
+<!doctype html>
+<!--
+  {{name}}: a complete XApps app in one HTML file, no build step.
+
+  A 10-second tap race for two players:
+    • connect() + ready() + onStart()   lifecycle
+    • room.send / room.on               live taps between players (spectators see them too)
+    • submit() / submitFor(bot)         the platform settles the match; practice bots are played here
+    • ui.setScores / ui.setStatus       the host's HUD
+    • log.info / log.error              your app's log (uncaught errors are captured automatically)
+
+  ⚠ Replace YOUR-XAPPS-HOST below with your XApps host (e.g. xapps.example.com).
+    Every XApps host serves the SDK bundle at /sdk/v1.js. Opened directly
+    (not inside XApps), the bundle starts a mock host: you vs a practice bot.
+    Serve this folder over http(s) (e.g. `npx serve .`), not file://.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{name}}</title>
+    <style>
+      :root { color-scheme: dark; --a: #8b5cf6; --b: #22d3ee; --ink: #f6f7fb; --muted: #8d96ad; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: radial-gradient(ellipse at 20% 0%, #2a1f5e 0%, transparent 55%), #07080d;
+        color: var(--ink);
+        display: grid;
+        place-items: center;
+        user-select: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      main { width: min(480px, 100% - 32px); display: grid; gap: 18px; text-align: center; }
+      h1 { margin: 0; font-size: clamp(28px, 7vw, 40px); letter-spacing: -0.03em; }
+      .muted { color: var(--muted); }
+      .lane { display: grid; gap: 6px; text-align: left; }
+      .head { display: flex; justify-content: space-between; font-weight: 600; }
+      .bar { height: 14px; border-radius: 99px; background: rgb(255 255 255 / 0.08); overflow: hidden; }
+      .fill { height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, var(--a), var(--b)); transition: width 0.12s; }
+      #clock { font-size: 44px; font-weight: 900; font-variant-numeric: tabular-nums; }
+      #tap {
+        justify-self: center; width: min(200px, 56vw); aspect-ratio: 1; border-radius: 50%; border: 0;
+        font-family: inherit; font-size: 30px; font-weight: 900; color: white; cursor: pointer; touch-action: manipulation;
+        background: linear-gradient(135deg, var(--a), var(--b)); transition: transform 0.08s, opacity 0.2s;
+      }
+      #tap:active:not(:disabled) { transform: scale(0.94); }
+      #tap:disabled { opacity: 0.35; cursor: default; }
+      #status { min-height: 24px; font-weight: 700; }
+      @media (prefers-reduced-motion: reduce) { .fill, #tap { transition: none; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>{{name}}</h1>
+      <p class="muted">Most taps in 10 seconds wins.</p>
+      <div id="lanes"></div>
+      <div id="clock">10s</div>
+      <button id="tap" type="button" disabled>TAP</button>
+      <div id="status" role="status">Connecting…</div>
+    </main>
+
+    <script type="module">
+      import { connect } from "https://YOUR-XAPPS-HOST/sdk/v1.js";
+
+      const DURATION_MS = 10_000;
+      const $ = (id) => document.getElementById(id);
+
+      const xapps = await connect();
+      const me = xapps.me;
+      const bots = xapps.isSpectator ? [] : xapps.opponents.filter((p) => p.isBot);
+      const taps = Object.fromEntries(xapps.players.map((p) => [p.id, 0]));
+      let endsAt = null;
+      let submitted = false;
+
+      // One lane per seated player.
+      for (const p of xapps.players) {
+        const lane = document.createElement("div");
+        lane.className = "lane";
+        lane.innerHTML = `<div class="head"><span></span><strong id="count-${p.id}">0</strong></div><div class="bar"><div class="fill" id="fill-${p.id}"></div></div>`;
+        lane.querySelector("span").textContent = (p.id === me.id ? "You" : `@${p.handle}`) + (p.isBot ? " 🤖" : "");
+        $("lanes").append(lane);
+      }
+
+      const render = () => {
+        const leader = Math.max(20, ...Object.values(taps));
+        for (const p of xapps.players) {
+          $(`count-${p.id}`).textContent = String(taps[p.id]);
+          $(`fill-${p.id}`).style.width = `${Math.min(100, (taps[p.id] / leader) * 100)}%`;
+        }
+        xapps.ui.setScores({ ...taps }).catch(() => {});
+      };
+      const status = (text) => {
+        $("status").textContent = text;
+        xapps.ui.setStatus(text).catch(() => {});
+      };
+
+      // Live taps from the other players.
+      xapps.room.on("taps", ({ count }, from) => {
+        if (typeof count !== "number" || !(from in taps)) return;
+        taps[from] = Math.max(taps[from], count);
+        render();
+      });
+
+      $("tap").addEventListener("pointerdown", () => {
+        if (endsAt === null || Date.now() >= endsAt || xapps.isSpectator) return;
+        taps[me.id] += 1;
+        render();
+        xapps.room.send("taps", { count: taps[me.id] }).catch(() => {}); // > 30/s is rate limited; the next tap catches up
+      });
+
+      xapps.onStart(() => {
+        endsAt = Date.now() + DURATION_MS;
+        $("tap").disabled = xapps.isSpectator;
+        status(xapps.isSpectator ? "Race on!" : "TAP! TAP! TAP!");
+        xapps.log.info("race started", { practice: bots.length > 0 });
+        // Practice bots, seeded so every client would agree.
+        const rngs = bots.map((b) => [b.id, xapps.random.fork(`bot:${b.id}`)]);
+        const clock = setInterval(() => {
+          const left = endsAt - Date.now();
+          $("clock").textContent = `${Math.max(0, Math.ceil(left / 1000))}s`;
+          if (left > 0) {
+            let changed = false;
+            for (const [id, rng] of rngs) if (rng.chance(0.65)) (taps[id] += 1), (changed = true);
+            if (changed) render();
+            return;
+          }
+          clearInterval(clock);
+          finish();
+        }, 100);
+      });
+
+      async function finish() {
+        $("tap").disabled = true;
+        if (xapps.isSpectator || submitted) return;
+        submitted = true;
+        status("Time! Waiting for the result…");
+        try {
+          await xapps.submit({ score: taps[me.id], display: { kind: "text", title: "Tap race", body: `${taps[me.id]} taps in 10 s` } });
+          for (const b of bots) await xapps.submitFor(b.id, { score: taps[b.id] });
+        } catch (error) {
+          xapps.log.error("submit failed", { error: String(error) });
+        }
+      }
+
+      xapps.onEnd((result) => {
+        if (result.winnerId === null) status("It's a draw!");
+        else if (result.winnerId === me.id) {
+          status("You win! 🎉");
+          xapps.ui.celebrate("big").catch(() => {});
+        } else status(`@${xapps.player(result.winnerId)?.handle ?? "?"} wins`);
+      });
+
+      render();
+      status(xapps.isSpectator ? "Waiting for the race to start…" : "Get ready…");
+      await xapps.ready();
+    </script>
+  </body>
+</html>

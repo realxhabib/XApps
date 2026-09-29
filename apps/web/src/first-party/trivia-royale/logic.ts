@@ -563,3 +563,97 @@ export function submissionFor(
     },
   };
 }
+
+/* ---------------------------------------------------------------------- */
+/* Progress: stats & achievements (one player's view)                     */
+/* ---------------------------------------------------------------------- */
+
+/** Achievement ids (declared in the app's manifest). */
+export type TriviaAchievement =
+  | "crowned"
+  | "perfect_game"
+  | "speed_demon"
+  | "on_fire"
+  | "podium"
+  | "lone_genius"
+  | "clutch"
+  | "host_with_most"
+  | "gloriously_wrong";
+
+export const PROGRESS = {
+  /** "Speed demon": a right answer locked in within this long of the clock starting. */
+  speedDemonMs: 2_000,
+  /** "On fire": this many right answers in a row. */
+  onFireStreak: 5,
+  /** "Podium": top three… */
+  podiumRank: 3,
+  /** …at a table of at least this many. */
+  podiumTable: 4,
+  /** "Lone genius": the only right answer at a table of at least this many. */
+  loneGeniusTable: 3,
+  /** "Host with the most": win a table this full. */
+  fullTable: 8,
+} as const;
+
+/** The sole first place (null when nobody or several share rank 1). */
+function soleWinner(standings: readonly Standing[]): string | null {
+  const first = standings.filter((s) => s.rank === 1);
+  return first.length === 1 ? (first[0] as Standing).id : null;
+}
+
+/**
+ * Achievements `me` has earned from the revealed rounds of `state`. Per-answer
+ * ones (speed, streaks, lone genius) unlock as each answer is revealed; the
+ * table ones once the final standings are in.
+ */
+export function earnedAchievements(
+  questions: Question[],
+  state: TriviaState | null,
+  ids: readonly string[],
+  me: string,
+): TriviaAchievement[] {
+  if (!state || !ids.includes(me)) return [];
+  const rounds = revealedRounds(state);
+  const table = scoreRounds(questions, rounds, ids.slice());
+  const mine = table.find((s) => s.id === me);
+  if (!mine) return [];
+  const earned: TriviaAchievement[] = [];
+
+  if (mine.results.some((r) => r.correct && r.ms !== null && r.ms <= PROGRESS.speedDemonMs)) earned.push("speed_demon");
+  if (mine.bestStreak >= PROGRESS.onFireStreak) earned.push("on_fire");
+  if (ids.length >= PROGRESS.loneGeniusTable) {
+    const lone = rounds.some((answers, i) => {
+      const question = questions[i];
+      if (!question) return false;
+      const right = ids.filter((id) => answers[id]?.choice === question.correct);
+      return right.length === 1 && right[0] === me;
+    });
+    if (lone) earned.push("lone_genius");
+  }
+  if (state.phase !== "final") return earned;
+
+  const won = soleWinner(table) === me;
+  if (won) earned.push("crowned");
+  if (mine.correct === ROUNDS) earned.push("perfect_game");
+  if (mine.rank <= PROGRESS.podiumRank && ids.length >= PROGRESS.podiumTable) earned.push("podium");
+  if (won && rounds.length === ROUNDS) {
+    // Not the sole leader going into the double-points round, but the winner after it.
+    const before = scoreRounds(questions, rounds.slice(0, -1), ids.slice());
+    if (soleWinner(before) !== me) earned.push("clutch");
+  }
+  if (won && ids.length >= PROGRESS.fullTable) earned.push("host_with_most");
+  const answered = mine.results.filter((r) => r.choice !== null).length;
+  if (answered === ROUNDS && mine.correct === 0) earned.push("gloriously_wrong");
+  return earned;
+}
+
+/** Stats to report with the final standings (zero counters are left out). */
+export function finalStats(standings: readonly Standing[], me: string): { [key: string]: number } {
+  const mine = standings.find((s) => s.id === me);
+  if (!mine) return {};
+  const stats: { [key: string]: number } = { best_score: mine.total };
+  if (mine.correct > 0) stats.correct_answers = mine.correct;
+  if (mine.bestStreak > 0) stats.best_streak = mine.bestStreak;
+  if (soleWinner(standings) === me) stats.crowns = 1;
+  return stats;
+}

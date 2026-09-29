@@ -104,12 +104,22 @@ apps/web/                  Next.js 16 app (App Router, React 19, Tailwind v4, Mo
   src/platform/            backend interface, demo + Supabase backends, queries
   src/components/          chrome, motion primitives, marketplace, play room
 packages/sdk/              @xapps/sdk: protocol, client, host bridge, React hooks
+packages/create-xapp/      `npx create-xapp`: project templates (React, turn-based, one HTML file)
 examples/rps/              a complete app in one HTML file
 supabase/migrations/       schema, RLS, RPCs, realtime auth
 supabase/tests/            lifecycle tests against a plain local Postgres
 ```
 
 ## Build an app
+
+Start from a template (no network needed to scaffold):
+
+```bash
+npx create-xapp my-game          # --template react (default) | turn-based | vanilla
+cd my-game && npm install && npm run dev
+```
+
+Or add the SDK to any project (`npm i @xapps/sdk`):
 
 ```ts
 import { connect } from "@xapps/sdk"; // or "https://<xapps-host>/sdk/v1.js" with no build step

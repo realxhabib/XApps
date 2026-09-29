@@ -11,9 +11,24 @@ Build multiplayer apps for **XApps**, the social app marketplace on X: 1v1 duels
 - **Progression**: key/value storage (per player and per app), custom stats with leaderboards, and achievements.
 - **Host UI**: VS intro, countdown, HUD, emoji reactions, confetti, results screen, rematch and share.
 
+## Install
+
 ```bash
-npm install @xapps/sdk
+npm i @xapps/sdk          # React bindings need react ≥ 18 (optional peer)
 ```
+
+Entry points: `@xapps/sdk` (apps), `@xapps/sdk/react` (hooks), `@xapps/sdk/host` (embed apps / integration tests), `@xapps/sdk/server` (your app's server: webhooks + server API) and `@xapps/sdk/protocol` (wire types). ESM only, with TypeScript declarations.
+
+Starting from scratch? Scaffold a ready project:
+
+```bash
+npx create-xapp my-game                         # Vite + React + TypeScript, a 1v1 tap race
+npx create-xapp my-board --template turn-based  # shared state + turns (tic-tac-toe)
+npx create-xapp my-page --template vanilla      # one HTML file, no build
+cd my-game && npm install && npm run dev        # plays standalone against a bot (mock host)
+```
+
+Each template ships an `xapps.manifest.json` and a README with the path to launch: `npm run dev` → register at `<xapps-host>/developers/new` → test in the Sandbox → add versions → submit for review.
 
 No build step? Import the browser bundle from your XApps host:
 
@@ -52,7 +67,7 @@ import { XAppsProvider, useXApps, useRoomEvent, useMatchStarted, useMatchResult 
 </XAppsProvider>;
 ```
 
-More hooks: `useMatch()`, `usePresence()`, `useReactions(fn)`, for v2 matches `useMatchState()`, `useTurn()`, `useRound()`, `usePlayers()`, `useSetup()`, and for media and progression `useMediaUpload()`, `useStats()`, `useAchievements()`, `useAchievementEvents(fn)` (see below).
+More hooks: `useMatch()`, `usePresence()`, `useReactions(fn)`, for v2 matches `useMatchState()`, `useTurn()`, `useRound()`, `usePlayers()`, `useSetup()`, for media and progression `useMediaUpload()`, `useStats()`, `useAchievements()`, `useAchievementEvents(fn)`, `useLogger()` and `useAutoResize()` (see below).
 
 ## Lifecycle
 
@@ -78,6 +93,7 @@ More hooks: `useMatch()`, `usePresence()`, `useReactions(fn)`, for v2 matches `u
 | `submit({ score?, data?, display? })` · `submitFor(botId, …)` | `display` is `{kind:"text",title?,body}`, `{kind:"svg",svg,alt}`, `{kind:"image",url,alt}`, `{kind:"video",url,alt,poster?}`, `{kind:"audio",url,alt,cover?}` or `{kind:"gallery",items:[{url,alt}]}` (2–6 items). See [Media uploads](#media-uploads) |
 | `room.send(type, payload)` · `room.on(type, fn)` · `room.onAny(fn)` · `room.onPresence(fn)` | ≤ 8 KB payloads, ≤ 30 messages/s |
 | `ui.setStatus` · `ui.setScores` · `ui.setTurn` · `ui.toast` · `ui.celebrate` · `ui.haptic` | Host UI |
+| `ui.resize(height)` · `ui.autoResize({ element?, intervalMs? })` | Tell the host your content height (CSS px, clamped to 120–2000) so it can size the frame it shows you in, e.g. the challenge setup sheet. `autoResize` watches `document.documentElement` (don't pin `html`/`body` to `height: 100%`) with a `ResizeObserver`, sends at most one update per 100 ms and returns a stop function. React: `useAutoResize()` |
 | `social.share(text, url?)` | Opens the X composer. The player always confirms the post. |
 | `storage.get(key, { scope? })` · `storage.set(key, value)` · `storage.delete(key)` · `storage.list({ prefix?, scope? })` | ≤ 64 KB JSON per value, ≤ 200 keys per player. `scope: "user"` (default, private) or `"app"` (public, read-only here). See [Storage scopes](#storage-scopes) |
 | `media.upload(blob, { alt? })` · `media.kindOf(mime)` | Upload an image, audio or video file → `MediaRef { url, kind, mime, bytes, width?, height?, duration? }` |
@@ -87,6 +103,7 @@ More hooks: `useMatch()`, `usePresence()`, `useReactions(fn)`, for v2 matches `u
 | `turn.current` · `turn.isMine` · `turn.deadline` · `turn.end(next?)` · `onTurn(fn)` | Turns (optional) |
 | `round.current` · `round.set(n)` · `onRound(fn)` | Round counter in the host HUD, never goes backwards |
 | `setup.active` · `setup.submit(settings, summary?)` · `setup.cancel()` | Setup purpose only. Settings ≤ 4 KB JSON object, summary ≤ 140 chars |
+| `log.debug` · `log.info` · `log.warn` · `log.error` `(message, data?)` | Your app's log, fire and forget. See [Logs](#logs) |
 
 `@xapps/sdk/host` exports `createHostBridge` / `createHostCore` if you want to embed XApps apps yourself or write integration tests. `@xapps/sdk/protocol` has the wire types.
 
@@ -176,7 +193,7 @@ if (xapps.purpose === "setup") {
 }
 ```
 
-Settings must be a JSON object of at most 4 KB, and the summary (shown on the invite) at most 140 characters. In setup purpose, match methods (`room.send`, `submit`, `state.*`, `turn.end`, `round.set`, `stats.report`, `achievements.unlock`) are refused with `forbidden`. `ready()`, `ui.*`, `storage.*` and `media.upload` still work, so a setup screen can upload a picture and put its URL in the settings.
+Settings must be a JSON object of at most 4 KB, and the summary (shown on the invite) at most 140 characters. In setup purpose, match methods (`room.send`, `submit`, `state.*`, `turn.end`, `round.set`, `stats.report`, `achievements.unlock`) are refused with `forbidden`. `ready()`, `ui.*`, `storage.*`, `media.upload` and `log.*` still work, so a setup screen can upload a picture and put its URL in the settings. The sheet sizes itself to your content when you call `xapps.ui.autoResize()` (React: `useAutoResize()`).
 
 ### Spectators
 
@@ -245,6 +262,8 @@ Opened directly, `connect()` starts the mock host. Configure it through `connect
 | `media.upload` | `uploadMedia` | `{ file: Blob, alt? }` → `MediaRef`. Type and size are already checked; enforce the daily quotas. |
 | `stats.report` | `reportStats` | `{ values }` → `{ [key]: newValue }` |
 | `achievements.unlock` | `unlockAchievement` | `{ id }` → `{ unlocked }`. Call `bridge.emitAchievement(id, userId)` when it's new. |
+| `log` | `logEvent` | `{ level, message, data? }` → `null`. Validated (≤ 500 chars, data ≤ 4 KB); past 60 a minute per app instance the core answers `ok` and drops the entry without calling you. |
+| `ui.resize` | `resize` | `{ height }` → `null`. `height` arrives as whole CSS px clamped to 120–2000. |
 
 The core validates params and refuses by purpose and role (read from `context()`, or from an `access()` option) before calling your handler. Push changes with `bridge.emitState(state, version, by)`, `bridge.emitTurn(turn, deadline)` and `bridge.emitRound(round)`, or emit a `match.update`, from which the client derives the same events. Emit before you answer `turn.end` so the app sees the new turn first. `rankPlayers(entries, "high" | "low", { teams })` computes placements, ties and team sums.
 
@@ -390,6 +409,34 @@ const { defs, report } = useStats();
 const { defs: badges, unlock, unlocked } = useAchievements();  // `unlocked` re-renders on change
 useAchievementEvents(({ id, userId }, def) => console.log(userId, "unlocked", def?.name ?? id));
 ```
+
+## Logs
+
+Write to your app's log from any client. Entries show up in the **Logs** tab of your app's developer console (filter by level or match, or tail live), kept for 7 days.
+
+```ts
+xapps.log.info("round over", { round, scores });
+xapps.log.warn("slow frame", { ms: 84 });
+xapps.log.error("desync", { expected, got });
+```
+
+- Levels: `debug`, `info`, `warn`, `error`. Allowed everywhere, spectators and setup screens included.
+- **Fire and forget**: calls return nothing, never throw and never wait on the host, so they are safe in hot paths and error handlers.
+- Limits, applied before sending: `message` is cut to 500 characters (ending in `…`); `data` must be JSON of at most 4 KB, otherwise it is replaced by `{ dropped: "<why>" }`; each client sends at most 60 entries a minute and silently drops the rest.
+- **Uncaught errors** (`window` `error`) and **unhandled promise rejections** are logged automatically as `error` entries with a trimmed stack (`data: { kind, stack, source?, line?, column? }`). Opt out with `connect({ captureErrors: false })`. The listeners are installed once per page, so reconnecting never duplicates reports.
+- Standalone, the mock host prints each entry to the browser console as `[xapps log] <level>` and keeps them in `mock.logs` (for tests: `createMockHost()` then `connect({ transport: mock.transport })`).
+- The host also logs requests it refuses (invalid params, forbidden, rate limited) with `source: host`, so protocol mistakes show up next to your own entries.
+
+React:
+
+```tsx
+import { useLogger } from "@xapps/sdk/react";
+
+const log = useLogger();                         // stable across renders
+useEffect(() => log.debug("board mounted"), [log]);
+```
+
+Hosts (`@xapps/sdk/host`) receive entries through the `log` handler (alias `logEvent`), already validated and limited to 60 a minute per app instance.
 
 ## Testing
 

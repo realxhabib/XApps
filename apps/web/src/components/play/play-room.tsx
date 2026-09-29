@@ -23,15 +23,16 @@ import type { RoomPeer, RoomTransport } from "@/platform/backend";
 import { BackendError } from "@/platform/backend";
 import { useBackend, useViewer } from "@/platform/client";
 import { buildLaunchContext, opponentOf, playerOf, toLaunchMatch, toMatchResult } from "@/platform/match-utils";
-import { invalidateProgress, useApp, useMatch, useMatchAction } from "@/platform/queries";
-import type { AppManifest, Match, Profile } from "@/platform/types";
+import { invalidateProgress, useApp, useAppVersions, useMatch, useMatchAction } from "@/platform/queries";
+import { applyVersionToApp, isTestBuild } from "@/platform/shipping";
+import type { AppManifest, Json, LogLevel, Match, Profile } from "@/platform/types";
 import { showAchievement } from "./achievement-moment";
 import { FloatingReactions, Hud, type HudState, useFloatingReactions } from "./hud";
 import { InviteCard, Lobby } from "./lobby";
 import { isMultiplayer, ordinal, seatedPlayers, viewerIsSpectator, viewerOutcome } from "./match-view";
 import { ResultsOverlay } from "./results-overlay";
 import { TurnBanner } from "./turn-banner";
-import { APP_ALLOW, APP_SANDBOX, emitMatchChanges, useAppBridge, type Emit } from "./use-app-bridge";
+import { APP_ALLOW, APP_SANDBOX, LOGGED_REFUSALS, createLogThrottle, emitMatchChanges, useAppBridge, type Emit } from "./use-app-bridge";
 import { VersusIntro } from "./versus-intro";
 import { VotingOverlay } from "./voting-overlay";
 
@@ -104,7 +105,16 @@ export function PlayRoom({ matchId }: { matchId: string }) {
   const queryClient = useQueryClient();
   const { viewer, loading: viewerLoading } = useViewer();
   const { data: match, isPending: matchLoading, error: matchError } = useMatch(matchId);
-  const { data: app } = useApp(match?.appSlug ?? "", !!match);
+  const { data: listedApp } = useApp(match?.appSlug ?? "", !!match);
+  // A test build plays by its version's manifest. The developer can read it; testers get the listing's.
+  const testBuild = isTestBuild(match);
+  const ownsApp = !!listedApp && !!viewer && !listedApp.official && listedApp.developer.id === viewer.id;
+  const { data: versions, isPending: versionsLoading } = useAppVersions(listedApp?.slug ?? "", testBuild && ownsApp);
+  const testVersion = testBuild ? versions?.find((v) => v.id === match?.versionId) : undefined;
+  const app = useMemo(
+    () => (listedApp && testVersion ? applyVersionToApp(listedApp, testVersion) : listedApp),
+    [listedApp, testVersion],
+  );
   const action = useMatchAction();
   const me = match ? playerOf(match, viewer?.id) : undefined;
   const spectating = !!match && viewerIsSpectator(match, viewer?.id);
@@ -148,7 +158,9 @@ export function PlayRoom({ matchId }: { matchId: string }) {
     }
   };
 
-  if (matchLoading || viewerLoading || (match && !app)) return <FullscreenLoader app={app ?? undefined} />;
+  if (matchLoading || viewerLoading || (match && !app) || (testBuild && ownsApp && versionsLoading)) {
+    return <FullscreenLoader app={app ?? undefined} />;
+  }
 
   if (!match || !app) {
     const setup = matchError instanceof BackendError && matchError.code === "setup_required";
@@ -292,7 +304,7 @@ export function PlayRoom({ matchId }: { matchId: string }) {
             ? async () => {
                 try {
                   await backend.cancelMatch(match.id).catch(() => undefined);
-                  const practice = await backend.startPractice(app.slug, match.maxPlayers > 2 ? match.maxPlayers : undefined);
+                  const practice = await backend.startPractice(app.slug, match.maxPlayers > 2 ? match.maxPlayers : undefined, match.versionId);
                   router.replace(`/play/${practice.id}`);
                 } catch (error) {
                   toast(errorMessage(error), { tone: "danger" });
@@ -416,15 +428,25 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
     return () => set.forEach(clearTimeout);
   }, []);
 
+  const testBuild = isTestBuild(match);
+  /** Test builds load their version's url (and the bridge pins that url's origin). */
+  const sourceUrl = match.versionUrl || app.url;
   const appUrl = useMemo(() => {
     if (typeof window === "undefined") return null;
     try {
-      const url = new URL(app.url, window.location.origin);
+      const url = new URL(sourceUrl, window.location.origin);
       return { href: url.toString(), origin: url.origin };
     } catch {
       return null;
     }
-  }, [app.url]);
+  }, [sourceUrl]);
+
+  /** Fire-and-forget developer logs (the backend drops them past its rate limit). */
+  const [hostLogBudget] = useState(() => createLogThrottle(30));
+  const logEvent = (level: LogLevel, message: string, data: Json | undefined, source: "app" | "host") => {
+    if (source === "host" && !hostLogBudget()) return;
+    backend.logAppEvent({ appSlug: app.slug, matchId: match.id, level, message, data, source }).catch(() => undefined);
+  };
 
   /* ------------------------------------------------------------ bridge */
 
@@ -541,6 +563,11 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
     },
     "stats.report": async ({ values }) => {
       seatedOnly("stats.report");
+      if (testBuild) {
+        // Test builds never touch stats: echo the values back without saving them.
+        logEvent("info", "stats.report not saved (test build)", { values }, "host");
+        return values;
+      }
       try {
         const result = await backend.reportStats(app.slug, values);
         invalidateProgress(queryClient, app.slug);
@@ -552,15 +579,28 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
     "achievements.unlock": async ({ id }) => {
       seatedOnly("achievements.unlock");
       let result: { unlocked: boolean };
-      try {
-        result = await backend.unlockAchievement(app.slug, id);
-      } catch (error) {
-        throw toSdkError(error);
+      if (testBuild) {
+        // Shown (so the flow can be tried) but never saved, and worth no XP.
+        logEvent("info", `achievements.unlock ${id} not saved (test build)`, { id }, "host");
+        result = { unlocked: true };
+      } else {
+        try {
+          result = await backend.unlockAchievement(app.slug, id);
+        } catch (error) {
+          throw toSdkError(error);
+        }
       }
       if (result.unlocked) {
         const def = app.achievements?.find((a) => a.id === id);
         if (def) {
-          showAchievement({ icon: def.icon, name: def.name, description: def.description, xp: def.xp, appName: app.name, accent: app.accent });
+          showAchievement({
+            icon: def.icon,
+            name: def.name,
+            description: def.description,
+            xp: testBuild ? 0 : def.xp,
+            appName: app.name,
+            accent: app.accent,
+          });
         }
         // Our app hears it first, then everyone else in a live room.
         emitRef.current?.("achievement.unlock", { id, userId: viewer.id });
@@ -606,6 +646,12 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
         throw toSdkError(error);
       }
     },
+    log: ({ level, message, data }) => {
+      logEvent(level, message, data, "app");
+      return null;
+    },
+    // The stage fills the screen: size hints only matter for the challenge sheet's setup frame.
+    "ui.resize": () => null,
     "setup.submit": () => {
       throw new XAppsError("forbidden", "setup.submit only works in setup purpose");
     },
@@ -620,6 +666,11 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
     enabled: !!appUrl,
     context: () => buildLaunchContext(app, latest(), viewer, window.location.origin),
     handlers,
+    // Protocol problems the host refused go to the developer's logs (never about `log` itself).
+    onRequestError: (method, error) => {
+      if (method === "log" || !LOGGED_REFUSALS.has(String(error.code))) return;
+      logEvent("warn", `${method} refused (${String(error.code)}): ${error.message}`.slice(0, 500), { method, code: String(error.code) }, "host");
+    },
   });
 
   useLayoutEffect(() => {
@@ -844,9 +895,10 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
       const rivals = others.filter((p) => !p.isBot);
       const next =
         match.mode === "practice" || rivals.length === 0 || (others.some((p) => p.isBot) && backend.kind !== "demo")
-          ? await backend.startPractice(app.slug, seated.length > 2 ? seated.length : undefined)
+          ? await backend.startPractice(app.slug, seated.length > 2 ? seated.length : undefined, match.versionId)
           : await backend.createChallenge({
               appSlug: app.slug,
+              versionId: match.versionId ?? null,
               mode: match.mode === "async" ? "async" : "live",
               opponentHandle: rivals.length === 1 ? rivals[0]!.profile.handle : null,
               opponentHandles: rivals.length > 1 ? rivals.map((p) => p.profile.handle) : undefined,

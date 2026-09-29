@@ -109,6 +109,8 @@ export interface Profile {
   createdAt: string;
   /** Demo personas the app can drive as bots. */
   isBot?: boolean;
+  /** Can review app versions (Stage 4). */
+  isAdmin?: boolean;
 }
 
 export type PlayerState = "invited" | "joined" | "submitted" | "declined" | "left";
@@ -167,6 +169,12 @@ export interface Match {
   turnUserId: string | null;
   turnDeadline: string | null;
   round: number;
+  /** Set for test builds (a non-published app version); never ranked. */
+  versionId?: string | null;
+  /** Where a test build is served (the play room loads this instead of the app's url). */
+  versionUrl?: string | null;
+  /** The test build's semver label ("1.1.0"), when the backend returns it. */
+  versionLabel?: string | null;
 }
 
 export interface LeaderRow {
@@ -193,6 +201,8 @@ export interface CreateChallengeInput {
   opponentHandles?: string[];
   /** Table size for multiplayer apps, within the app's range. */
   maxPlayers?: number;
+  /** Play a non-published version (owner and testers only). */
+  versionId?: string | null;
   /** How the challenger set up the round; the app reads it as `match.settings` (max 4 KB). */
   settings?: { [key: string]: Json };
 }
@@ -249,4 +259,103 @@ export interface UserAchievement {
   appSlug: string;
   achievementId: string;
   unlockedAt: string;
+}
+
+// ---------------------------------------------------------------- Stage 4
+
+export type AppVersionStatus = "draft" | "in_review" | "approved" | "rejected" | "published" | "retired";
+
+/** The listing + capability fields a version carries (copied onto the app when published). */
+export type VersionManifest = Pick<
+  AppManifest,
+  | "name"
+  | "tagline"
+  | "description"
+  | "category"
+  | "icon"
+  | "accent"
+  | "modes"
+  | "players"
+  | "teams"
+  | "spectators"
+  | "setup"
+  | "turnBased"
+  | "scoring"
+  | "votesToWin"
+  | "howTo"
+  | "stats"
+  | "achievements"
+>;
+
+export interface AppVersion {
+  id: string;
+  appSlug: string;
+  version: string;
+  url: string;
+  manifest: VersionManifest;
+  status: AppVersionStatus;
+  notes: string;
+  reviewNotes: string | null;
+  createdAt: string;
+  submittedAt: string | null;
+  reviewedAt: string | null;
+  publishedAt: string | null;
+}
+
+export interface ReviewItem {
+  version: AppVersion;
+  app: AppManifest;
+  developer: Profile;
+  /** The currently published version, if any (for diffing). */
+  published: AppVersion | null;
+}
+
+export interface AppAnalytics {
+  days: number;
+  series: {
+    date: string;
+    matchesCreated: number;
+    matchesCompleted: number;
+    matchesAbandoned: number;
+    players: number;
+    newPlayers: number;
+  }[];
+  totals: { matches: number; completed: number; players: number; newPlayers: number };
+  completionRate: number;
+  medianDurationSec: number | null;
+  modes: { mode: string; matches: number }[];
+  tableSizes: { players: number; matches: number }[];
+  retention: { d1: number | null; d7: number | null };
+  topPlayers: { profile: Profile; matches: number; wins: number }[];
+  versions: { versionId: string | null; version: string | null; matches: number }[];
+}
+
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
+export type DeveloperNoticeKind = "version_approved" | "version_rejected" | "version_published";
+
+/** A review decision for one of the viewer's apps (`developer_notices`). */
+export interface DeveloperNotice {
+  id: string;
+  kind: DeveloperNoticeKind;
+  appSlug: string;
+  versionId: string | null;
+  /** The version label ("1.1.0"). */
+  version: string | null;
+  message: string;
+  createdAt: string;
+  readAt: string | null;
+}
+
+export interface AppLogEntry {
+  id: string;
+  appSlug: string;
+  versionId: string | null;
+  matchId: string | null;
+  userId: string | null;
+  level: LogLevel;
+  message: string;
+  data: Json | null;
+  source: "app" | "host";
+  createdAt: string;
 }

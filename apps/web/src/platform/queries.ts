@@ -5,7 +5,21 @@ import { useEffect, useMemo } from "react";
 import { getOfficialApp } from "./catalog";
 import { useBackend, useViewer } from "./client";
 import { isYourTurn, needsAttention } from "./match-utils";
-import type { AppAuthority, AppServerConfig, CreateChallengeInput, Json, Match, RegisterAppInput, WebhookDelivery } from "./types";
+import type {
+  AppAuthority,
+  AppLogEntry,
+  AppServerConfig,
+  AppVersion,
+  CreateChallengeInput,
+  DeveloperNotice,
+  Json,
+  LogLevel,
+  Match,
+  Profile,
+  RegisterAppInput,
+  VersionManifest,
+  WebhookDelivery,
+} from "./types";
 
 export function useApps() {
   const backend = useBackend();
@@ -193,24 +207,31 @@ export function useCreateChallenge() {
   });
 }
 
+export type QuickMatchInput = string | { appSlug: string; versionId?: string | null };
+
+/** `mutate(appSlug)`, or `mutate({ appSlug, versionId })` for a test-build lobby (owner/testers). */
 export function useQuickMatch() {
   const backend = useBackend();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (appSlug: string) => backend.quickMatch(appSlug),
+    mutationFn: (input: QuickMatchInput) =>
+      typeof input === "string" ? backend.quickMatch(input) : backend.quickMatch(input.appSlug, input.versionId),
     onSuccess: (match) => refreshMatchLists(queryClient, match),
   });
 }
 
-export type PracticeInput = string | { appSlug: string; players?: number };
+export type PracticeInput = string | { appSlug: string; players?: number; versionId?: string | null };
 
-/** Practice against bots: `mutate(appSlug)` or `mutate({ appSlug, players })` for a bigger table. */
+/**
+ * Practice against bots: `mutate(appSlug)`, `mutate({ appSlug, players })` for a
+ * bigger table, or `mutate({ appSlug, versionId })` to try a test build.
+ */
 export function usePractice() {
   const backend = useBackend();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: PracticeInput) =>
-      typeof input === "string" ? backend.startPractice(input) : backend.startPractice(input.appSlug, input.players),
+      typeof input === "string" ? backend.startPractice(input) : backend.startPractice(input.appSlug, input.players, input.versionId),
     onSuccess: (match) => refreshMatchLists(queryClient, match),
   });
 }
@@ -325,9 +346,12 @@ export function useRegisterApp() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: RegisterAppInput) => backend.registerApp(input),
-    onSuccess: () => {
+    onSuccess: (app) => {
       void queryClient.invalidateQueries({ queryKey: ["apps"] });
       void queryClient.invalidateQueries({ queryKey: ["my-apps"] });
+      // Registering creates version 1.0.0 (and demo mode publishes it).
+      void queryClient.invalidateQueries({ queryKey: versionsKey(app.slug) });
+      void queryClient.invalidateQueries({ queryKey: ["review-queue"] });
     },
   });
 }
@@ -451,5 +475,267 @@ export function useSendTestWebhook(slug: string) {
       for (const [key, data] of context?.previous ?? []) queryClient.setQueryData(key, data);
     },
     onSettled: () => void queryClient.invalidateQueries({ queryKey: deliveriesKey(slug) }),
+  });
+}
+
+/* ---------------------------------------------------------------------- */
+/* Shipping (Stage 4): versions, testers, review, analytics, logs          */
+/* ---------------------------------------------------------------------- */
+
+const versionsKey = (slug: string) => ["app-versions", slug] as const;
+const testersKey = (slug: string) => ["app-testers", slug] as const;
+const reviewQueueKey = ["review-queue"] as const;
+const analyticsKey = (slug: string) => ["app-analytics", slug] as const;
+const logsKey = (slug: string) => ["app-logs", slug] as const;
+const noticesKey = ["developer-notices"] as const;
+
+/** True when the signed-in viewer can review app versions. */
+export function useIsAdmin(): boolean {
+  const { viewer } = useViewer();
+  return !!viewer?.isAdmin;
+}
+
+/** The app's versions, newest first (owner only; pass `enabled: false` for others). */
+export function useAppVersions(slug: string, enabled = true) {
+  const backend = useBackend();
+  const { viewer } = useViewer();
+  return useQuery({
+    queryKey: [...versionsKey(slug), viewer?.id],
+    queryFn: () => backend.listAppVersions(slug),
+    enabled: enabled && !!slug && !!viewer,
+    retry: false,
+  });
+}
+
+/** After a version changes: its list, the queue, and (when it went live) the listing. */
+function refreshVersions(queryClient: QueryClient, slug: string, version?: AppVersion, listingChanged = false) {
+  if (version) {
+    queryClient.setQueriesData<AppVersion[]>({ queryKey: versionsKey(slug) }, (old) =>
+      old ? (old.some((v) => v.id === version.id) ? old.map((v) => (v.id === version.id ? version : v)) : [version, ...old]) : old,
+    );
+  }
+  void queryClient.invalidateQueries({ queryKey: versionsKey(slug) });
+  void queryClient.invalidateQueries({ queryKey: reviewQueueKey });
+  if (listingChanged) {
+    void queryClient.invalidateQueries({ queryKey: ["app", slug] });
+    void queryClient.invalidateQueries({ queryKey: ["apps"] });
+    void queryClient.invalidateQueries({ queryKey: ["my-apps"] });
+  }
+}
+
+export interface CreateVersionInput {
+  version: string;
+  url: string;
+  manifest: VersionManifest;
+  notes?: string;
+}
+
+/** Creates a draft version. */
+export function useCreateVersion(slug: string) {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateVersionInput) => backend.createAppVersion(slug, input),
+    onSuccess: (version) => refreshVersions(queryClient, slug, version),
+  });
+}
+
+export interface UpdateVersionInput {
+  versionId: string;
+  url?: string;
+  manifest?: VersionManifest;
+  notes?: string;
+}
+
+/** Edits a draft or rejected version. */
+export function useUpdateVersion(slug: string) {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ versionId, ...input }: UpdateVersionInput) => backend.updateAppVersion(versionId, input),
+    onSuccess: (version) => refreshVersions(queryClient, slug, version),
+  });
+}
+
+/** Sends a draft (or rejected) version to review: `mutate(versionId)`. */
+export function useSubmitVersion(slug: string) {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (versionId: string) => backend.submitAppVersion(versionId),
+    onSuccess: (version) => refreshVersions(queryClient, slug, version),
+  });
+}
+
+/** Pulls a version out of review (back to draft): `mutate(versionId)`. */
+export function useWithdrawVersion(slug: string) {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (versionId: string) => backend.withdrawAppVersion(versionId),
+    onSuccess: (version) => refreshVersions(queryClient, slug, version),
+  });
+}
+
+/** Publishes an approved version (the previous one retires): `mutate(versionId)`. */
+export function usePublishVersion(slug: string) {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (versionId: string) => backend.publishAppVersion(versionId),
+    onSuccess: (version) => refreshVersions(queryClient, slug, version, true),
+  });
+}
+
+/** People who may play the app's test builds (owner only). */
+export function useAppTesters(slug: string, enabled = true) {
+  const backend = useBackend();
+  const { viewer } = useViewer();
+  return useQuery({
+    queryKey: [...testersKey(slug), viewer?.id],
+    queryFn: () => backend.listAppTesters(slug),
+    enabled: enabled && !!slug && !!viewer,
+    retry: false,
+  });
+}
+
+function setTesters(queryClient: QueryClient, slug: string, testers: Profile[]) {
+  queryClient.setQueriesData<Profile[]>({ queryKey: testersKey(slug) }, () => testers);
+  void queryClient.invalidateQueries({ queryKey: testersKey(slug) });
+}
+
+/** `mutate(handle)`; resolves to the new tester list. */
+export function useAddTester(slug: string) {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (handle: string) => backend.addAppTester(slug, handle),
+    onSuccess: (testers) => setTesters(queryClient, slug, testers),
+  });
+}
+
+/** `mutate(userId)`; resolves to the new tester list. */
+export function useRemoveTester(slug: string) {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string) => backend.removeAppTester(slug, userId),
+    onSuccess: (testers) => setTesters(queryClient, slug, testers),
+  });
+}
+
+/** Versions waiting for review, oldest first (admins only; disabled for everyone else). */
+export function useReviewQueue() {
+  const backend = useBackend();
+  const { viewer } = useViewer();
+  return useQuery({
+    queryKey: [...reviewQueueKey, viewer?.id],
+    queryFn: () => backend.listReviewQueue(),
+    enabled: !!viewer?.isAdmin,
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    retry: false,
+  });
+}
+
+export interface ReviewVersionInput {
+  versionId: string;
+  decision: "approve" | "reject";
+  notes: string;
+}
+
+/** Approve or reject a version in review (admins). */
+export function useReviewVersion() {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ versionId, decision, notes }: ReviewVersionInput) => backend.reviewAppVersion(versionId, decision, notes),
+    onSuccess: (version) => {
+      refreshVersions(queryClient, version.appSlug, version, true);
+      void queryClient.invalidateQueries({ queryKey: noticesKey });
+    },
+  });
+}
+
+/** Owner/admin analytics for the last `days` days (default 30). */
+export function useAppAnalytics(slug: string, days = 30, enabled = true) {
+  const backend = useBackend();
+  const { viewer } = useViewer();
+  return useQuery({
+    queryKey: [...analyticsKey(slug), days, viewer?.id],
+    queryFn: () => backend.appAnalytics(slug, days),
+    enabled: enabled && !!slug && !!viewer,
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+export interface AppLogsFilter {
+  level?: LogLevel;
+  matchId?: string;
+  before?: string;
+  limit?: number;
+  /** Poll every 5 s while the page is visible (default true). */
+  live?: boolean;
+}
+
+/** The app's logs, newest first (owner only). Live tail: polled every 5 s while the tab is visible. */
+export function useAppLogs(slug: string, filter: AppLogsFilter = {}, enabled = true) {
+  const backend = useBackend();
+  const { viewer } = useViewer();
+  const { live = true, level, matchId, before, limit } = filter;
+  return useQuery<AppLogEntry[]>({
+    queryKey: [...logsKey(slug), { level, matchId, before, limit }, viewer?.id],
+    queryFn: () => backend.listAppLogs(slug, { level, matchId: matchId || undefined, before, limit }),
+    enabled: enabled && !!slug && !!viewer,
+    refetchInterval: live && !before ? 5_000 : false,
+    refetchIntervalInBackground: false,
+    retry: false,
+  });
+}
+
+/**
+ * Review decisions for the viewer's apps, newest first. Refreshed every 30 s
+ * (demo mode: on every local change). `unread` counts the ones not read yet.
+ */
+export function useMyNotices() {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  const { viewer } = useViewer();
+  const query = useQuery<DeveloperNotice[]>({
+    queryKey: [...noticesKey, viewer?.id],
+    queryFn: () => backend.listMyNotices(),
+    enabled: !!viewer,
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    retry: false,
+  });
+  useEffect(() => {
+    if (!viewer || backend.kind !== "demo") return;
+    return backend.watchInbox(() => void queryClient.invalidateQueries({ queryKey: noticesKey }));
+  }, [backend, queryClient, viewer]);
+  const unread = useMemo(() => (query.data ?? []).filter((n) => !n.readAt).length, [query.data]);
+  return { ...query, unread };
+}
+
+/** `mutate()` marks every unread notice read; `mutate(ids)` just those. */
+export function useMarkNoticesRead() {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (ids?: string[]) => backend.markNoticesRead(ids),
+    onMutate: async (ids) => {
+      await queryClient.cancelQueries({ queryKey: noticesKey });
+      const previous = queryClient.getQueriesData<DeveloperNotice[]>({ queryKey: noticesKey });
+      const at = new Date().toISOString();
+      queryClient.setQueriesData<DeveloperNotice[]>({ queryKey: noticesKey }, (old) =>
+        old?.map((n) => (!n.readAt && (!ids || ids.includes(n.id)) ? { ...n, readAt: at } : n)),
+      );
+      return { previous };
+    },
+    onError: (_error, _ids, context) => {
+      for (const [key, data] of context?.previous ?? []) queryClient.setQueryData(key, data);
+    },
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: noticesKey }),
   });
 }

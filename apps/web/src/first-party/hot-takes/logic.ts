@@ -395,3 +395,73 @@ export function reactionFor(outcome: Outcome, key: string) {
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
   return list[h % list.length] as (typeof list)[number];
 }
+
+/* ------------------------------------------------------------------ */
+/* Progress: stats & achievements                                     */
+/* ------------------------------------------------------------------ */
+
+/** Achievement ids (declared in the app's manifest). */
+export type HotTakesAchievement =
+  | "first_take"
+  | "ghost_pepper"
+  | "every_char"
+  | "crowd_pleaser"
+  | "too_hot"
+  | "short_sweet"
+  | "shutout"
+  | "buzzer_beater";
+
+export const PROGRESS = {
+  /** "Short and sweet": a winning take this short (characters). */
+  shortTake: 50,
+  /** "Buzzer beater": locked in with this little left on the clock. */
+  buzzerMs: 5_000,
+} as const;
+
+const MAX_SPICE: Spice = 3;
+
+export interface LockIn {
+  take: string;
+  spice: Spice;
+  /** Clock left when the player locked in (ms), or null if unknown. */
+  remainingMs: number | null;
+  /** The live clock ran out and submitted for them. */
+  forced: boolean;
+}
+
+/** Achievements earned the moment a take is locked in. */
+export function lockInAchievements(lockIn: LockIn): HotTakesAchievement[] {
+  const earned: HotTakesAchievement[] = ["first_take"];
+  if (lockIn.spice === MAX_SPICE) earned.push("ghost_pepper");
+  if (countChars(lockIn.take) === TAKE_LIMIT) earned.push("every_char");
+  const left = lockIn.remainingMs;
+  if (!lockIn.forced && left !== null && left > 0 && left <= PROGRESS.buzzerMs) earned.push("buzzer_beater");
+  return earned;
+}
+
+/** Stats for a locked-in take. */
+export function lockInStats(): { [key: string]: number } {
+  return { takes: 1 };
+}
+
+/**
+ * Achievements and stats once the crowd has decided. `entry` is our take when
+ * this session knows it (spice and length badges need it).
+ */
+export function resultProgress(
+  result: Pick<MatchResult, "winnerId" | "votes">,
+  meId: string,
+  opponentId: string | undefined,
+  entry: Pick<HotTakeEntry, "take" | "spice"> | null,
+): { achievements: HotTakesAchievement[]; stats: { [key: string]: number } } {
+  const tally = voteTally(result, meId, opponentId);
+  const stats: { [key: string]: number } = {};
+  if (tally && tally.mine > 0) stats.votes = tally.mine;
+  if (outcomeFor(result, meId) !== "won") return { achievements: [], stats };
+  stats.wins = 1;
+  const achievements: HotTakesAchievement[] = ["crowd_pleaser"];
+  if (entry?.spice === MAX_SPICE) achievements.push("too_hot");
+  if (entry && countChars(normalizeTake(entry.take)) <= PROGRESS.shortTake) achievements.push("short_sweet");
+  if (tally && tally.mine > 0 && tally.theirs === 0) achievements.push("shutout");
+  return { achievements, stats };
+}

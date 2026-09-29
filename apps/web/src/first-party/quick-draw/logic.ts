@@ -331,3 +331,85 @@ export function submissionData(outcomes: readonly RoundOutcome[]): { rounds: Jso
     bestMs: bestMs(outcomes.map((o) => o.me)),
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* Progress: stats & achievements (the local player's side)           */
+/* ------------------------------------------------------------------ */
+
+/** Achievement ids (declared in the app's manifest). */
+export type ReflexesAchievement =
+  | "duel_won"
+  | "under_200"
+  | "under_150"
+  | "flawless"
+  | "comeback"
+  | "photo_finish"
+  | "metronome"
+  | "twitchy";
+
+export const PROGRESS = {
+  /** "Under 200 ms" / "Superhuman": a clean tap strictly below these. */
+  fastMs: 200,
+  superhumanMs: 150,
+  /** "Photo finish": a round won by at most this margin. */
+  photoFinishMs: 5,
+  /** "Metronome": at least this many clean taps… */
+  metronomeTaps: 3,
+  /** …all within this spread (fastest to slowest). */
+  metronomeSpreadMs: 30,
+  /** "Twitchy": this many false starts in one duel. */
+  twitchyFalseStarts: 3,
+} as const;
+
+/**
+ * Achievements the rounds so far have earned (from our seat). Round-level
+ * ones (fast taps, photo finish, twitchy) show up as soon as the round that
+ * earns them is revealed; duel-level ones (win, 3–0, comeback, metronome) only
+ * once `final` is set.
+ */
+export function earnedAchievements(outcomes: readonly RoundOutcome[], final: boolean): ReflexesAchievement[] {
+  const earned: ReflexesAchievement[] = [];
+  const taps = outcomes.map((o) => o.me.ms).filter((ms): ms is number => ms !== null);
+  if (taps.some((ms) => ms < PROGRESS.fastMs)) earned.push("under_200");
+  if (taps.some((ms) => ms < PROGRESS.superhumanMs)) earned.push("under_150");
+  if (outcomes.some((o) => o.winner === "me" && o.reason === "faster" && (o.marginMs ?? Infinity) <= PROGRESS.photoFinishMs)) {
+    earned.push("photo_finish");
+  }
+  if (outcomes.filter((o) => o.me.falseStart).length >= PROGRESS.twitchyFalseStarts) earned.push("twitchy");
+  if (!final) return earned;
+
+  const score = tally(outcomes);
+  const won = matchWinner(score) === "me";
+  if (won) earned.push("duel_won");
+  if (won && score.opp === 0) earned.push("flawless");
+  if (won && trailedBy(outcomes, 2)) earned.push("comeback");
+  const clean = outcomes.every((o) => classify(o.me) === "tap");
+  if (clean && taps.length >= PROGRESS.metronomeTaps && Math.max(...taps) - Math.min(...taps) <= PROGRESS.metronomeSpreadMs) {
+    earned.push("metronome");
+  }
+  return earned;
+}
+
+/** Whether we were ever `rounds` behind during the duel. */
+function trailedBy(outcomes: readonly RoundOutcome[], rounds: number): boolean {
+  const score: Score = { me: 0, opp: 0 };
+  for (const o of outcomes) {
+    if (o.winner === "me") score.me++;
+    else if (o.winner === "opp") score.opp++;
+    if (score.opp - score.me >= rounds) return true;
+  }
+  return false;
+}
+
+/** Stats to report when a duel ends (zero counters are left out). */
+export function duelStats(outcomes: readonly RoundOutcome[]): { [key: string]: number } {
+  const score = tally(outcomes);
+  const won = matchWinner(score) === "me";
+  const stats: { [key: string]: number } = {};
+  const best = bestMs(outcomes.map((o) => o.me));
+  if (best !== null) stats.best_reaction = best;
+  if (score.me > 0) stats.rounds_won = score.me;
+  if (won) stats.duels_won = 1;
+  if (won && score.opp === 0) stats.perfect_duels = 1;
+  return stats;
+}

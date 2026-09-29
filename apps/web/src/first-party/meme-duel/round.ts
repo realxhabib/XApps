@@ -26,7 +26,11 @@ export interface DropSlot {
 export const MAX_DROP_SLOTS = 6;
 
 export interface MemeDrop {
-  /** https URL on an allowed host (see src/lib/meme-image.ts) or a data:image URL in demo mode. */
+  /**
+   * https URL on an allowed host (see src/lib/meme-image.ts): an X photo, an
+   * imgflip template or a `media.upload` result. In demo mode an upload is a
+   * same-origin `/api/demo-media/<id>` URL; older demo drops are data:image URLs.
+   */
   src: string;
   width: number;
   height: number;
@@ -42,6 +46,11 @@ export interface MemeRound {
   templateId?: string;
   drop?: MemeDrop;
   topic?: string;
+}
+
+/** A demo-mode upload (`/api/demo-media/<id>`, relative or absolute): same-origin, so plain http on localhost is fine. */
+export function isDemoMediaSrc(src: string): boolean {
+  return /^(?:https?:\/\/[^/?#\s@]+)?\/api\/demo-media\/[0-9a-f]{32}$/.test(src);
 }
 
 function dimension(value: Json | undefined): number | null {
@@ -60,7 +69,7 @@ export function parseRound(settings: { [key: string]: Json } | null | undefined)
     const src = typeof drop.src === "string" ? drop.src : "";
     const width = dimension(drop.width);
     const height = dimension(drop.height);
-    const okSrc = /^https:\/\//.test(src) || /^data:image\/(jpeg|png|webp|gif);base64,/.test(src);
+    const okSrc = /^https:\/\//.test(src) || isDemoMediaSrc(src) || /^data:image\/(jpeg|png|webp|gif);base64,/.test(src);
     if (okSrc && width && height) {
       const c = drop.credit;
       const credit =

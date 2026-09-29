@@ -1,0 +1,130 @@
+:root {
+  color-scheme: dark;
+  --bg: #07080d;
+  --ink: #f6f7fb;
+  --muted: #8d96ad;
+  --a: #8b5cf6;
+  --b: #22d3ee;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: radial-gradient(ellipse at 20% 0%, #2a1f5e 0%, transparent 55%), var(--bg);
+  color: var(--ink);
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.app {
+  width: min(520px, 100% - 32px);
+  margin: 0 auto;
+  padding: 24px 0;
+  display: grid;
+  gap: 20px;
+  text-align: center;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(28px, 7vw, 40px);
+  letter-spacing: -0.03em;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.center {
+  text-align: center;
+  padding: 24px;
+}
+
+.lanes {
+  display: grid;
+  gap: 12px;
+}
+
+.lane {
+  display: grid;
+  gap: 6px;
+  text-align: left;
+}
+
+.lane-head {
+  display: flex;
+  justify-content: space-between;
+  font-weight: 600;
+}
+
+.lane.me .lane-head {
+  color: #c4b5fd;
+}
+
+.bar {
+  height: 14px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.08);
+  overflow: hidden;
+}
+
+.fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--a), var(--b));
+  transition: width 120ms ease-out;
+}
+
+.clock {
+  font-size: 44px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.tap {
+  justify-self: center;
+  width: min(220px, 60vw);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  border: 0;
+  font-family: inherit;
+  font-size: 32px;
+  font-weight: 900;
+  color: white;
+  background: linear-gradient(135deg, var(--a), var(--b));
+  box-shadow: 0 12px 40px rgb(139 92 246 / 0.4);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: transform 80ms ease-out, opacity 200ms;
+}
+
+.tap:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.tap:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.status {
+  min-height: 24px;
+  font-weight: 700;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fill,
+  .tap {
+    transition: none;
+  }
+}

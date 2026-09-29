@@ -1,8 +1,30 @@
 {
   "name": "@xapps/sdk",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "Build head-to-head social apps for the XApps marketplace: identity, realtime rooms, matchmaking results, crowd voting and host UI in one tiny bridge.",
   "license": "MIT",
+  "author": "XApps contributors",
+  "homepage": "https://github.com/realxhabib/XApps/tree/main/packages/sdk#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/realxhabib/XApps.git",
+    "directory": "packages/sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/realxhabib/XApps/issues"
+  },
+  "keywords": [
+    "xapps",
+    "x",
+    "twitter",
+    "multiplayer",
+    "mini-games",
+    "sdk",
+    "realtime",
+    "game-sdk",
+    "postmessage",
+    "iframe"
+  ],
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",
@@ -11,33 +33,48 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
     "./react": {
       "types": "./dist/react.d.ts",
+      "import": "./dist/react.js",
       "default": "./dist/react.js"
     },
     "./host": {
       "types": "./dist/host.d.ts",
+      "import": "./dist/host.js",
       "default": "./dist/host.js"
-    },
-    "./protocol": {
-      "types": "./dist/protocol.d.ts",
-      "default": "./dist/protocol.js"
     },
     "./server": {
       "types": "./dist/server.d.ts",
+      "import": "./dist/server.js",
       "default": "./dist/server.js"
-    }
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js",
+      "default": "./dist/protocol.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
   ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepack": "node build.mjs"
   },
   "peerDependencies": {
     "react": ">=18"
@@ -54,14 +91,5 @@
     "react": "19.2.8",
     "typescript": "^5",
     "vitest": "^5.0.2"
-  },
-  "keywords": [
-    "xapps",
-    "x",
-    "twitter",
-    "multiplayer",
-    "mini-games",
-    "sdk",
-    "realtime"
-  ]
+  }
 }

@@ -16,6 +16,7 @@ import {
   type StorageScope,
   type LaunchContext,
   type LaunchPurpose,
+  type LogLevel,
   type MatchResult,
   type PlayerInfo,
   type PlayerRole,
@@ -33,7 +34,9 @@ import { createMockHost, type MockHostOptions } from "./mock-host";
 import {
   accessProblem,
   achievementProblem,
+  clampFrameHeight,
   cloneJson,
+  createTokenBucket,
   displayProblem,
   isPlainObject,
   jsonProblem,
@@ -62,6 +65,11 @@ export interface ConnectOptions {
   window?: Window;
   /** Provide your own transport (tests, custom embeds). */
   transport?: AppTransport;
+  /**
+   * Send uncaught errors and unhandled promise rejections to your app's log
+   * (level `error`, with the stack). Default true.
+   */
+  captureErrors?: boolean;
 }
 
 type Handler<T> = (value: T) => void;
@@ -210,6 +218,26 @@ export interface AchievementsApi {
   onChange(handler: (unlocked: ReadonlySet<string>) => void): Unsubscribe;
 }
 
+export interface AutoResizeOptions {
+  /** Element whose height is reported. Default: `document.documentElement`. */
+  element?: Element;
+  /** Minimum time between two resize requests. Default 100 ms. */
+  intervalMs?: number;
+}
+
+/**
+ * Your app's log, visible to you in the developer console (Logs tab).
+ * Fire and forget: calls never throw, never block, and return nothing.
+ * Messages are cut to 500 chars, `data` over 4 KB of JSON is replaced by a
+ * note, and past 60 entries a minute the extra entries are dropped.
+ */
+export interface LogApi {
+  debug(message: string, data?: Json): void;
+  info(message: string, data?: Json): void;
+  warn(message: string, data?: Json): void;
+  error(message: string, data?: Json): void;
+}
+
 interface Pending {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -249,6 +277,7 @@ export class XAppsClient {
   private roster: Roster;
   private unlockedAchievements: ReadonlySet<string> = new Set();
   private readonly achievementWatchers = new Set<(unlocked: ReadonlySet<string>) => void>();
+  private readonly resizers = new Set<() => void>();
 
   /** @internal use `connect()` */
   constructor(transport: AppTransport, context: LaunchContext) {
@@ -496,6 +525,24 @@ export class XAppsClient {
       this.request("ui.status", { text: text === null ? null : text.slice(0, LIMITS.statusLength) }),
     setScores: (scores: { [playerId: string]: number | string }) => this.request("ui.scores", { scores }),
     setTurn: (playerId: string | null) => this.request("ui.turn", { playerId }),
+    /**
+     * Tell the host how tall your content is (CSS px), so it can size the
+     * frame it shows you in (e.g. the challenge setup sheet). Rounded up and
+     * clamped to 120–2000.
+     */
+    resize: (height: number): Promise<null> => {
+      if (typeof height !== "number" || !Number.isFinite(height)) {
+        return Promise.reject(new XAppsError("invalid_params", "ui.resize: height must be a finite number"));
+      }
+      return this.request("ui.resize", { height: clampFrameHeight(height) });
+    },
+    /**
+     * Keeps the host informed of your content height: observes the element
+     * (default `document.documentElement`, so don't pin `html`/`body` to
+     * `height: 100%`) and sends throttled `ui.resize` requests when it
+     * changes. Returns a function that stops it. Fire and forget.
+     */
+    autoResize: (options: AutoResizeOptions = {}): (() => void) => this.startAutoResize(options),
   };
 
   readonly social = {
@@ -519,6 +566,9 @@ export class XAppsClient {
 
   /** Achievements from your manifest. */
   readonly achievements: AchievementsApi = this.createAchievementsApi();
+
+  /** Your app's log (`xapps.log.info("round over", { round })`). Never throws. */
+  readonly log: LogApi = this.createLogApi();
 
   /* ---------------------------------------------------------------- */
   /* Plumbing                                                         */
@@ -564,6 +614,8 @@ export class XAppsClient {
     this.pending.clear();
     this.listeners.clear();
     this.achievementWatchers.clear();
+    for (const stop of Array.from(this.resizers)) stop();
+    if (errorCapture.client === this) errorCapture.client = null;
     if (singleton?.client === this) singleton = null;
   }
 
@@ -796,6 +848,77 @@ export class XAppsClient {
     };
   }
 
+  private startAutoResize(options: AutoResizeOptions): () => void {
+    const element =
+      options.element ?? (typeof document !== "undefined" ? document.documentElement : undefined);
+    if (!element || this.destroyed) return () => {};
+    const interval = Math.max(0, options.intervalMs ?? 100);
+    let lastHeight: number | null = null;
+    let lastSentAt = -Infinity;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false;
+
+    const flush = () => {
+      timer = null;
+      if (stopped) return;
+      try {
+        const height = clampFrameHeight(element.getBoundingClientRect().height);
+        if (height === lastHeight) return;
+        lastHeight = height;
+        lastSentAt = Date.now();
+        this.request("ui.resize", { height }).catch(() => {});
+      } catch {
+        // Measuring or sending must never break the app.
+      }
+    };
+    // Coalesces bursts of changes into at most one request per `interval`.
+    // (A timer rather than requestAnimationFrame: rAF pauses in hidden or
+    // off-screen frames, which is exactly when a host may be laying us out.)
+    const schedule = () => {
+      if (stopped || timer !== null) return;
+      timer = setTimeout(flush, Math.max(0, lastSentAt + interval - Date.now()));
+    };
+
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
+    observer?.observe(element);
+    const win = typeof window !== "undefined" ? window : undefined;
+    // Without ResizeObserver, fall back to window resizes (plus the initial measurement).
+    if (!observer) win?.addEventListener("resize", schedule);
+    schedule();
+
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      observer?.disconnect();
+      if (!observer) win?.removeEventListener("resize", schedule);
+      if (timer !== null) clearTimeout(timer);
+      this.resizers.delete(stop);
+    };
+    this.resizers.add(stop);
+    return stop;
+  }
+
+  private createLogApi(): LogApi {
+    const budget = createTokenBucket(LIMITS.logsPerMinute, 60_000);
+    const write = (level: LogLevel, message: unknown, data: unknown): void => {
+      try {
+        if (this.destroyed || !budget.take()) return;
+        const params: RequestParams<"log"> = { level, message: trimLogMessage(message) };
+        const cleaned = trimLogData(data);
+        if (cleaned !== undefined) params.data = cleaned;
+        this.request("log", params).catch(() => {});
+      } catch {
+        // Logging must never break the app.
+      }
+    };
+    return {
+      debug: (message, data) => write("debug", message, data),
+      info: (message, data) => write("info", message, data),
+      warn: (message, data) => write("warn", message, data),
+      error: (message, data) => write("error", message, data),
+    };
+  }
+
   private markUnlocked(id: string): void {
     if (this.unlockedAchievements.has(id)) return;
     // A new Set per change, so `unlocked` works as an external-store snapshot.
@@ -990,6 +1113,116 @@ function sanitizeSubmission(submission: Submission): Submission {
   return out;
 }
 
+/* -------------------------------------------------------------------- */
+/* Logs                                                                 */
+/* -------------------------------------------------------------------- */
+
+const ELLIPSIS = "…";
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - ELLIPSIS.length)}${ELLIPSIS}` : text;
+}
+
+function trimLogMessage(message: unknown): string {
+  let text: string;
+  try {
+    text = typeof message === "string" ? message : String(message);
+  } catch {
+    text = "[unprintable message]";
+  }
+  return truncate(text, LIMITS.logMessageLength);
+}
+
+/** `data` as it will be sent: unchanged when it fits, else a small note saying why it was dropped. */
+function trimLogData(data: unknown): Json | undefined {
+  if (data === undefined) return undefined;
+  const problem = jsonProblem(data, "data");
+  if (problem) return { dropped: `data is not JSON: ${truncate(problem, 200)}` };
+  const bytes = byteLength(data);
+  if (bytes > LIMITS.logDataBytes) return { dropped: `data was ${bytes} bytes (max ${LIMITS.logDataBytes})` };
+  return cloneJson(data as Json);
+}
+
+const STACK_LINES = 12;
+const STACK_CHARS = 2000;
+
+function trimStack(stack: unknown): string | undefined {
+  if (typeof stack !== "string" || !stack) return undefined;
+  return truncate(stack.split("\n").slice(0, STACK_LINES).join("\n"), STACK_CHARS);
+}
+
+function describeReason(reason: unknown): { message: string; stack?: string } {
+  if (reason instanceof Error || (reason && typeof reason === "object" && "message" in reason)) {
+    const err = reason as { name?: unknown; message?: unknown; stack?: unknown };
+    const name = typeof err.name === "string" && err.name ? err.name : "Error";
+    const stack = trimStack(err.stack);
+    return { message: `${name}: ${String(err.message)}`, ...(stack ? { stack } : {}) };
+  }
+  try {
+    return { message: typeof reason === "string" ? reason : (JSON.stringify(reason) ?? String(reason)) };
+  } catch {
+    return { message: String(reason) };
+  }
+}
+
+/**
+ * Uncaught errors → `log.error`. One pair of listeners per window, installed
+ * on the first `connect()` and kept for the page's lifetime; they report to
+ * whichever client connected last with `captureErrors` on (so reconnecting
+ * never duplicates reports).
+ */
+const errorCapture: { client: XAppsClient | null; windows: WeakSet<Window>; reporting: boolean } = {
+  client: null,
+  windows: new WeakSet(),
+  reporting: false,
+};
+
+function reportCaptured(message: string, data: { [key: string]: Json }): void {
+  const client = errorCapture.client;
+  // A failure while reporting would raise another error event: never recurse.
+  if (!client || errorCapture.reporting) return;
+  errorCapture.reporting = true;
+  try {
+    client.log.error(message, data);
+  } catch {
+    // ignore
+  } finally {
+    errorCapture.reporting = false;
+  }
+}
+
+function installErrorCapture(win: Window | undefined, client: XAppsClient): void {
+  errorCapture.client = client;
+  if (!win || typeof win.addEventListener !== "function" || errorCapture.windows.has(win)) return;
+  errorCapture.windows.add(win);
+  win.addEventListener("error", (event: Event) => {
+    try {
+      const e = event as ErrorEvent;
+      // Resource load errors (img/script 404s) aren't ErrorEvents with a message; skip them.
+      if (typeof e.message !== "string" && !e.error) return;
+      const described = e.error !== undefined && e.error !== null ? describeReason(e.error) : null;
+      const data: { [key: string]: Json } = { kind: "error" };
+      if (described?.stack) data.stack = described.stack;
+      if (typeof e.filename === "string" && e.filename) data.source = truncate(e.filename, 300);
+      if (typeof e.lineno === "number" && e.lineno) data.line = e.lineno;
+      if (typeof e.colno === "number" && e.colno) data.column = e.colno;
+      reportCaptured(e.message || described?.message || "Uncaught error", data);
+    } catch {
+      // ignore
+    }
+  });
+  win.addEventListener("unhandledrejection", (event: Event) => {
+    try {
+      const described = describeReason((event as PromiseRejectionEvent).reason);
+      const data: { [key: string]: Json } = { kind: "unhandledrejection" };
+      if (described.stack) data.stack = described.stack;
+      reportCaptured(`Unhandled rejection: ${described.message}`, data);
+    } catch {
+      // ignore
+    }
+  });
+}
+
 function validateSetup(settings: unknown, summary: unknown): string | null {
   if (!isPlainObject(settings)) return "settings must be an object";
   const problem = jsonProblem(settings, "settings");
@@ -1153,6 +1386,11 @@ async function handshake(options: ConnectOptions): Promise<XAppsClient> {
 
   const timeoutMs = options.timeoutMs ?? 8_000;
   const activeTransport = transport;
+  const onConnected = (client: XAppsClient) => {
+    if (options.captureErrors === false) errorCapture.client = null; // listeners (if any) stay idle
+    else installErrorCapture(win, client);
+    return client;
+  };
 
   return new Promise<XAppsClient>((resolve, reject) => {
     let settled = false;
@@ -1177,7 +1415,7 @@ async function handshake(options: ConnectOptions): Promise<XAppsClient> {
       clearTimeout(timer);
       stop();
       activeTransport.pin?.(origin);
-      resolve(new XAppsClient(activeTransport, message.context));
+      resolve(onConnected(new XAppsClient(activeTransport, message.context)));
     });
 
     hello();

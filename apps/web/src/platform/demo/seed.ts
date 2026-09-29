@@ -292,15 +292,17 @@ export function applySettlement(db: DemoDb, match: MatchRow, forfeitBy?: string)
   match.turnDeadline = null;
   match.endedAt = match.endedAt ?? new Date().toISOString();
   match.updatedAt = new Date().toISOString();
-  db.playCounts[match.appSlug] = (db.playCounts[match.appSlug] ?? 0) + 1;
+  // Test builds (Stage 4) place players but never touch XP, records, app stats or the play count.
+  const testBuild = !!match.versionId;
+  if (!testBuild) db.playCounts[match.appSlug] = (db.playCounts[match.appSlug] ?? 0) + 1;
 
   for (const p of match.players) {
     if (!(p.userId in results)) continue;
     p.rank = ranks[p.userId] ?? null;
     p.result = results[p.userId] ?? null;
-    p.xpDelta = xp[p.userId] ?? 0;
+    p.xpDelta = testBuild ? 0 : (xp[p.userId] ?? 0);
     const profile = db.profiles[p.userId];
-    if (!profile || isPracticeBot(p.userId)) continue;
+    if (!profile || isPracticeBot(p.userId) || testBuild) continue;
     profile.xp += p.xpDelta;
     if (match.mode === "practice") continue;
     if (p.result === "win") {

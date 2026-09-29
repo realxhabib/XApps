@@ -13,6 +13,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Avatar } from "@/components/ui/avatar";
 import { useBot, useLiveOpponent } from "@/first-party/shared/hooks";
+import { reportStats, unlockAchievements } from "@/first-party/shared/progress";
 import { AnimatedDots } from "@/first-party/shared/ui";
 import { spring } from "@/lib/motion";
 import { play } from "@/lib/sfx";
@@ -32,10 +33,13 @@ import {
   createThrottle,
   entryToJson,
   hudStatus,
+  lockInAchievements,
+  lockInStats,
   onClockExpired,
   opposite,
   outcomeFor,
   randomBetween,
+  resultProgress,
   setupMatch,
   sideForPlayer,
   timerFor,
@@ -115,6 +119,18 @@ export function HotTakesApp() {
           : match.status === "voting" || opponentSubmitted
             ? "voting"
             : "waiting";
+
+  // The crowd decided while we were here: wins and votes count once. A result
+  // that was already in when the app opened was counted back then.
+  const [settledAtOpen] = useState(() => xapps.finalResult !== null);
+  const resultCounted = useRef(false);
+  useEffect(() => {
+    if (!result || settledAtOpen || resultCounted.current) return;
+    resultCounted.current = true;
+    const progress = resultProgress(result, me.id, opponent?.id, entry);
+    reportStats(xapps, progress.stats, "hot-takes");
+    unlockAchievements(xapps, progress.achievements, "hot-takes");
+  }, [result, settledAtOpen, me.id, opponent?.id, entry, xapps]);
 
   // HUD status line.
   const status = hudStatus(phase, mySide, opponent?.handle);
@@ -216,6 +232,7 @@ export function HotTakesApp() {
       return;
     }
     lockedRef.current = true;
+    const remainingMs = writingSince === null ? null : rule.durationMs - (performance.now() - writingSince);
     const mine = buildEntry(setup.prompt.id, mySide, check.take, spice);
     setEntry(mine);
     setStep("locked");
@@ -224,6 +241,12 @@ export function HotTakesApp() {
     try {
       await xapps.submit({ data: entryToJson(mine), display: hotTakeDisplay(mine) });
       if (liveOpponent) void xapps.room.send(ROOM_SUBMITTED, {}).catch(noop);
+      reportStats(xapps, lockInStats(), "hot-takes");
+      unlockAchievements(
+        xapps,
+        lockInAchievements({ take: mine.take, spice: mine.spice, remainingMs, forced: forced !== undefined }),
+        "hot-takes",
+      );
     } catch {
       lockedRef.current = false;
       setEntry(null);

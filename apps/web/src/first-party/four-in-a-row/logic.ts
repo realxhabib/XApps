@@ -549,3 +549,109 @@ export function chooseBotMove(state: GameState, options: BotOptions = {}): BotCh
   }
   return { col: pick.col, ranked, blundered: false, nodes: stats.nodes };
 }
+
+/* ------------------------------------------------------------------------ */
+/* Progress: stats & achievements (one seat's view)                          */
+/* ------------------------------------------------------------------------ */
+
+/** Achievement ids (declared in the app's manifest). */
+export type FourAchievement =
+  | "first_win"
+  | "diagonal"
+  | "quick_four"
+  | "blocker"
+  | "the_wall"
+  | "marathon"
+  | "pen_pal"
+  | "long_line"
+  | "double_trouble";
+
+/** "Four in 7 moves": win with at most this many of your own discs. */
+export const QUICK_FOUR_DISCS = 7;
+/** "The Wall": this many blocks in one game. */
+export const WALL_BLOCKS = 3;
+
+/** Columns where `seat` would connect four if it moved there now. */
+export function winningColumns(state: GameState, seat: Seat): number[] {
+  if (state.over) return [];
+  const out: number[] = [];
+  const board = state.board.slice();
+  for (let col = 0; col < COLS; col++) {
+    const row = state.heights[col] as number;
+    if (row >= ROWS) continue;
+    const i = cellIndex(col, row);
+    board[i] = seat;
+    if (findWinLines(board, col, row).length > 0) out.push(col);
+    board[i] = null;
+  }
+  return out;
+}
+
+/**
+ * How many of `seat`'s moves landed where the opponent would have connected
+ * four on their next move. A move that wins the game itself isn't a block.
+ */
+export function countBlocks(moves: readonly number[], seat: Seat): number {
+  let state = newGame();
+  let blocks = 0;
+  for (const col of moves) {
+    const mover = state.turn;
+    if (mover === seat && winningColumns(state, other(seat)).includes(col)) {
+      const next = playMove(state, col);
+      if (next && next.winner === null) blocks++;
+    }
+    const next = playMove(state, col);
+    if (!next) break;
+    state = next;
+  }
+  return blocks;
+}
+
+const isDiagonal = (line: readonly Coord[]): boolean => {
+  const [a, b] = line;
+  return !!a && !!b && a.col !== b.col && a.row !== b.row;
+};
+
+export interface ProgressContext {
+  /** A play-anytime (async) game. */
+  async: boolean;
+  /** The winning seat when the game ended some other way (the opponent left); defaults to the board's winner. */
+  winner?: Seat | null;
+}
+
+/**
+ * Achievements `seat` has earned in `game` so far. Blocks unlock the moment
+ * they happen; the rest follow from how the game ended.
+ */
+export function earnedAchievements(game: GameState, seat: Seat, context: ProgressContext): FourAchievement[] {
+  const earned: FourAchievement[] = [];
+  const blocks = countBlocks(game.moves, seat);
+  if (blocks >= 1) earned.push("blocker");
+  if (blocks >= WALL_BLOCKS) earned.push("the_wall");
+  if (game.moves.length >= CELLS) earned.push("marathon");
+
+  const winner = context.winner !== undefined && context.winner !== null ? context.winner : game.winner;
+  if (winner !== seat) return earned;
+  earned.push("first_win");
+  if (context.async) earned.push("pen_pal");
+  // The rest need four on the board (not a win by the opponent leaving).
+  if (game.winner !== seat) return earned;
+  if (game.winLines.some(isDiagonal)) earned.push("diagonal");
+  if (discsOf(game, seat) <= QUICK_FOUR_DISCS) earned.push("quick_four");
+  if (game.winLines.some((line) => line.length >= 5)) earned.push("long_line");
+  if (game.winLines.length >= 2) earned.push("double_trouble");
+  return earned;
+}
+
+const discsOf = (game: GameState, seat: Seat): number => game.discs.filter((d) => d.seat === seat).length;
+
+/** Stats to report when `seat`'s game is over (zero counters are left out). */
+export function gameStats(game: GameState, seat: Seat, winner: Seat | null = game.winner): { [key: string]: number } {
+  if (winner !== seat) return {};
+  const stats: { [key: string]: number } = { wins: 1 };
+  if (game.winner === seat) {
+    stats.fastest_win = discsOf(game, seat);
+    stats.longest_line = Math.max(...game.winLines.map((line) => line.length));
+  }
+  return stats;
+}

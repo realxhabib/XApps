@@ -12,7 +12,37 @@ import {
   withManifestDefaults,
 } from "../catalog";
 import { XP, teamForSeat } from "../scoring";
+import {
+  EDITABLE_STATUSES,
+  LOG_CAP_PER_APP,
+  LOG_LIMITS,
+  LOG_PAGE_DEFAULT,
+  LOG_PAGE_MAX,
+  LOG_RETENTION_MS,
+  ANALYTICS_DAYS_DEFAULT,
+  ANALYTICS_DAYS_MAX,
+  MAX_TESTERS_PER_APP,
+  MAX_VERSIONS_PER_APP,
+  REVIEW_NOTES_MAX,
+  VERSION_NOTES_MAX,
+  applyVersionToApp,
+  cleanManifest,
+  isLogLevel,
+  levelsFrom,
+  manifestOf,
+  sortVersions,
+  versionLabelError,
+  versionManifestError,
+  versionUrlError,
+} from "../shipping";
 import type {
+  AppAnalytics,
+  AppLogEntry,
+  AppVersion,
+  DeveloperNotice,
+  LogLevel,
+  ReviewItem,
+  VersionManifest,
   AppAuthority,
   AppManifest,
   AppServerConfig,
@@ -31,6 +61,7 @@ import type {
   UserStat,
   WebhookDelivery,
 } from "../types";
+import { computeAnalytics } from "./analytics";
 import { createDemoRoom } from "./room";
 import { addPersonaContest, applySettlement, buildSeed, isPracticeBot, newMatchId, PRACTICE_BOTS, upgradeDb } from "./seed";
 import {
@@ -61,6 +92,7 @@ import {
   type DemoDb,
   type MatchRow,
   type PlayerRow,
+  type VersionRow,
 } from "./store";
 
 setSeeder(buildSeed, upgradeDb);
@@ -134,7 +166,7 @@ function teamsReady(row: MatchRow): boolean {
 function activate(db: DemoDb, row: MatchRow): void {
   row.status = "active";
   recordWebhook(db, row.appSlug, "match.started", row.id);
-  if (appFor(db, row.appSlug)?.turnBased && !row.turnUserId) setTurn(row, inRows(row)[0]?.userId ?? null);
+  if (appForRow(db, row)?.turnBased && !row.turnUserId) setTurn(row, inRows(row)[0]?.userId ?? null);
 }
 
 /**
@@ -232,6 +264,9 @@ function hydrate(db: DemoDb, row: MatchRow, viewerId = getViewerId()): Match {
     turnUserId: row.turnUserId,
     turnDeadline: row.turnDeadline,
     round: row.round,
+    versionId: row.versionId ?? null,
+    versionUrl: row.versionId ? (db.versions?.[row.versionId]?.url ?? null) : null,
+    versionLabel: row.versionId ? (db.versions?.[row.versionId]?.version ?? null) : null,
   };
 }
 
@@ -248,6 +283,100 @@ function appFor(db: DemoDb, slug: string): AppManifest | null {
   if (official) return withManifestDefaults({ ...official, playCount: db.playCounts[slug] ?? 0 });
   const community = db.apps[slug];
   return community ? withManifestDefaults(community) : null;
+}
+
+/** The rules a match plays by: the app, or for a test build the version's manifest and url. */
+function appForRow(db: DemoDb, row: Pick<MatchRow, "appSlug" | "versionId">): AppManifest | null {
+  const app = appFor(db, row.appSlug);
+  const version = row.versionId ? db.versions?.[row.versionId] : undefined;
+  return app && version ? applyVersionToApp(app, version) : app;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Stage 4 rules (mirroring supabase/migrations/…_shipping.sql)           */
+/* ---------------------------------------------------------------------- */
+
+function publicVersion(row: VersionRow): AppVersion {
+  const copy: Partial<VersionRow> = structuredClone(row);
+  delete copy.reviewedBy;
+  return copy as AppVersion;
+}
+
+/** The app's developer or one of its testers may play its unpublished versions. */
+export function canTest(db: DemoDb, appSlug: string, userId: string | null | undefined): boolean {
+  if (!userId) return false;
+  const app = db.apps[appSlug];
+  if (!app) return false;
+  return app.developer.id === userId || (db.testers?.[appSlug] ?? []).includes(userId);
+}
+
+/** A test build others can't see: the owner, testers and anyone at the table may. */
+function hiddenFrom(db: DemoDb, row: MatchRow, viewerId: string | null): boolean {
+  if (!row.versionId) return false;
+  return !canTest(db, row.appSlug, viewerId) && !row.players.some((p) => p.userId === viewerId);
+}
+
+/**
+ * Mirrors the `p_version` check of create_challenge/start_practice/quick_match:
+ * owner/testers only, the version must belong to the app and not be retired.
+ * The live version is just the app (no test build), so it returns null.
+ */
+function testVersionFor(db: DemoDb, appSlug: string, versionId: string | null | undefined, viewerId: string): VersionRow | null {
+  if (!versionId) return null;
+  const version = db.versions?.[versionId];
+  if (!version || version.appSlug !== appSlug) throw new BackendError("Version not found", "not_found");
+  if (!canTest(db, appSlug, viewerId)) throw new BackendError("Only the developer and testers can play test builds", "forbidden");
+  if (version.status === "published") throw new BackendError("That version is live — play the app itself", "invalid");
+  return version;
+}
+
+/** Mirrors matches_set_version: non-test matches remember the app's live version. */
+function stampVersion(db: DemoDb, row: MatchRow): void {
+  row.publishedVersionId = row.versionId ? null : (db.publishedVersions?.[row.appSlug] ?? null);
+}
+
+/** Log rows younger than the retention window, at most `LOG_CAP_PER_APP` per app (newest kept). */
+function pruneLogs(logs: AppLogEntry[], now = Date.now()): AppLogEntry[] {
+  const fresh = logs.filter((l) => now - Date.parse(l.createdAt) < LOG_RETENTION_MS);
+  const perApp = new Map<string, number>();
+  const kept: AppLogEntry[] = [];
+  for (let i = fresh.length - 1; i >= 0; i--) {
+    const log = fresh[i]!;
+    const n = perApp.get(log.appSlug) ?? 0;
+    if (n >= LOG_CAP_PER_APP) continue;
+    perApp.set(log.appSlug, n + 1);
+    kept.push(log);
+  }
+  return kept.reverse();
+}
+
+/** Mirrors notify_developer. */
+function notifyDeveloper(db: DemoDb, app: AppManifest, version: VersionRow, kind: DeveloperNotice["kind"], message: string): void {
+  if (!app.developer.id) return;
+  (db.notices ??= []).push({
+    id: `n-${randomId(12)}`,
+    userId: app.developer.id,
+    kind,
+    appSlug: app.slug,
+    versionId: version.id,
+    version: version.version,
+    message: message.slice(0, 2400),
+    createdAt: nowIso(),
+    readAt: null,
+  });
+  // Keep the demo database small.
+  if (db.notices.length > 500) db.notices = db.notices.slice(-500);
+}
+
+/** Mirrors version_authority_check: crowd-judged apps can't be server-authoritative. */
+function authorityCheck(app: AppManifest, manifest: VersionManifest): void {
+  if (app.authority === "server" && manifest.scoring === "votes") {
+    throw new BackendError("Crowd-judged apps can't be server-authoritative", "invalid");
+  }
+}
+
+function newVersionId(): string {
+  return `v-${randomId(12)}`;
 }
 
 /** Mirrors create_challenge: an object, `quick` reserved. Demo allows room for a data-URL image. */
@@ -421,6 +550,17 @@ export class DemoBackend implements Backend {
       markHuman(profileId);
       await this.notifyViewer();
     },
+    setAdmin: async (on) => {
+      const viewer = this.requireViewer();
+      const profile = mutate((db) => {
+        const me = db.profiles[viewer.id]!;
+        if (on) me.isAdmin = true;
+        else delete me.isAdmin;
+        return me;
+      });
+      await this.notifyViewer();
+      return profile;
+    },
     reset: () => {
       reset();
       setViewerId(null);
@@ -460,6 +600,7 @@ export class DemoBackend implements Backend {
       if (getOfficialApp(input.slug) || db.apps[input.slug]) {
         throw new BackendError("That slug is taken", "conflict");
       }
+      const now = nowIso();
       const app = withManifestDefaults({
         ...input,
         players: input.players ? { min: input.players.min, max: input.players.max } : { min: 2, max: 2 },
@@ -472,10 +613,29 @@ export class DemoBackend implements Backend {
         // Demo mode auto-approves so you can try your app right away.
         status: "published",
         playCount: 0,
-        createdAt: nowIso(),
+        createdAt: now,
         tags: ["community"],
       });
       db.apps[app.slug] = app;
+      // Like the database, registering creates 1.0.0 in review. Demo mode then
+      // approves and publishes it on the spot; later versions go through the queue.
+      const version: VersionRow = {
+        id: newVersionId(),
+        appSlug: app.slug,
+        version: "1.0.0",
+        url: app.url,
+        manifest: manifestOf(app),
+        status: "published",
+        notes: "First release",
+        reviewNotes: "Auto-approved in demo mode",
+        createdAt: now,
+        submittedAt: now,
+        reviewedAt: now,
+        publishedAt: now,
+        reviewedBy: null,
+      };
+      (db.versions ??= {})[version.id] = version;
+      (db.publishedVersions ??= {})[app.slug] = version.id;
       return app;
     });
   }
@@ -603,6 +763,428 @@ export class DemoBackend implements Backend {
   }
 
   /* ---------------------------------------------------------------- */
+  /* Shipping (Stage 4): versions, testers, review, analytics, logs    */
+  /* ---------------------------------------------------------------- */
+
+  /** Mirrors the version RPCs' owner check (official apps are managed in code). */
+  private requireAppOwner(db: DemoDb, appSlug: string): AppManifest {
+    const viewer = this.requireViewer();
+    const app = db.apps[appSlug];
+    if (!app) {
+      if (getOfficialApp(appSlug)) throw new BackendError("Official apps are managed in code", "forbidden");
+      throw new BackendError("App not found", "not_found");
+    }
+    if (app.developer.id !== viewer.id) throw new BackendError("Only the app's developer can do that", "forbidden");
+    return app;
+  }
+
+  /** A version the viewer owns (by id), inside a mutation. */
+  private ownedVersion(db: DemoDb, versionId: string): VersionRow {
+    const version = db.versions?.[versionId];
+    if (!version) throw new BackendError("Version not found", "not_found");
+    this.requireAppOwner(db, version.appSlug);
+    return version;
+  }
+
+  /** Mirrors insight_app: the developer, or any admin (versions list, analytics, logs). */
+  private requireInsight(db: DemoDb, appSlug: string): void {
+    const viewer = this.requireViewer();
+    if (viewer.isAdmin) {
+      if (!db.apps[appSlug] && !getOfficialApp(appSlug)) throw new BackendError("App not found", "not_found");
+      return;
+    }
+    const app = db.apps[appSlug];
+    if (!app) throw new BackendError(getOfficialApp(appSlug) ? "Only the app's developer can see this" : "App not found", getOfficialApp(appSlug) ? "forbidden" : "not_found");
+    if (app.developer.id !== viewer.id) throw new BackendError("Only the app's developer can see this", "forbidden");
+  }
+
+  private requireAdmin(): Profile {
+    const viewer = this.requireViewer();
+    if (!viewer.isAdmin) throw new BackendError("Only reviewers can do that", "forbidden");
+    return viewer;
+  }
+
+  /** Apps registered before Stage 4 get their listing as a published 1.0.0 the first time it's needed. */
+  private ensureVersions(db: DemoDb, appSlug: string): boolean {
+    const app = db.apps[appSlug];
+    if (!app || Object.values(db.versions ?? {}).some((v) => v.appSlug === appSlug)) return false;
+    const at = app.createdAt;
+    const version: VersionRow = {
+      id: newVersionId(),
+      appSlug,
+      version: "1.0.0",
+      url: app.url,
+      manifest: manifestOf(app),
+      status: app.status === "published" ? "published" : app.status === "rejected" ? "rejected" : "in_review",
+      notes: "First version",
+      reviewNotes: null,
+      createdAt: at,
+      submittedAt: at,
+      reviewedAt: app.status === "published" ? at : null,
+      publishedAt: app.status === "published" ? at : null,
+      reviewedBy: null,
+    };
+    (db.versions ??= {})[version.id] = version;
+    if (version.status === "published") (db.publishedVersions ??= {})[appSlug] = version.id;
+    return true;
+  }
+
+  private versionsOf(db: DemoDb, appSlug: string): AppVersion[] {
+    return sortVersions(
+      Object.values(db.versions ?? {})
+        .filter((v) => v.appSlug === appSlug)
+        .map(publicVersion),
+    );
+  }
+
+  async listAppVersions(appSlug: string): Promise<AppVersion[]> {
+    this.requireInsight(load(), appSlug);
+    mutateIfChanged((db) => this.ensureVersions(db, appSlug));
+    return this.versionsOf(load(), appSlug);
+  }
+
+  async createAppVersion(
+    appSlug: string,
+    input: { version: string; url: string; manifest: VersionManifest; notes?: string },
+  ): Promise<AppVersion> {
+    const label = typeof input.version === "string" ? input.version.trim() : input.version;
+    const labelProblem = versionLabelError(label);
+    if (labelProblem) throw new BackendError(labelProblem, "invalid");
+    const notes = (input.notes ?? "").trim();
+    if (notes.length > VERSION_NOTES_MAX) throw new BackendError("Release notes are at most 2,000 characters", "invalid");
+    return mutate((db) => {
+      const app = this.requireAppOwner(db, appSlug);
+      // Like create_app_version: a missing url or manifest copies the app's current one.
+      const url = input.url?.trim() || app.url;
+      const manifest = input.manifest ?? manifestOf(app);
+      const problem = versionUrlError(url) ?? versionManifestError(manifest);
+      if (problem) throw new BackendError(problem, "invalid");
+      this.ensureVersions(db, appSlug);
+      if (Object.values(db.versions ?? {}).filter((v) => v.appSlug === appSlug).length >= MAX_VERSIONS_PER_APP) {
+        throw new BackendError(`An app can have at most ${MAX_VERSIONS_PER_APP} versions`, "rate_limited");
+      }
+      if (Object.values(db.versions ?? {}).some((v) => v.appSlug === appSlug && v.version === label)) {
+        throw new BackendError(`Version ${label} already exists`, "conflict");
+      }
+      const version: VersionRow = {
+        id: newVersionId(),
+        appSlug,
+        version: label,
+        url,
+        manifest: cleanManifest(manifest),
+        status: "draft",
+        notes,
+        reviewNotes: null,
+        createdAt: nowIso(),
+        submittedAt: null,
+        reviewedAt: null,
+        publishedAt: null,
+        reviewedBy: null,
+      };
+      (db.versions ??= {})[version.id] = version;
+      return publicVersion(version);
+    });
+  }
+
+  async updateAppVersion(versionId: string, input: { url?: string; manifest?: VersionManifest; notes?: string }): Promise<AppVersion> {
+    if (input.url !== undefined) {
+      const problem = versionUrlError(input.url);
+      if (problem) throw new BackendError(problem, "invalid");
+    }
+    if (input.manifest !== undefined) {
+      const problem = versionManifestError(input.manifest);
+      if (problem) throw new BackendError(problem, "invalid");
+    }
+    if (input.notes !== undefined && (typeof input.notes !== "string" || input.notes.length > VERSION_NOTES_MAX)) {
+      throw new BackendError("Release notes are at most 2,000 characters", "invalid");
+    }
+    return mutate((db) => {
+      const version = this.ownedVersion(db, versionId);
+      if (!EDITABLE_STATUSES.includes(version.status)) {
+        throw new BackendError("Only drafts and rejected versions can be edited — create a new version", "conflict");
+      }
+      if (input.url !== undefined) version.url = input.url.trim();
+      if (input.manifest !== undefined) version.manifest = cleanManifest(input.manifest);
+      if (input.notes !== undefined) version.notes = input.notes;
+      return publicVersion(version);
+    });
+  }
+
+  async submitAppVersion(versionId: string): Promise<AppVersion> {
+    return mutate((db) => {
+      const version = this.ownedVersion(db, versionId);
+      if (!EDITABLE_STATUSES.includes(version.status)) throw new BackendError("Only drafts and rejected versions can be submitted", "conflict");
+      const app = db.apps[version.appSlug]!;
+      authorityCheck(app, version.manifest);
+      version.status = "in_review";
+      version.submittedAt = nowIso();
+      // A new app that was turned down is back in review.
+      if (!db.publishedVersions?.[app.slug] && app.status === "rejected") db.apps[app.slug] = { ...app, status: "pending" };
+      return publicVersion(version);
+    });
+  }
+
+  async withdrawAppVersion(versionId: string): Promise<AppVersion> {
+    return mutate((db) => {
+      const version = this.ownedVersion(db, versionId);
+      if (version.status !== "in_review") throw new BackendError("Only versions in review can be withdrawn", "conflict");
+      version.status = "draft";
+      version.submittedAt = null;
+      return publicVersion(version);
+    });
+  }
+
+  async publishAppVersion(versionId: string): Promise<AppVersion> {
+    return mutate((db) => {
+      const version = this.ownedVersion(db, versionId);
+      if (version.status !== "approved") throw new BackendError("Only approved versions can be published", "conflict");
+      this.publish(db, version);
+      return publicVersion(version);
+    });
+  }
+
+  /** Copies the version onto the app and retires the previously published one. */
+  private publish(db: DemoDb, version: VersionRow): void {
+    const now = nowIso();
+    const current = db.apps[version.appSlug];
+    if (current) authorityCheck(current, version.manifest);
+    for (const other of Object.values(db.versions ?? {})) {
+      if (other.appSlug === version.appSlug && other.status === "published" && other.id !== version.id) other.status = "retired";
+    }
+    version.status = "published";
+    version.publishedAt = now;
+    (db.publishedVersions ??= {})[version.appSlug] = version.id;
+    const app = db.apps[version.appSlug];
+    if (app) db.apps[version.appSlug] = { ...applyVersionToApp(app, version), status: "published" };
+  }
+
+  private testersOf(db: DemoDb, appSlug: string): Profile[] {
+    // In the order they were added (like app_testers_json).
+    return (db.testers?.[appSlug] ?? []).map((id) => db.profiles[id]).filter((p): p is Profile => !!p);
+  }
+
+  async listAppTesters(appSlug: string): Promise<Profile[]> {
+    const db = load();
+    this.requireAppOwner(db, appSlug);
+    return this.testersOf(db, appSlug);
+  }
+
+  async addAppTester(appSlug: string, handle: string): Promise<Profile[]> {
+    const clean = cleanHandle(handle ?? "");
+    return mutate((db) => {
+      const app = this.requireAppOwner(db, appSlug);
+      const profile = Object.values(db.profiles).find((p) => p.handle.toLowerCase() === clean);
+      if (!clean || !profile || isPracticeBot(profile.id)) throw new BackendError(`@${clean || "?"} hasn't joined XApps yet`, "not_found");
+      if (profile.id === app.developer.id) throw new BackendError("You can always play your own test builds", "invalid");
+      const list = ((db.testers ??= {})[appSlug] ??= []);
+      if (!list.includes(profile.id)) {
+        if (list.length >= MAX_TESTERS_PER_APP) throw new BackendError(`An app can have at most ${MAX_TESTERS_PER_APP} testers`, "rate_limited");
+        list.push(profile.id);
+      }
+      return this.testersOf(db, appSlug);
+    });
+  }
+
+  async removeAppTester(appSlug: string, userId: string): Promise<Profile[]> {
+    return mutate((db) => {
+      this.requireAppOwner(db, appSlug);
+      if (db.testers?.[appSlug]) db.testers[appSlug] = db.testers[appSlug].filter((id) => id !== userId);
+      return this.testersOf(db, appSlug);
+    });
+  }
+
+  async listReviewQueue(): Promise<ReviewItem[]> {
+    this.requireAdmin();
+    const db = load();
+    const items: ReviewItem[] = [];
+    const queue = Object.values(db.versions ?? {})
+      .filter((v) => v.status === "in_review")
+      .sort((a, b) => (a.submittedAt ?? a.createdAt).localeCompare(b.submittedAt ?? b.createdAt));
+    for (const version of queue) {
+      const app = appFor(db, version.appSlug);
+      if (!app) continue;
+      const developer = (app.developer.id && db.profiles[app.developer.id]) || null;
+      const publishedId = db.publishedVersions?.[version.appSlug];
+      const published = publishedId && db.versions?.[publishedId] ? publicVersion(db.versions[publishedId]) : null;
+      items.push({
+        version: publicVersion(version),
+        app,
+        developer: developer ?? {
+          id: app.developer.id ?? "unknown",
+          handle: app.developer.handle,
+          name: app.developer.name,
+          avatarUrl: null,
+          bio: "",
+          xp: 0,
+          wins: 0,
+          losses: 0,
+          draws: 0,
+          streak: 0,
+          bestStreak: 0,
+          createdAt: app.createdAt,
+        },
+        published,
+      });
+    }
+    return items;
+  }
+
+  async reviewAppVersion(versionId: string, decision: "approve" | "reject", notes: string): Promise<AppVersion> {
+    const admin = this.requireAdmin();
+    if (decision !== "approve" && decision !== "reject") throw new BackendError("Decide approve or reject", "invalid");
+    const clean = typeof notes === "string" ? notes.trim() : "";
+    if (clean.length > REVIEW_NOTES_MAX) throw new BackendError("Review notes are at most 2,000 characters", "invalid");
+    if (decision === "reject" && !clean) throw new BackendError("Tell the developer what to fix", "invalid");
+    return mutate((db) => {
+      const version = db.versions?.[versionId];
+      if (!version) throw new BackendError("Version not found", "not_found");
+      if (version.status !== "in_review") throw new BackendError("That version isn't in review", "conflict");
+      version.status = decision === "approve" ? "approved" : "rejected";
+      version.reviewNotes = clean || null;
+      version.reviewedAt = nowIso();
+      version.reviewedBy = admin.id;
+      // With nothing live yet, approving publishes the version (the app goes live);
+      // rejecting marks the app rejected. Either way the developer gets a notice.
+      const app = db.apps[version.appSlug];
+      if (!app) return publicVersion(version);
+      const label = `${app.name} ${version.version}`;
+      const reviewer = clean ? ` Reviewer notes: ${clean}` : "";
+      const nothingLive = !db.publishedVersions?.[version.appSlug];
+      if (decision === "approve" && nothingLive) {
+        this.publish(db, version);
+        notifyDeveloper(db, app, version, "version_published", `${label} was approved and is now live.${reviewer}`);
+      } else if (decision === "approve") {
+        notifyDeveloper(db, app, version, "version_approved", `${label} was approved. Publish it when you're ready.${reviewer}`);
+      } else {
+        if (nothingLive) db.apps[version.appSlug] = { ...app, status: "rejected" };
+        notifyDeveloper(db, app, version, "version_rejected", `${label} was not approved: ${clean}`);
+      }
+      return publicVersion(version);
+    });
+  }
+
+  async listMyNotices(limit = 50): Promise<DeveloperNotice[]> {
+    const id = getViewerId();
+    if (!id) throw new BackendError("Sign in to see your notices", "unauthenticated");
+    const n = Math.min(200, Math.max(1, Math.floor(limit)));
+    return (load().notices ?? [])
+      .filter((x) => x.userId === id)
+      .slice()
+      .reverse()
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, n)
+      .map((x) => ({
+        id: x.id,
+        kind: x.kind,
+        appSlug: x.appSlug,
+        versionId: x.versionId,
+        version: x.version,
+        message: x.message,
+        createdAt: x.createdAt,
+        readAt: x.readAt,
+      }));
+  }
+
+  async markNoticesRead(ids?: string[]): Promise<number> {
+    const viewer = this.requireViewer();
+    let changed = 0;
+    mutateIfChanged((db) => {
+      const now = nowIso();
+      for (const notice of db.notices ?? []) {
+        if (notice.userId !== viewer.id || notice.readAt || (ids && !ids.includes(notice.id))) continue;
+        notice.readAt = now;
+        changed++;
+      }
+      return changed > 0;
+    });
+    return changed;
+  }
+
+  async appAnalytics(appSlug: string, days = ANALYTICS_DAYS_DEFAULT): Promise<AppAnalytics> {
+    const db = load();
+    this.requireInsight(db, appSlug);
+    const window = Math.floor(days ?? ANALYTICS_DAYS_DEFAULT);
+    if (!Number.isFinite(window) || window < 1 || window > ANALYTICS_DAYS_MAX) {
+      throw new BackendError(`Pick 1 to ${ANALYTICS_DAYS_MAX} days`, "invalid");
+    }
+    return computeAnalytics(db, appSlug, window);
+  }
+
+  async logAppEvent(entry: {
+    appSlug: string;
+    matchId: string | null;
+    level: LogLevel;
+    message: string;
+    data?: Json;
+    source: "app" | "host";
+  }): Promise<void> {
+    const viewer = this.requireViewer();
+    if (!isLogLevel(entry.level)) throw new BackendError("Level is debug, info, warn or error", "invalid");
+    const message = typeof entry.message === "string" ? entry.message.trim().slice(0, LOG_LIMITS.messageLength) : "";
+    if (!message) throw new BackendError("A log message is required", "invalid");
+    if (entry.source !== "app" && entry.source !== "host") throw new BackendError("Source is app or host", "invalid");
+    const data = entry.data === undefined ? null : entry.data;
+    if (data !== null && byteLength(data) > LOG_LIMITS.dataBytes) throw new BackendError("Log data is at most 4 KB", "invalid");
+    mutateIfChanged((db) => {
+      const app = appFor(db, entry.appSlug);
+      if (!app) throw new BackendError("App not found", "not_found");
+      let versionId: string | null = db.publishedVersions?.[entry.appSlug] ?? null;
+      if (entry.matchId) {
+        const row = db.matches[entry.matchId];
+        if (!row || row.appSlug !== entry.appSlug) throw new BackendError("Match not found", "not_found");
+        // Players and spectators of the match, or the developer/testers.
+        if (!row.players.some((p) => p.userId === viewer.id) && !canTest(db, entry.appSlug, viewer.id)) {
+          throw new BackendError("Not your match", "forbidden");
+        }
+        versionId = row.versionId ?? row.publishedVersionId ?? versionId;
+      } else if (!canTest(db, entry.appSlug, viewer.id)) {
+        throw new BackendError("Only the developer and testers can log outside a match", "forbidden");
+      }
+      const now = Date.now();
+      const logs = pruneLogs(db.logs ?? [], now);
+      // Same limit as the SDK: past it, entries are dropped silently.
+      const recent = logs.filter((l) => l.appSlug === entry.appSlug && l.userId === viewer.id && now - Date.parse(l.createdAt) < 60_000);
+      if (recent.length >= LOG_LIMITS.perMinute) {
+        if (logs.length === (db.logs ?? []).length) return false;
+        db.logs = logs;
+        return true;
+      }
+      logs.push({
+        id: `log-${randomId(12)}`,
+        appSlug: entry.appSlug,
+        versionId,
+        matchId: entry.matchId ?? null,
+        userId: viewer.id,
+        level: entry.level,
+        message,
+        data: data === null ? null : structuredClone(data),
+        source: entry.source,
+        createdAt: new Date(now).toISOString(),
+      });
+      db.logs = pruneLogs(logs, now);
+      return true;
+    });
+  }
+
+  async listAppLogs(appSlug: string, filter: { level?: LogLevel; matchId?: string; before?: string; limit?: number } = {}): Promise<AppLogEntry[]> {
+    const db = load();
+    this.requireInsight(db, appSlug);
+    if (filter.level !== undefined && !isLogLevel(filter.level)) throw new BackendError("Level is debug, info, warn or error", "invalid");
+    const levels = filter.level ? new Set(levelsFrom(filter.level)) : null;
+    const limit = Math.min(LOG_PAGE_MAX, Math.max(1, Math.floor(filter.limit ?? LOG_PAGE_DEFAULT)));
+    return pruneLogs(db.logs ?? [])
+      .filter((l) => l.appSlug === appSlug)
+      .filter((l) => !levels || levels.has(l.level))
+      .filter((l) => !filter.matchId || l.matchId === filter.matchId)
+      .filter((l) => !filter.before || l.createdAt < filter.before)
+      // Stored oldest first: reverse, then a stable sort keeps same-millisecond entries newest first.
+      .reverse()
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit)
+      .map((l) => structuredClone(l));
+  }
+
+  /* ---------------------------------------------------------------- */
   /* People                                                           */
   /* ---------------------------------------------------------------- */
 
@@ -641,9 +1223,10 @@ export class DemoBackend implements Backend {
   /* Matches                                                          */
   /* ---------------------------------------------------------------- */
 
-  private baseMatch(app: AppManifest, mode: PlayableMode, createdBy: string): MatchRow {
+  private baseMatch(app: AppManifest, mode: PlayableMode, createdBy: string, version?: VersionRow | null): MatchRow {
     const now = nowIso();
     return {
+      versionId: version?.id ?? null,
       ...MATCH_V2_DEFAULTS,
       id: newMatchId(),
       appSlug: app.slug,
@@ -670,8 +1253,8 @@ export class DemoBackend implements Backend {
     };
   }
 
-  /** Resolves invite handles (deduped; practice bots can't be invited, personas can). */
-  private resolveInvitees(db: DemoDb, rawHandles: string[], viewerId: string): Profile[] {
+  /** Resolves invite handles (deduped; practice bots can't be invited, personas can; test builds: testers only). */
+  private resolveInvitees(db: DemoDb, rawHandles: string[], viewerId: string, testApp?: AppManifest | null): Profile[] {
     const seen = new Set<string>();
     const out: Profile[] = [];
     for (const handle of rawHandles.map(cleanHandle)) {
@@ -680,6 +1263,9 @@ export class DemoBackend implements Backend {
       const profile = Object.values(db.profiles).find((p) => p.handle.toLowerCase() === handle);
       if (!profile || isPracticeBot(profile.id)) throw new BackendError(`@${handle} hasn't joined XApps yet`, "not_found");
       if (profile.id === viewerId) throw new BackendError("You can't challenge yourself", "invalid");
+      if (testApp && !canTest(db, testApp.slug, profile.id)) {
+        throw new BackendError(`@${profile.handle} isn't a tester of ${testApp.name}`, "forbidden");
+      }
       if (!out.some((p) => p.id === profile.id)) out.push(profile);
     }
     return out;
@@ -694,13 +1280,20 @@ export class DemoBackend implements Backend {
   async createChallenge(input: CreateChallengeInput): Promise<Match> {
     const viewer = this.requireViewer();
     return mutate((db) => {
-      const app = appFor(db, input.appSlug);
-      if (!app) throw new BackendError("App not found", "not_found");
+      const listed = appFor(db, input.appSlug);
+      if (!listed) throw new BackendError("App not found", "not_found");
+      const version = testVersionFor(db, input.appSlug, input.versionId, viewer.id);
+      const app = version ? applyVersionToApp(listed, version) : listed;
       if (!app.modes.includes(input.mode)) throw new BackendError(`${app.name} doesn't support ${input.mode} play`, "invalid");
       const { min, max } = app.players;
       const teams = app.teams ?? 0;
 
-      const invitees = this.resolveInvitees(db, [input.opponentHandle ?? "", ...(input.opponentHandles ?? [])], viewer.id);
+      const invitees = this.resolveInvitees(
+        db,
+        [input.opponentHandle ?? "", ...(input.opponentHandles ?? [])],
+        viewer.id,
+        version ? app : null,
+      );
       const k = invitees.length;
       if (k > max - 1) {
         throw new BackendError(`You can invite up to ${max - 1} ${max === 2 ? "person" : "people"} to ${app.name}`, "invalid");
@@ -722,7 +1315,7 @@ export class DemoBackend implements Backend {
         if (teams > 0) size = Math.min(max, Math.ceil(size / teams) * teams);
       }
 
-      const row = this.baseMatch(app, input.mode, viewer.id);
+      const row = this.baseMatch(app, input.mode, viewer.id, version);
       row.maxPlayers = size;
       row.minPlayers = Math.min(size, Math.max(min, teams));
       row.settings = challengeSettings(input.settings);
@@ -730,6 +1323,7 @@ export class DemoBackend implements Backend {
       for (const invitee of invitees) this.invite(row, invitee);
       row.isOpen = k + 1 < size;
       row.status = row.isOpen ? "open" : "pending";
+      stampVersion(db, row);
       db.matches[row.id] = row;
       recordWebhook(db, row.appSlug, "match.created", row.id);
       return hydrate(db, row, viewer.id);
@@ -748,14 +1342,18 @@ export class DemoBackend implements Backend {
     });
   }
 
-  async quickMatch(appSlug: string): Promise<Match> {
+  async quickMatch(appSlug: string, versionId?: string | null): Promise<Match> {
     const viewer = this.requireViewer();
     return mutate((db) => {
-      const app = appFor(db, appSlug);
-      if (!app) throw new BackendError("App not found", "not_found");
+      const listed = appFor(db, appSlug);
+      if (!listed) throw new BackendError("App not found", "not_found");
+      const version = testVersionFor(db, appSlug, versionId, viewer.id);
+      const app = version ? applyVersionToApp(listed, version) : listed;
       const cutoff = Date.now() - 10 * 60_000;
+      // Test builds only meet the same build.
       const quickLobbies = Object.values(db.matches)
         .filter((m) => m.appSlug === appSlug && m.status === "open" && m.settings.quick === true)
+        .filter((m) => (m.versionId ?? null) === (version?.id ?? null))
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       const recent = quickLobbies.filter((m) => Date.parse(m.createdAt) > cutoff);
 
@@ -785,29 +1383,32 @@ export class DemoBackend implements Backend {
       const own = recent.find((m) => m.createdBy === viewer.id);
       if (own) return hydrate(db, own, viewer.id);
 
-      const row = this.baseMatch(app, app.modes.includes("live") ? "live" : "async", viewer.id);
+      const row = this.baseMatch(app, app.modes.includes("live") ? "live" : "async", viewer.id, version);
       row.minPlayers = Math.min(app.players.max, Math.max(app.players.min, app.teams ?? 0));
       takeSeat(row, viewer.id);
       row.status = "open";
       row.isOpen = true;
       row.settings = { quick: true };
+      stampVersion(db, row);
       db.matches[row.id] = row;
       recordWebhook(db, row.appSlug, "match.created", row.id);
       return hydrate(db, row, viewer.id);
     });
   }
 
-  async startPractice(appSlug: string, players?: number): Promise<Match> {
+  async startPractice(appSlug: string, players?: number, versionId?: string | null): Promise<Match> {
     const viewer = this.requireViewer();
     return mutate((db) => {
-      const app = appFor(db, appSlug);
-      if (!app) throw new BackendError("App not found", "not_found");
+      const listed = appFor(db, appSlug);
+      if (!listed) throw new BackendError("App not found", "not_found");
+      const version = testVersionFor(db, appSlug, versionId, viewer.id);
+      const app = version ? applyVersionToApp(listed, version) : listed;
       const teams = app.teams ?? 0;
       const seats = players ?? Math.min(app.players.max, Math.max(app.players.min, teams));
       if (!Number.isInteger(seats) || seats < app.players.min || seats > app.players.max || seats < teams) {
         throw new BackendError(`${app.name} is played by ${app.players.min} to ${app.players.max} players`, "invalid");
       }
-      const row = this.baseMatch(app, "practice", viewer.id);
+      const row = this.baseMatch(app, "practice", viewer.id, version);
       row.maxPlayers = seats;
       row.minPlayers = Math.min(seats, Math.max(app.players.min, teams));
       takeSeat(row, viewer.id);
@@ -817,6 +1418,7 @@ export class DemoBackend implements Backend {
       row.votesNeeded = 5;
       recordWebhook(db, row.appSlug, "match.created", row.id);
       activate(db, row);
+      stampVersion(db, row);
       db.matches[row.id] = row;
       return hydrate(db, row, viewer.id);
     });
@@ -827,7 +1429,9 @@ export class DemoBackend implements Backend {
       const row = db.matches[matchId];
       const viewerId = getViewerId();
       // Someone else's practice match doesn't exist as far as you're concerned.
-      if (!row || (row.mode === "practice" && row.createdBy !== viewerId)) throw new BackendError("Match not found", "not_found");
+      if (!row || (row.mode === "practice" && row.createdBy !== viewerId) || hiddenFrom(db, row, viewerId)) {
+        throw new BackendError("Match not found", "not_found");
+      }
       fn(db, row, viewerId);
       row.updatedAt = nowIso();
       return hydrate(db, row, viewerId);
@@ -854,6 +1458,8 @@ export class DemoBackend implements Backend {
           if (!isLobby(row) && !asyncRunning) throw new BackendError("This challenge is no longer open", "conflict");
           me.state = "joined";
         }
+      } else if (row.versionId && !canTest(db, row.appSlug, viewer.id)) {
+        throw new BackendError("Only the developer and testers can join a test build", "forbidden");
       } else if (
         row.isOpen &&
         row.mode !== "practice" &&
@@ -890,7 +1496,10 @@ export class DemoBackend implements Backend {
     return this.withMatch(matchId, (db, row) => {
       if (row.players.some((p) => p.userId === viewer.id)) return; // already seated or watching
       if (row.mode === "practice") throw new BackendError("Practice matches can't be watched", "forbidden");
-      const app = appFor(db, row.appSlug);
+      if (row.versionId && !canTest(db, row.appSlug, viewer.id)) {
+        throw new BackendError("Only the developer and testers can watch a test build", "forbidden");
+      }
+      const app = appForRow(db, row);
       if (!app || app.spectators === false) throw new BackendError("This app doesn't allow spectators", "forbidden");
       if (!["open", "pending", "active", "voting"].includes(row.status)) throw new BackendError("This match is over", "conflict");
       row.players.push(newPlayerRow(viewer.id, null, { role: "spectator" }));
@@ -905,7 +1514,7 @@ export class DemoBackend implements Backend {
       if (!isLobby(row) && !(row.status === "active" && row.mode === "async")) {
         throw new BackendError("This match isn't taking new players", "conflict");
       }
-      const invitees = this.resolveInvitees(db, handles, viewer.id).filter(
+      const invitees = this.resolveInvitees(db, handles, viewer.id, row.versionId ? appForRow(db, row) : null).filter(
         (p) => !row.players.some((x) => x.userId === p.id && x.role === "player"),
       );
       const free = freeSeatList(row).length;
@@ -1014,7 +1623,7 @@ export class DemoBackend implements Backend {
   async getMatch(matchId: string): Promise<Match | null> {
     const db = load();
     const row = db.matches[matchId];
-    return row ? hydrate(db, row) : null;
+    return row && !hiddenFrom(db, row, getViewerId()) ? hydrate(db, row) : null;
   }
 
   async markStarted(matchId: string): Promise<Match> {
@@ -1135,6 +1744,7 @@ export class DemoBackend implements Backend {
     return this.withMatch(matchId, (db, row) => {
       if (row.status !== "voting" || row.mode === "practice") throw new BackendError("Voting is closed", "conflict");
       if (isSeatedIn(row, viewer.id)) throw new BackendError("You can't judge your own match", "forbidden");
+      if (row.versionId && !canTest(db, row.appSlug, viewer.id)) throw new BackendError("Voting is closed", "forbidden");
       if (!seatRows(row).some((p) => p.userId === choiceUserId && p.state === "submitted")) {
         throw new BackendError("Invalid choice", "invalid");
       }
@@ -1144,7 +1754,7 @@ export class DemoBackend implements Backend {
       db.votes.push({ matchId, voterId: viewer.id, choiceId: choiceUserId, at: nowIso() });
       row.votes[choiceUserId] = (row.votes[choiceUserId] ?? 0) + 1;
       const me = db.profiles[viewer.id];
-      if (me) me.xp += XP.vote;
+      if (me && !row.versionId) me.xp += XP.vote;
       if ((row.votes[choiceUserId] ?? 0) >= row.votesNeeded) applySettlement(db, row);
     });
   }
@@ -1165,7 +1775,7 @@ export class DemoBackend implements Backend {
     const db = load();
     const voted = new Set(db.votes.filter((v) => v.voterId === id).map((v) => v.matchId));
     return Object.values(db.matches)
-      .filter((m) => m.status === "voting" && m.mode !== "practice" && !voted.has(m.id))
+      .filter((m) => m.status === "voting" && m.mode !== "practice" && !m.versionId && !voted.has(m.id))
       .filter((m) => !id || !isSeatedIn(m, id))
       .sort(byRecent)
       .map((m) => hydrate(db, m, id));
@@ -1177,6 +1787,7 @@ export class DemoBackend implements Backend {
       .filter(
         (m) =>
           m.mode !== "practice" &&
+          !m.versionId &&
           ["completed", "voting", "active"].includes(m.status) &&
           seatRows(m).filter((p) => p.state !== "declined" && p.state !== "invited").length >= 2,
       )
@@ -1188,7 +1799,7 @@ export class DemoBackend implements Backend {
   async listUserMatches(userId: string): Promise<Match[]> {
     const db = load();
     return Object.values(db.matches)
-      .filter((m) => m.mode !== "practice" && isSeatedIn(m, userId))
+      .filter((m) => m.mode !== "practice" && !m.versionId && isSeatedIn(m, userId))
       .filter((m) => ["completed", "voting", "active"].includes(m.status))
       .sort(byRecent)
       .slice(0, 20)
@@ -1464,7 +2075,9 @@ export class DemoBackend implements Backend {
           const firstGuest = seatRows(row).length === 1;
           if (firstGuest || Math.random() < 0.5) {
             const taken = new Set(row.players.map((p) => p.userId));
-            const candidates = personas.filter((p) => !taken.has(p.id) && !isHumanOnline(p.id));
+            const candidates = personas.filter(
+              (p) => !taken.has(p.id) && !isHumanOnline(p.id) && (!row.versionId || canTest(draft, row.appSlug, p.id)),
+            );
             const bot = candidates[Math.floor(Math.random() * candidates.length)];
             if (bot) {
               takeSeat(row, bot.id, { isBot: true });
@@ -1497,7 +2110,12 @@ export class DemoBackend implements Backend {
         if (Math.random() < pace) {
           const already = new Set(draft.votes.filter((v) => v.matchId === row.id).map((v) => v.voterId));
           const voters = personas.filter(
-            (p) => !already.has(p.id) && !row.players.some((pl) => pl.userId === p.id) && !isHumanOnline(p.id),
+            (p) =>
+              !already.has(p.id) &&
+              !row.players.some((pl) => pl.userId === p.id) &&
+              !isHumanOnline(p.id) &&
+              // Only testers judge test builds.
+              (!row.versionId || canTest(draft, row.appSlug, p.id)),
           );
           const voter = voters[Math.floor(Math.random() * voters.length)];
           const entries = seatRows(row).filter((p) => p.state === "submitted");

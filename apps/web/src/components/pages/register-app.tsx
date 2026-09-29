@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "motion/react";
-import { CheckCircle2, FlaskConical, Rocket } from "lucide-react";
+import { CheckCircle2, FlaskConical, LayoutDashboard, Rocket } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { z } from "zod";
@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 import { useBackend, useViewer } from "@/platform/client";
 import { achievementDefsError, manifestShapeError, statDefsError } from "@/platform/catalog";
 import { useRegisterApp } from "@/platform/queries";
-import { CATEGORIES, type AppCategory, type AppManifest, type PlayableMode, type Scoring } from "@/platform/types";
+import { CATEGORIES, type AppCategory, type AppManifest, type AppVersion, type PlayableMode, type Scoring } from "@/platform/types";
 import {
   AchievementsEditor,
   StatsEditor,
@@ -94,6 +94,27 @@ function Field({ label, error, hint, children }: { label: string; error?: string
 const input =
   "h-11 w-full rounded-2xl border border-white/10 bg-white/[0.03] px-4 text-sm outline-none transition placeholder:text-ink-500 focus:border-nova-400/60 focus:bg-white/[0.05]";
 
+/** "v1.0.0 · Live now" / "v1.0.0 · In review" under the registration result. */
+function VersionState({ version, live }: { version: AppVersion | null; live: boolean }) {
+  const label = version?.version ?? "1.0.0";
+  const published = version ? version.status === "published" : live;
+  return (
+    <motion.p
+      className={cn(
+        "mx-auto mt-4 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm font-semibold",
+        published ? "border-volt/30 bg-volt/10 text-volt" : "border-gold/30 bg-gold/10 text-gold",
+      )}
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ ...spring.soft, delay: 0.2 }}
+    >
+      <span className="font-mono tabular">v{label}</span>
+      <span aria-hidden>·</span>
+      <span>{published ? "Live now" : `${label} is in review`}</span>
+    </motion.p>
+  );
+}
+
 export function RegisterApp() {
   const router = useRouter();
   const backend = useBackend();
@@ -102,6 +123,8 @@ export function RegisterApp() {
   const [slugTouched, setSlugTouched] = useState(false);
   const [errors, setErrors] = useState<Errors>({});
   const [done, setDone] = useState<AppManifest | null>(null);
+  /** Version 1.0.0, created with the app (in review; demo mode publishes it right away). */
+  const [firstVersion, setFirstVersion] = useState<AppVersion | null>(null);
   const [form, setForm] = useState<Form>({
     name: "",
     slug: "",
@@ -187,6 +210,8 @@ export function RegisterApp() {
     }
     try {
       const app = await register.mutateAsync({ ...parsed.data, howTo: parsed.data.howTo.filter(Boolean), stats, achievements });
+      const versions = await backend.listAppVersions(app.slug).catch(() => [] as AppVersion[]);
+      setFirstVersion(versions.find((v) => v.version === "1.0.0") ?? versions[0] ?? null);
       setDone(app);
       play("win");
       celebrate({ pattern: "cannons", colors: [app.accent[0], app.accent[1], "#ffffff"] });
@@ -206,15 +231,19 @@ export function RegisterApp() {
         </h1>
         <p className="mt-3 text-ink-300">
           {done.status === "published"
-            ? "Demo mode auto-approves submissions so you can try it right away."
+            ? "Demo mode auto-approves your first version so you can try it right away. Later versions go through the review queue."
             : "We'll take a look soon. You can already play it in practice mode and test both seats in the Sandbox."}
         </p>
+        <VersionState version={firstVersion} live={done.status === "published"} />
         <div className="mx-auto mt-8 max-w-sm">
           <AppCard app={done} morph={false} />
         </div>
         <div className="mt-8 flex flex-wrap justify-center gap-3">
           <Button size="lg" variant="accent" icon={<Rocket className="size-4" />} onClick={() => router.push(`/apps/${done.slug}`)}>
             View listing
+          </Button>
+          <Button size="lg" variant="glass" icon={<LayoutDashboard className="size-4" />} href={`/developers/apps/${done.slug}`}>
+            Open app console
           </Button>
           <Button size="lg" variant="glass" icon={<FlaskConical className="size-4" />} href={`/developers/sandbox?url=${encodeURIComponent(done.url)}&scoring=${done.scoring}`}>
             Open in Sandbox

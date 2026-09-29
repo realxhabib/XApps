@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { spring } from "@/lib/motion";
 import { useViewer } from "@/platform/client";
 import { useApps, useMatchAction, useMyMatches } from "@/platform/queries";
+import { DeveloperNotices } from "./developer-notices";
 import { SignInPrompt } from "./sign-in-prompt";
 
 type Tab = "move" | "waiting" | "history";
@@ -62,6 +63,7 @@ export function Challenges() {
         <h1 className="mt-2 font-display text-5xl font-extrabold tracking-tight">Challenges</h1>
         <p className="mt-3 text-ink-300">Swipe right to accept an invite, left to pass.</p>
       </motion.header>
+      <DeveloperNotices className="mt-8" />
       <Segmented
         className="mt-8"
         layoutId="challenges-tab"

@@ -1,5 +1,6 @@
 "use client";
 
+import type { XAppsError } from "@xapps/sdk";
 import { createHostBridge, type HostBridge, type HostHandlers } from "@xapps/sdk/host";
 import { REQUEST_METHODS, type HostEvent, type HostEventData, type LaunchContext } from "@xapps/sdk/protocol";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
@@ -22,18 +23,23 @@ export function useAppBridge({
   enabled,
   context,
   handlers,
+  onRequestError,
 }: {
   iframeRef: RefObject<HTMLIFrameElement | null>;
   appOrigin: string | null;
   enabled: boolean;
   context: () => LaunchContext;
   handlers: HostHandlers;
+  /** Every request the host refused or that failed (the host core's `onRequestError`). */
+  onRequestError?: (method: string, error: XAppsError) => void;
 }) {
   const handlersRef = useRef(handlers);
   const contextRef = useRef(context);
+  const onErrorRef = useRef(onRequestError);
   useLayoutEffect(() => {
     handlersRef.current = handlers;
     contextRef.current = context;
+    onErrorRef.current = onRequestError;
   });
 
   const bridgeRef = useRef<HostBridge | null>(null);
@@ -57,6 +63,7 @@ export function useAppBridge({
       context: () => contextRef.current(),
       handlers: proxied,
       onConnect: () => setConnections((n) => n + 1),
+      onRequestError: (method, error) => onErrorRef.current?.(method, error),
     });
     bridgeRef.current = bridge;
     return () => {
@@ -98,4 +105,22 @@ export function jsonBytes(value: unknown): number {
   } catch {
     return Infinity;
   }
+}
+
+/** Refusals worth telling the developer about (routine `conflict`s and host bugs aren't). */
+export const LOGGED_REFUSALS: ReadonlySet<string> = new Set(["invalid_params", "forbidden", "rate_limited"]);
+
+/**
+ * A sliding-window limiter for fire-and-forget host logs, so a misbehaving app
+ * can't turn every refused request into a backend call.
+ */
+export function createLogThrottle(perMinute: number, now: () => number = Date.now): () => boolean {
+  let stamps: number[] = [];
+  return () => {
+    const t = now();
+    stamps = stamps.filter((s) => t - s < 60_000);
+    if (stamps.length >= perMinute) return false;
+    stamps.push(t);
+    return true;
+  };
 }

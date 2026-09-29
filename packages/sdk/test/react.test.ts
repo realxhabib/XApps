@@ -7,6 +7,7 @@ import {
   XAppsProvider,
   useAchievementEvents,
   useAchievements,
+  useLogger,
   useMatchState,
   useMediaUpload,
   usePlayers,
@@ -149,6 +150,22 @@ describe("react hooks", () => {
     expect(achievements!.defs[0]!.name).toBe("Good game");
     expect([...achievements!.unlocked]).toEqual(["gg"]);
     expect(events).toEqual(["gg:Good game"]);
+    act(() => root.unmount());
+  });
+
+  it("useLogger returns a stable log API that reaches the host", async () => {
+    const loggers: Array<ReturnType<typeof useLogger>> = [];
+    function Probe() {
+      loggers.push(useLogger());
+      return null;
+    }
+    const { mock, root } = await render(createElement(Probe));
+    act(() => root.render(createElement(XAppsProvider, null, createElement(Probe))));
+    expect(loggers.length).toBeGreaterThan(1);
+    expect(new Set(loggers).size).toBe(1);
+    loggers[0]!.warn("from react", { ok: true });
+    await flush();
+    expect(mock.logs).toMatchObject([{ level: "warn", message: "from react", data: { ok: true } }]);
     act(() => root.unmount());
   });
 });

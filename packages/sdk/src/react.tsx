@@ -27,7 +27,9 @@ import {
 import {
   connect,
   type AchievementUnlock,
+  type AutoResizeOptions,
   type ConnectOptions,
+  type LogApi,
   type MediaUploadOptions,
   type StateSnapshot,
   type StateUpdateOptions,
@@ -353,4 +355,36 @@ export function useAchievementEvents(
   const client = useXApps();
   const latest = useLatest(handler);
   useEffect(() => client.onAchievement((unlock, def) => latest.current(unlock, def)), [client, latest]);
+}
+
+/* ---------------------------------------------------------------------- */
+/* v4: logs                                                               */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * Your app's log (`debug`, `info`, `warn`, `error`); stable across renders.
+ * Fire and forget, like `xapps.log`.
+ *
+ * ```tsx
+ * const log = useLogger();
+ * useEffect(() => log.info("board ready", { size }), [log, size]);
+ * ```
+ */
+export function useLogger(): LogApi {
+  return useXApps().log;
+}
+
+/**
+ * Keeps the host informed of your content height (`xapps.ui.autoResize`)
+ * while the component is mounted, e.g. on a challenge setup screen whose
+ * height changes. Pass `false` to pause it.
+ */
+export function useAutoResize(enabled = true, options?: AutoResizeOptions): void {
+  const client = useXApps();
+  const element = options?.element;
+  const intervalMs = options?.intervalMs;
+  useEffect(() => {
+    if (!enabled) return;
+    return client.ui.autoResize({ element, intervalMs });
+  }, [client, enabled, element, intervalMs]);
 }

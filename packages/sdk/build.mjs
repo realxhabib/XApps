@@ -3,7 +3,7 @@
 // `@xapps/sdk/server` (dist/server.js) is ESM only.
 import { build } from "esbuild";
 import { execFileSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
@@ -44,7 +44,21 @@ await build({
   minify: true,
 });
 
+// Type declarations (dist/*.d.ts, next to each entry's JS).
 execFileSync(process.execPath, [require.resolve("typescript/bin/tsc"), "-p", "tsconfig.build.json"], {
   stdio: "inherit",
 });
+// The sources use extensionless relative imports (bundler resolution). Give the
+// emitted declarations explicit `.js` specifiers so they also resolve for
+// consumers on `moduleResolution: "node16" | "nodenext"`.
+for (const file of readdirSync("dist")) {
+  if (!file.endsWith(".d.ts")) continue;
+  const path = `dist/${file}`;
+  const source = readFileSync(path, "utf8");
+  const fixed = source.replace(
+    /(from\s+|import\()(["'])(\.\.?\/[^"']+?)\2/g,
+    (match, lead, quote, spec) => (/\.(js|mjs|cjs|json)$/.test(spec) ? match : `${lead}${quote}${spec}.js${quote}`),
+  );
+  if (fixed !== source) writeFileSync(path, fixed);
+}
 console.log("@xapps/sdk built → dist/");

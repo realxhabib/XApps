@@ -11,6 +11,9 @@
  * - `?xapps-players=4` seats 4 players (you + 3 bots); `?xapps-teams=2` plays in teams.
  * - `?xapps-turns=1` starts with a turn (seat 0); `?xapps-role=spectator` watches bots play.
  * - `?xapps-stats=<json>` / `?xapps-achievements=<json>` declare manifest stats / achievements.
+ *
+ * `xapps.log.*` entries are printed to the console as `[xapps log]` lines and
+ * kept in `mock.logs`.
  */
 import { createHostCore, rankPlayers, type HostBridge } from "./host";
 import {
@@ -21,6 +24,7 @@ import {
   type Json,
   type LaunchContext,
   type LaunchPurpose,
+  type LogLevel,
   type MatchMode,
   type MediaRef,
   type MatchResult,
@@ -75,6 +79,15 @@ export interface MockHostOptions {
   probeMedia?: boolean;
 }
 
+/** An entry your app wrote with `xapps.log.*` (or an uncaught error it captured). */
+export interface MockLogEntry {
+  level: LogLevel;
+  message: string;
+  data?: Json;
+  /** Epoch ms. */
+  at: number;
+}
+
 export interface MockSetupOutcome {
   status: "submitted" | "cancelled";
   settings: { [key: string]: Json } | null;
@@ -100,7 +113,17 @@ export interface MockHost {
   readonly uploads: ReadonlyArray<MediaRef & { alt: string | null; file: Blob }>;
   /** Pretend the app's server wrote an `app` scope key (`undefined` deletes it). */
   setAppStorage(key: string, value: Json | undefined): void;
+  /** What the app logged (`xapps.log.*`, captured errors), oldest first; the last 500 entries. */
+  readonly logs: ReadonlyArray<MockLogEntry>;
 }
+
+const MAX_MOCK_LOGS = 500;
+const LOG_STYLE: Record<LogLevel, string> = {
+  debug: "color:#8d96ad;font-weight:600",
+  info: "color:#38bdf8;font-weight:600",
+  warn: "color:#f59e0b;font-weight:600",
+  error: "color:#ef4444;font-weight:600",
+};
 
 const clampInt = (value: unknown, min: number, max: number, fallback: number): number => {
   const n = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
@@ -280,6 +303,7 @@ export function createMockHost(input: MockHostOptions = {}): MockHost {
   const statValues: { [key: string]: number } = {};
   const unlocked = new Set<string>();
   const uploads: Array<MediaRef & { alt: string | null; file: Blob; at: number }> = [];
+  const logs: MockLogEntry[] = [];
   const appStorage = new Map<string, Json>(Object.entries(options.appStorage ?? {}).map(([k, v]) => [k, cloneJson(v)]));
   const statDefs = context.app.stats ?? [];
   const achievementDefs = context.app.achievements ?? [];
@@ -503,6 +527,11 @@ export function createMockHost(input: MockHostOptions = {}): MockHost {
       "ui.status": ({ text }) => (log("status", text), null),
       "ui.scores": ({ scores }) => (log("scores", scores), null),
       "ui.turn": ({ playerId }) => (log("turn", playerId), null),
+      // Standalone the page already fills the window: nothing to resize.
+      "ui.resize": ({ height }) => {
+        if (!options.quiet) console.debug("%c[xapps mock]", "color:#8b5cf6;font-weight:600", "resize", height);
+        return null;
+      },
       "social.share": ({ text, url }) => {
         const intent = new URL("https://x.com/intent/post");
         intent.searchParams.set("text", text);
@@ -591,6 +620,19 @@ export function createMockHost(input: MockHostOptions = {}): MockHost {
         bridge.emitAchievement(id, user.id);
         return { unlocked: true };
       },
+      log: ({ level, message, data }) => {
+        const entry: MockLogEntry = { level, message, at: Date.now() };
+        if (data !== undefined) entry.data = cloneJson(data);
+        logs.push(entry);
+        if (logs.length > MAX_MOCK_LOGS) logs.splice(0, logs.length - MAX_MOCK_LOGS);
+        if (!options.quiet) {
+          const print = level === "debug" ? console.debug : level === "info" ? console.info : level === "warn" ? console.warn : console.error;
+          const args: unknown[] = [`%c[xapps log] ${level}`, LOG_STYLE[level], message];
+          if (data !== undefined) args.push(data);
+          print(...args);
+        }
+        return null;
+      },
       "state.get": () => ({ state: cloneJson(match.state), version: match.stateVersion }),
       "state.set": ({ state, expectedVersion }) => {
         if (match.status !== "active") throw new XAppsError("forbidden", "the match is not active");
@@ -669,6 +711,9 @@ export function createMockHost(input: MockHostOptions = {}): MockHost {
     setAppStorage(key, value) {
       if (value === undefined) appStorage.delete(key);
       else appStorage.set(key, cloneJson(value));
+    },
+    get logs() {
+      return logs.map((entry) => ({ ...entry, ...(entry.data !== undefined ? { data: cloneJson(entry.data) } : {}) }));
     },
   };
 }

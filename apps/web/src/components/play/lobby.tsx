@@ -20,6 +20,7 @@ import { useBackend } from "@/platform/client";
 import { useSearchProfiles } from "@/platform/queries";
 import type { AppManifest, Match, MatchPlayer, Profile } from "@/platform/types";
 import { maxSeats, SEAT_COLORS, seatedPlayers, tableSizeLabelForMatch, teamStyle } from "./match-view";
+import { TestBuildBadge } from "./test-build-badge";
 
 function useElapsed(since: string): string {
   const [now, setNow] = useState(() => Date.now());
@@ -206,6 +207,7 @@ function DuelLobby({
         <AppGlyph app={app} size={28} />
         <span className="font-semibold">{app.name}</span>
         <Badge tone="nova">{MODE_LABEL[match.mode]}</Badge>
+        <TestBuildBadge match={match} />
       </div>
       <Radar viewer={viewer} target={invited} accent={app.accent} />
       <h1 className="font-display text-3xl font-extrabold tracking-tight sm:text-4xl">{headline}</h1>
@@ -342,6 +344,7 @@ function TableLobby({
         <span className="font-semibold">{app.name}</span>
         <Badge tone="nova">{MODE_LABEL[match.mode]}</Badge>
         <Badge>{tableSizeLabelForMatch(match)}</Badge>
+        <TestBuildBadge match={match} />
         {watching && (
           <Badge tone="flare">
             <Eye className="size-3" /> Watching
@@ -801,6 +804,7 @@ export function InviteCard({
           <div className="relative mt-3 flex flex-wrap items-center justify-center gap-2 text-sm text-ink-300">
             <AppGlyph app={app} size={22} />
             <span className="font-semibold text-ink-100">{app.name}</span>·<span>{MODE_LABEL[match.mode]}</span>
+            <TestBuildBadge match={match} />
             {table && (
               <>
                 ·<span>{tableSizeLabelForMatch(match)}</span>

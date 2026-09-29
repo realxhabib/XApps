@@ -4,7 +4,9 @@ export {
   XAppsClient,
   type AchievementUnlock,
   type AchievementsApi,
+  type AutoResizeOptions,
   type ConnectOptions,
+  type LogApi,
   type MediaApi,
   type MediaUploadOptions,
   type RoundApi,
@@ -22,7 +24,13 @@ export {
   type TurnInfo,
 } from "./client";
 export { createRandom, randomId, type Random } from "./random";
-export { createMockHost, type MockHost, type MockHostOptions, type MockSetupOutcome } from "./mock-host";
+export {
+  createMockHost,
+  type MockHost,
+  type MockHostOptions,
+  type MockLogEntry,
+  type MockSetupOutcome,
+} from "./mock-host";
 export {
   LIMITS,
   PROTOCOL_VERSION,
@@ -35,6 +43,7 @@ export {
   type Json,
   type AchievementDef,
   type LaunchContext,
+  type LogLevel,
   type LaunchPurpose,
   type MatchMode,
   type MatchResult,

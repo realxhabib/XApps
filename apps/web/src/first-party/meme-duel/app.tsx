@@ -24,17 +24,30 @@ import { Countdown, OpponentPill, useBuzz, type OpponentState } from "./pieces";
 import { Pregame } from "./pregame";
 import { remixTemplate, type RemixImage } from "./remix";
 import { parseRound } from "./round";
+import { MemeSetup } from "./setup";
 import type { EditorSticker } from "./stickers";
 import { buildSubmission } from "./submission";
 import { canvasOf, type CaptionPosition } from "./templates";
-
 
 /** Color emoji fonts ahead of the system fallbacks (some ship monochrome emoji glyphs). */
 const APP_FONT =
   "var(--font-geist-sans), 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', ui-sans-serif, system-ui, sans-serif";
 
 /**
- * Meme Duel: both players caption the same image (a real template picked by
+ * Meme Duel. In setup purpose (the challenge sheet) it renders the round
+ * setup screen; otherwise the match.
+ */
+export function MemeDuelApp() {
+  const xapps = useXApps();
+  return (
+    <div className="relative flex h-dvh w-full flex-col overflow-hidden" style={{ fontFamily: APP_FONT }}>
+      {xapps.purpose === "setup" ? <MemeSetup /> : <MemeDuelMatch />}
+    </div>
+  );
+}
+
+/**
+ * The match: both players caption the same image (a real template picked by
  * the match seed, the challenger's pick, or an image they dropped), add up to
  * three stickers and submit a self-contained SVG for the Arena crowd to vote on.
  *
@@ -42,7 +55,7 @@ const APP_FONT =
  * room events drive the opponent pill. Bots are played locally and submit
  * with `submitFor` shortly after the human (or 15–40 s in).
  */
-export function MemeDuelApp() {
+function MemeDuelMatch() {
   const xapps = useXApps();
   const started = useMatchStarted();
   const result = useMatchResult();
@@ -243,7 +256,7 @@ export function MemeDuelApp() {
   /* ------------------------------- render ------------------------------- */
 
   return (
-    <div className="relative flex h-dvh w-full flex-col overflow-hidden" style={{ fontFamily: APP_FONT }}>
+    <>
       <AnimatePresence mode="wait" initial={false}>
         {!started ? (
           <Pregame key="pregame" topic={round.topic} drop={template.id === DROP_TEMPLATE_ID} />
@@ -296,6 +309,6 @@ export function MemeDuelApp() {
           />
         )}
       </AnimatePresence>
-    </div>
+    </>
   );
 }

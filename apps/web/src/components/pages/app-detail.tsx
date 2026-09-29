@@ -1,14 +1,14 @@
 "use client";
 
 import { AnimatePresence, motion } from "motion/react";
-import { Bot, Clock3, Eye, Gavel, Repeat, Share2, Swords, Target, Users, Zap } from "lucide-react";
+import { Bot, Clock3, Eye, Gavel, LayoutDashboard, Repeat, Share2, Swords, Target, Users, Zap } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "@/components/chrome/toasts";
 import { AppArt } from "@/components/marketplace/app-art";
 import { AppGlyph } from "@/components/marketplace/app-glyph";
-import { ServerPanel, useIsAppOwner } from "@/components/developers/server-panel";
+import { useIsAppOwner } from "@/components/developers/server-panel";
 import { AppProgress } from "./app-progress";
 import { ChallengeSheet } from "@/components/marketplace/challenge-sheet";
 import { ActivityPill } from "@/components/marketplace/match-card";
@@ -357,7 +357,18 @@ export function AppDetail({ slug }: { slug: string }) {
 
       <AppProgress app={app} className="mt-6" />
 
-      {isOwner && <ServerPanel app={app} className="mt-16" />}
+      {isOwner && (
+        <Link
+          href={`/developers/apps/${app.slug}`}
+          className="mt-10 flex items-center gap-3 rounded-3xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-sm transition hover:border-white/20 hover:bg-white/[0.05]"
+        >
+          <LayoutDashboard className="size-4 text-ink-300" />
+          <span className="min-w-0 flex-1">
+            <span className="font-semibold">You own this app.</span> <span className="text-ink-400">Versions, analytics, logs and server settings live in the console.</span>
+          </span>
+          <span className="shrink-0 font-semibold text-nova-300">Manage in console →</span>
+        </Link>
+      )}
 
       <ChallengeSheet app={app} open={sheet} onClose={() => setSheet(false)} />
     </div>

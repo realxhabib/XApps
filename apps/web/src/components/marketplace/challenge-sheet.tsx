@@ -15,12 +15,9 @@ import { play } from "@/lib/sfx";
 import { BLUR_TWEEN, spring } from "@/lib/motion";
 import { clamp, cn } from "@/lib/utils";
 import { MODE_LABEL } from "@/platform/match-utils";
-import { roundToSettings, type MemeRound } from "@/first-party/meme-duel/round";
-import { shrinkImage } from "@/lib/image";
-import { useBackend, useViewer } from "@/platform/client";
+import { useViewer } from "@/platform/client";
 import { useCreateChallenge, useSearchProfiles } from "@/platform/queries";
 import { AppSetupFrame, type AppSetupResult } from "./app-setup-frame";
-import { EMPTY_MEME_SETUP, MemeRoundSetup, memeSetupReady, trendingToRound, type MemeSetup } from "./meme-round-setup";
 import type { AppManifest, Profile } from "@/platform/types";
 
 /** Table sizes the app allows (multiples of the team count in team play). */
@@ -57,7 +54,6 @@ export function ChallengeSheet({
   const deferred = useDeferredValue(query.trim());
   const people = useSearchProfiles(deferred, open);
   const create = useCreateChallenge();
-  const backend = useBackend();
   const [chipsScope, animateChips] = useAnimate();
 
   const multi = app.players.max > 2;
@@ -71,38 +67,14 @@ export function ChallengeSheet({
   const tableSize = multi ? (pickedSize ?? autoSize) : 2;
   const openSeats = Math.max(0, tableSize - 1 - rivals.length);
 
-  // Meme Duel keeps its hand-built setup for now; other `setup: true` apps render their own.
-  const memeApp = app.slug === "meme-duel";
-  const appSetup = !!app.setup && !memeApp;
-  const [meme, setMeme] = useState<MemeSetup>(EMPTY_MEME_SETUP);
-  const [uploading, setUploading] = useState(false);
+  // `setup: true` apps render their own setup screen (setup purpose) in the sheet.
+  const appSetup = !!app.setup;
   const [setup, setSetup] = useState<AppSetupResult | null>(null);
   const [setupOpen, setSetupOpen] = useState(appSetup);
 
   const picked = multi ? true : openLink || rivals.length > 0;
-  const setupReady = memeApp ? memeSetupReady(meme) : appSetup ? !!setup : true;
+  const setupReady = appSetup ? !!setup : true;
   const ready = picked && setupReady;
-
-  /** Turns the Meme Duel setup into match settings, uploading a dropped file first. */
-  const memeSettings = async () => {
-    const round: MemeRound = { topic: meme.topic.trim() || undefined };
-    if (meme.source === "template" && meme.templateId) round.templateId = meme.templateId;
-    if (meme.source === "trending" && meme.trending) Object.assign(round, trendingToRound(meme.trending));
-    if (meme.source === "drop" && meme.drop) {
-      if (meme.drop.kind === "x") {
-        round.drop = meme.drop.drop;
-      } else {
-        setUploading(true);
-        try {
-          const src = await backend.uploadImage(meme.drop.blob);
-          round.drop = { src, width: meme.drop.width, height: meme.drop.height, credit: null };
-        } finally {
-          setUploading(false);
-        }
-      }
-    }
-    return roundToSettings(round);
-  };
 
   const refuse = () => {
     play("error");
@@ -158,7 +130,7 @@ export function ChallengeSheet({
         opponentHandle: !multi && rivals[0] ? rivals[0].handle : null,
         opponentHandles: multi && handles.length > 0 ? handles : undefined,
         maxPlayers: multi ? tableSize : undefined,
-        settings: memeApp ? await memeSettings() : appSetup ? setup?.settings : undefined,
+        settings: appSetup ? setup?.settings : undefined,
       });
       play("whoosh");
       const names = rivals.map((r) => `@${r.handle}`);
@@ -185,19 +157,15 @@ export function ChallengeSheet({
 
   const label = !picked
     ? "Pick a rival"
-    : memeApp && !memeSetupReady(meme)
-      ? meme.source === "drop"
-        ? "Add an image first"
-        : "Pick a meme"
-      : appSetup && !setup
-        ? "Finish the setup first"
-        : multi
-          ? rivals.length === 0
-            ? `Open a ${tableLabel(app, tableSize)} table`
-            : `Invite ${rivals.length}${openSeats > 0 ? ` + ${openSeats} open` : ""}`
-          : rivals[0]
-            ? `Challenge @${rivals[0].handle}`
-            : "Create open challenge";
+    : appSetup && !setup
+      ? "Finish the setup first"
+      : multi
+        ? rivals.length === 0
+          ? `Open a ${tableLabel(app, tableSize)} table`
+          : `Invite ${rivals.length}${openSeats > 0 ? ` + ${openSeats} open` : ""}`
+        : rivals[0]
+          ? `Challenge @${rivals[0].handle}`
+          : "Create open challenge";
 
   return (
     <Dialog
@@ -336,15 +304,6 @@ export function ChallengeSheet({
         </div>
       )}
 
-      {memeApp && (
-        <MemeRoundSetup
-          value={meme}
-          onChange={setMeme}
-          // Demo mode keeps images in localStorage, so it shrinks them harder.
-          prepareFile={(file) => shrinkImage(file, backend.kind === "demo" ? { maxSide: 720, maxBytes: 300_000 } : {})}
-        />
-      )}
-
       {appSetup && viewer && (
         <div className="mb-4">
           <AnimatePresence mode="popLayout" initial={false}>
@@ -476,7 +435,7 @@ export function ChallengeSheet({
         )}
       </div>
 
-      <Button className="mt-5 w-full" size="lg" variant="accent" disabled={!ready} loading={create.isPending || uploading} onClick={send} magnetic>
+      <Button className="mt-5 w-full" size="lg" variant="accent" disabled={!ready} loading={create.isPending} onClick={send} magnetic>
         <AnimatePresence mode="popLayout" initial={false}>
           <motion.span
             key={label}

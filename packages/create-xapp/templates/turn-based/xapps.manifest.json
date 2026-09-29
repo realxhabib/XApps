@@ -1,0 +1,25 @@
+{
+  "name": "{{name}}",
+  "version": "1.0.0",
+  "url": "https://your-app.example.com/",
+  "tagline": "Three in a row. Live, or one move a day.",
+  "description": "Classic tic-tac-toe on the XApps shared match state: play live, take your turns over days, or practice against a bot. Friends can watch.",
+  "category": "games",
+  "icon": "⭕",
+  "accent": ["#8b5cf6", "#22d3ee"],
+  "modes": ["live", "async", "practice"],
+  "players": { "min": 2, "max": 2 },
+  "teams": 0,
+  "spectators": true,
+  "setup": false,
+  "turnBased": true,
+  "scoring": "high",
+  "durationLabel": "1 min",
+  "howTo": [
+    "X moves first, then you take turns.",
+    "Get three of your marks in a row — across, down or diagonal.",
+    "A full board with no line is a draw."
+  ],
+  "stats": [],
+  "achievements": []
+}
