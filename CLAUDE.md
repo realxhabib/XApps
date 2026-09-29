@@ -11,7 +11,8 @@ Monorepo (npm workspaces): `apps/web` (Next.js 16 App Router, React 19, Tailwind
   BroadcastChannel + bot personas) and `SupabaseBackend` (RPCs in `supabase/migrations`). Keep both in sync
   with `src/platform/types.ts` and the SQL `match_json` shape.
 - First-party apps live in `src/first-party/<slug>` + `src/app/embed/<slug>/page.tsx` and must only use the
-  public SDK (see `src/first-party/README.md` for the host contract).
+  public SDK (see `src/first-party/README.md` for the host contract). Their `public.apps` rows come from
+  `src/platform/catalog.ts` via `npm run sync-apps` (run by production builds): no migration per app.
 - Motion: springs from `src/lib/motion.ts`; respect `useReducedMotion()`; sounds via `src/lib/sfx.ts`.
 - Platform v2 (docs/platform-v2.md): matches seat 2–8 players with teams/spectators, a shared versioned
   match state (`state.update`), turns and rounds, and apps may render their own challenge setup (purpose

@@ -12,6 +12,20 @@ src/app/embed/<slug>/page.tsx  <EmbedRoot slug="<slug>"><App /></EmbedRoot>
 Open `/embed/<slug>` directly and the SDK's mock host kicks in: you play
 "You" vs a practice bot, and `match.start` fires shortly after `ready()`.
 
+## Adding a first-party app
+
+1. Build it in `src/first-party/<slug>/` and add `src/app/embed/<slug>/page.tsx`.
+2. Add its manifest to `OFFICIAL_APPS` in `src/platform/catalog.ts` with
+   `official: true` and `url: "/embed/<slug>"`.
+3. Deploy. **No migration is needed**: the production build runs
+   `npm run sync-apps`, which upserts every official catalog app into
+   `public.apps` (mapping in `src/platform/official-apps.ts`). Changing an
+   existing app's manifest (players, modes, stats, achievements, copy) works
+   the same way. Run `npm run sync-apps -- --dry-run` to see the rows.
+
+Migrations are only for platform changes. Official apps never get
+`app_versions`: they ship with the site, so their version RPCs refuse them.
+
 ## Lifecycle contract (what the host does)
 
 1. The host loads the app in an iframe and answers the SDK handshake.

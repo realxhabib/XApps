@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BackendError } from "../backend";
 import { XP, placementXp } from "../scoring";
 import type { Match, Profile, RegisterAppInput } from "../types";
-import { DemoBackend, TURN_TIMEOUT_MS } from "./demo-backend";
+import { DemoBackend, LOST_WRITE_CHECKS_MS, TURN_TIMEOUT_MS } from "./demo-backend";
 import { PRACTICE_BOTS } from "./seed";
 import { DB_KEY, load } from "./store";
 
@@ -296,6 +296,34 @@ describe("demo backend: settlement", () => {
       [2, "loss", XP.loss],
       [1, "win", XP.win],
     ]);
+  });
+
+  it("re-applies a submission another tab's stale write erased", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      await signUp("bob");
+      await as("alice");
+      const match = await backend.createChallenge({ appSlug: "emoji-decode", mode: "live", opponentHandle: "bob" });
+      await as("bob");
+      await backend.joinMatch(match.id);
+      await as("alice");
+      const before = fakeLocalStorage.getItem(DB_KEY)!;
+      await backend.submit(match.id, { score: 900 });
+      // Bob's tab writes a copy it read before Alice's entry arrived.
+      fakeLocalStorage.setItem(DB_KEY, before);
+      expect(seat((await backend.getMatch(match.id))!, "alice")?.state).toBe("joined");
+      vi.advanceTimersByTime(LOST_WRITE_CHECKS_MS[0]!);
+      const repaired = seat((await backend.getMatch(match.id))!, "alice");
+      expect([repaired?.state, repaired?.score]).toEqual(["submitted", 900]);
+      await as("bob");
+      const done = await backend.submit(match.id, { score: 300 });
+      expect(done.winnerId).toBe(people.alice!.id);
+      // Later checks find nothing to repair.
+      vi.advanceTimersByTime(5_000);
+      expect((await backend.getMatch(match.id))?.status).toBe("completed");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps a 1v1 settling exactly like v1", async () => {

@@ -4,13 +4,14 @@
   "private": true,
   "scripts": {
     "dev": "npm run sync-sdk && next dev",
-    "build": "npm run sync-sdk && next build",
+    "build": "npm run sync-sdk && next build && node scripts/sync-apps.mjs --build",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "sync-sdk": "node scripts/sync-sdk.mjs"
+    "sync-sdk": "node scripts/sync-sdk.mjs",
+    "sync-apps": "node scripts/sync-apps.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",
@@ -40,6 +41,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/three": "^0.186.0",
+    "esbuild": "^0.28.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.6",
     "tailwindcss": "^4",

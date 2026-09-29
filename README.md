@@ -38,7 +38,7 @@ Without Supabase keys, XApps runs in **demo mode**. Everything lives in your bro
 ## Going live: Supabase + Sign in with X
 
 1. **Create a Supabase project.**
-2. **Install the schema.** Run every file in [`supabase/migrations/`](supabase/migrations) in the SQL editor, oldest first. Or use the CLI: `npx supabase link --project-ref <ref> && npx supabase db push`. This creates the tables, row-level security, the match/vote/XP RPCs, realtime room authorization, the `meme-drops` storage bucket for dropped images, and seeds the default apps plus the practice bot. When you pull new migrations later, run just the new files.
+2. **Install the schema.** Run every file in [`supabase/migrations/`](supabase/migrations) in the SQL editor, oldest first. Or use the CLI: `npx supabase link --project-ref <ref> && npx supabase db push`. This creates the tables, row-level security, the match/vote/XP RPCs, realtime room authorization, the `meme-drops` storage bucket for dropped images, and seeds the default apps plus the practice bot. When you pull new migrations later, run just the new files. Migrations only change the platform: first-party apps are synced from the catalog (see *Official apps* under Deploy).
 3. **Create an X app** in the [X developer portal](https://developer.x.com):
    - Turn on **OAuth 2.0** and choose the type *Web App*.
    - Set the callback URL to `https://<project-ref>.supabase.co/auth/v1/callback`.
@@ -65,6 +65,8 @@ If the keys are set but the schema isn't installed yet, the app says so and offe
 ## Deploy
 
 **Vercel** (recommended): import the repo and set **Root Directory** to `apps/web`. Leave *Include files outside the root directory* on, because the app imports `packages/sdk`. [`apps/web/vercel.json`](apps/web/vercel.json) already installs from the monorepo root and runs `npm run build`, which bundles the SDK and then runs `next build`. Use Node 22 (anything from 20.9 works). Add the four variables from step 6 in *Settings → Environment Variables*, with `NEXT_PUBLIC_SITE_URL` set to your production URL. Then add `https://<your-domain>/auth/callback` to the Supabase redirect URLs. Without the Supabase variables, the deployment runs in demo mode.
+
+**Official apps.** First-party apps live in code ([`apps/web/src/platform/catalog.ts`](apps/web/src/platform/catalog.ts)), not in migrations. `npm run sync-apps` upserts every app the catalog flags `official` into `public.apps` and reports each one as inserted, updated or unchanged (`npm run sync-apps -- --dry-run` prints the rows without connecting). It needs the Supabase **service role** key, so add `SUPABASE_SERVICE_ROLE_KEY` (or the new `SUPABASE_SECRET_KEY`, `sb_secret_…`) in Vercel as a server-only variable (never `NEXT_PUBLIC_`) for the **Production** environment. Every production build then runs the sync after `next build`, and a failed sync fails the deploy. Without the key the build skips the sync. Preview builds skip it too, so a branch never publishes its catalog to your database (set `SYNC_APPS=always` if previews use their own Supabase project, or `SYNC_APPS=off` to turn the sync off). Without Vercel, run `npm run sync-apps` with the key in your environment or `apps/web/.env.local` after deploying.
 
 **Anywhere else**: `npm ci && npm run build && npm start` on Node 20.9+ serves on port 3000 (set `PORT` to change it).
 
@@ -156,11 +158,12 @@ Full reference: the `/developers` page in the app and [`packages/sdk/README.md`]
 | Command | What it does |
 | --- | --- |
 | `npm run dev` | Builds the SDK bundle and starts Next.js on :3000 |
-| `npm run build` / `npm start` | Production build and serve |
+| `npm run build` / `npm start` | Production build and serve (the build also syncs official apps when a service role key is set) |
+| `npm run sync-apps` | Upserts the first-party apps from the catalog into Supabase (`-- --dry-run` prints the rows) |
 | `npm test` | Unit tests (SDK protocol, game logic, scoring) |
 | `npm run typecheck` / `npm run lint` | TypeScript and ESLint |
 | `npm run test:e2e` | Playwright end-to-end run in demo mode |
-| `supabase/tests/run.sh` | Applies the migrations to a throwaway local Postgres and checks the whole match lifecycle, RLS included |
+| `supabase/tests/run.sh` | Applies the migrations to a throwaway local Postgres, replays the official app sync, and checks the whole match lifecycle, RLS included |
 
 ## Known limitations
 

@@ -454,6 +454,9 @@ export function grantAchievement(db: DemoDb, app: AppManifest, userId: string, i
  * Local, zero-config backend. Every tab shares one localStorage database,
  * personas act as bots, and BroadcastChannel carries live match traffic.
  */
+/** When a submission is re-checked after it's written (see `submit`). */
+export const LOST_WRITE_CHECKS_MS = [250, 1_000, 3_000];
+
 export class DemoBackend implements Backend {
   readonly kind = "demo" as const;
   private viewerListeners = new Set<(viewer: Profile | null) => void>();
@@ -1693,6 +1696,29 @@ export class DemoBackend implements Backend {
 
   async submit(matchId: string, input: SubmitInput): Promise<Match> {
     const viewer = this.requireViewer();
+    const targetId = input.playerId ?? viewer.id;
+    const match = this.applySubmit(matchId, input, viewer.id);
+    // Tabs share one localStorage document, and Chromium syncs it between tabs asynchronously: when two
+    // players submit within a few milliseconds, each tab can start from a copy without the other's entry
+    // and the later write erases the earlier one. Check again shortly after and re-apply a lost entry.
+    for (const delay of LOST_WRITE_CHECKS_MS) {
+      setTimeout(() => {
+        if (getViewerId() !== viewer.id) return;
+        const row = load().matches[matchId];
+        const target = row?.players.find((p) => p.userId === targetId);
+        if (!row || !target || target.state !== "joined" || !["active", "open", "pending"].includes(row.status)) return;
+        try {
+          this.applySubmit(matchId, input, viewer.id);
+        } catch {
+          // Decided or changed meanwhile: nothing to repair.
+        }
+      }, delay);
+    }
+    return match;
+  }
+
+  private applySubmit(matchId: string, input: SubmitInput, viewerId: string): Match {
+    const viewer = { id: viewerId };
     return this.withMatch(matchId, (db, row) => {
       const me = row.players.find((p) => p.userId === viewer.id);
       if (!me) throw new BackendError("Not in this match", "forbidden");

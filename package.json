@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "npm run build -w @xapps/sdk && npm run dev -w web",
     "build": "npm run build -w @xapps/sdk && npm run build -w web",
+    "sync-apps": "node apps/web/scripts/sync-apps.mjs",
     "start": "npm run start -w web",
     "lint": "npm run lint -w web",
     "typecheck": "npm run typecheck --workspaces --if-present",
