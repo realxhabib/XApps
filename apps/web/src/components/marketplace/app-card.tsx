@@ -27,8 +27,6 @@ export function AppCard({
 }) {
   const cat = category(app.category);
   const large = size === "lg";
-  /** Large cards with a cover put the name and action over the image. */
-  const immersive = large && !!app.coverImage;
   return (
     <Link
       href={`/apps/${app.slug}`}
@@ -42,58 +40,31 @@ export function AppCard({
         className="h-full rounded-[2rem]"
         spotlightColor={`${app.accent[0]}33`}
       >
-        <div
-          className={cn(
-            "relative flex h-full flex-col overflow-hidden rounded-[2rem] border border-white/[0.08] bg-ink-850/80 transition-colors duration-500 group-hover:border-white/15",
-            immersive && "min-h-[24rem] sm:min-h-[28rem]",
-          )}
-        >
+        <div className="relative flex h-full flex-col overflow-hidden rounded-[2rem] border border-white/[0.08] bg-ink-850/80 transition-colors duration-500 group-hover:border-white/15">
           {/* Accent wash */}
           <div
             aria-hidden
             className="pointer-events-none absolute -right-16 -top-20 size-64 rounded-full opacity-30 blur-3xl transition-opacity duration-500 group-hover:opacity-50"
             style={{ background: `radial-gradient(circle, ${app.accent[0]}, ${app.accent[1]} 60%, transparent 70%)` }}
           />
-          {immersive ? (
-            <div aria-hidden className="absolute inset-0">
-              <AppArt app={app} className="size-full transition-transform duration-700 group-hover:scale-[1.03]" />
-              <div className="absolute inset-0 bg-gradient-to-t from-ink-950 via-ink-950/70 via-45% to-transparent" />
-            </div>
-          ) : (
-            <div className={cn("relative [transform:translateZ(30px)]", large ? "h-56 sm:h-72" : "h-36")}>
-              <AppArt app={app} className="size-full" />
-            </div>
-          )}
-          <div
-            className={cn(
-              "relative flex flex-1 flex-col p-5 pt-0 [transform:translateZ(40px)]",
-              large && "sm:p-7 sm:pt-0",
-              immersive && "justify-end pt-40 sm:pt-56",
-            )}
-          >
+          <div className={cn("relative [transform:translateZ(30px)]", large ? "h-56 sm:h-72" : "h-36")}>
+            <AppArt app={app} className="size-full" />
+          </div>
+          <div className={cn("relative flex flex-1 flex-col p-5 pt-0 [transform:translateZ(40px)]", large && "sm:p-7 sm:pt-0")}>
             <div className="flex items-center gap-3">
               <AppGlyph app={app} size={large ? 56 : 44} morph={morph} />
               <div className="min-w-0 flex-1">
                 <h3 className={cn("truncate font-display font-extrabold tracking-tight", large ? "text-3xl" : "text-xl")}>{app.name}</h3>
-                <p className={cn("truncate text-xs", immersive ? "text-ink-200" : "text-ink-400")}>
+                <p className="truncate text-xs text-ink-400">
                   {app.official ? "XApps Studio" : `by @${app.developer.handle}`}
                 </p>
               </div>
-              {immersive ? (
-                <span
-                  className="flex h-10 shrink-0 items-center gap-1.5 rounded-full px-4 text-sm font-extrabold text-ink-950 shadow-lg transition-transform duration-300 group-hover:scale-105"
-                  style={{ background: `linear-gradient(120deg, ${app.accent[0]}, ${app.accent[1]})` }}
-                >
-                  Play <ArrowUpRight className="size-4 transition-transform duration-300 group-hover:rotate-45" />
-                </span>
-              ) : (
-                <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-ink-200 transition-all duration-300 group-hover:rotate-45 group-hover:bg-ink-50 group-hover:text-ink-950">
-                  <ArrowUpRight className="size-4" />
-                </span>
-              )}
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-ink-200 transition-all duration-300 group-hover:rotate-45 group-hover:bg-ink-50 group-hover:text-ink-950">
+                <ArrowUpRight className="size-4" />
+              </span>
             </div>
-            <p className={cn("mt-3", immersive ? "text-ink-100 drop-shadow" : "text-ink-300", large ? "text-base" : "line-clamp-2 text-sm")}>{app.tagline}</p>
-            <div className={cn("flex flex-wrap items-center gap-2 pt-4 text-xs", immersive ? "text-ink-200" : "mt-auto text-ink-400")}>
+            <p className={cn("mt-3 text-ink-300", large ? "text-base" : "line-clamp-2 text-sm")}>{app.tagline}</p>
+            <div className="mt-auto flex flex-wrap items-center gap-2 pt-4 text-xs text-ink-400">
               {cat && (
                 <Badge tone="neutral">
                   {cat.emoji} {cat.label}
