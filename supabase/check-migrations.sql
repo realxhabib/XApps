@@ -10,6 +10,11 @@ from (values
                                               and exists (select 1 from public.apps where slug = 'four-in-a-row' and 'async' = any (modes))),
   (6, '20260930000300_settle_withdraws_invites', exists (select 1 from pg_proc where proname = 'settle_match' and prosrc like '%nobody answered%')),
   (7, '20261001000000_trust',                 to_regclass('public.app_credentials') is not null),
-  (8, '20261002000000_media_and_data',        exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'apps' and column_name = 'stats'))
+  (8, '20261002000000_media_and_data',        exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'apps' and column_name = 'stats')),
+  (9, '20261002000100_meme_duel_setup',       exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'apps' and column_name = 'has_setup')
+                                              and exists (select 1 from public.apps where slug = 'meme-duel' and has_setup)),
+  (10, '20261002000200_first_party_progress', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'apps' and column_name = 'stats')
+                                              and exists (select 1 from public.apps where slug = 'quick-draw' and jsonb_array_length(stats) > 0)),
+  (11, '20261003000000_shipping',             to_regclass('public.app_versions') is not null)
 ) as m(n, file, applied)
 order by n;

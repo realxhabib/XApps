@@ -276,6 +276,11 @@ exception when insufficient_privilege then
 end $$;
 
 -- ---------------------------------------------------------------- Challenge settings + meme drops
+-- Meme Duel renders its own setup screen (app-defined setup).
+do $$
+begin
+  assert (select has_setup from public.apps where slug = 'meme-duel'), 'meme-duel has_setup';
+end $$;
 select set_config('request.jwt.claim.sub', '11111111-1111-4111-8111-111111111111', false);
 insert into ctx values ('drop', (select public.create_challenge('meme-duel', 'async', null,
   '{"topic":"Monday mornings","drop":{"src":"https://x.supabase.co/storage/v1/object/public/meme-drops/a.jpg","width":800,"height":600},"quick":true}')::text));
@@ -1911,7 +1916,18 @@ begin
             'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'audio/mpeg', 'audio/mp4', 'audio/ogg',
             'audio/webm', 'audio/wav', 'video/mp4', 'video/webm', 'video/quicktime']
             from storage.buckets where id = 'app-media'), 'app-media bucket';
-  assert (select bool_and(stats = '[]'::jsonb and achievements = '[]'::jsonb) from public.apps), 'existing apps declare nothing';
+  assert (select bool_and(stats = '[]'::jsonb and achievements = '[]'::jsonb) from public.apps
+           where slug not in ('quick-draw', 'four-in-a-row', 'trivia-royale', 'emoji-decode', 'hot-takes')),
+    'other existing apps declare nothing';
+  -- First-party progress (20261002000200): valid lists, matching the web catalog (its test compares them).
+  assert (select jsonb_object_agg(slug, jsonb_build_array(jsonb_array_length(stats), jsonb_array_length(achievements)))
+            from public.apps where official and stats <> '[]'::jsonb)
+       = '{"quick-draw":[4,8],"four-in-a-row":[3,9],"trivia-royale":[4,9],"emoji-decode":[4,8],"hot-takes":[3,8]}'::jsonb,
+    'first-party stats + achievements';
+  assert (select bool_and(public.app_stats_error(stats) is null and public.app_achievements_error(achievements) is null
+                          and (select sum((e->>'xp')::int) from jsonb_array_elements(achievements) e) <= 500
+                          and exists (select 1 from jsonb_array_elements(achievements) e where (e->>'secret')::boolean))
+            from public.apps where official and stats <> '[]'::jsonb), 'first-party manifests are valid, each with a secret';
   assert not exists (select 1 from public.app_storage where scope <> 'user' or user_id is null), 'v1 storage rows are user scope';
 end $$;
 
@@ -2503,6 +2519,38 @@ begin
   assert not (public.user_stats(pg_temp.uid('alice_x')) @> '[{"key":"level"}]'), 'undeclared stat hidden';
 end $$;
 
+-- First-party apps: real stats and achievements (20261002000200_first_party_progress.sql)
+set role authenticated;
+select pg_temp.login('carol');
+insert into ctx values ('xp_fp', pg_temp.xp('carol')::text);
+do $$
+declare r jsonb;
+begin
+  r := public.report_stats('quick-draw', '{"best_reaction":231,"rounds_won":3,"duels_won":1,"perfect_duels":1}');
+  assert r = '{"best_reaction":231,"rounds_won":3,"duels_won":1,"perfect_duels":1}'::jsonb, r::text;
+  r := public.report_stats('quick-draw', '{"best_reaction":244,"rounds_won":2}');
+  assert r = '{"best_reaction":231,"rounds_won":5}'::jsonb, 'min keeps the best reaction, sum adds rounds: ' || r::text;
+  assert (public.app_stat_leaderboard('quick-draw', 'best_reaction')->0->>'value')::int = 231, 'reflexes board';
+  r := public.report_stats('four-in-a-row', '{"wins":1,"fastest_win":4,"longest_line":4}');
+  assert r = '{"wins":1,"fastest_win":4,"longest_line":4}'::jsonb, r::text;
+  r := public.report_stats('trivia-royale', '{"best_score":7420,"correct_answers":7,"best_streak":5,"crowns":1}');
+  assert r ->> 'best_score' = '7420', r::text;
+  r := public.report_stats('emoji-decode', '{"best_score":1240,"puzzles_decoded":7,"fastest_decode":1830,"wins":1}');
+  assert r ->> 'fastest_decode' = '1830', r::text;
+  r := public.report_stats('hot-takes', '{"takes":1,"wins":1,"votes":5}');
+  assert r = '{"takes":1,"wins":1,"votes":5}'::jsonb, r::text;
+  assert public.unlock_achievement('quick-draw', 'under_200') = '{"unlocked":true}'::jsonb, 'reflexes badge';
+  assert public.unlock_achievement('quick-draw', 'under_200') = '{"unlocked":false}'::jsonb, 'once';
+  assert public.unlock_achievement('trivia-royale', 'gloriously_wrong') = '{"unlocked":true}'::jsonb, 'secret badge';
+  assert pg_temp.xp('carol') = pg_temp.cv('xp_fp')::int + 40 + 30, 'under_200 40 + gloriously_wrong 30';
+  assert public.list_user_achievements(pg_temp.uid('carol'))
+         @> '[{"appSlug":"quick-draw","achievementId":"under_200"},{"appSlug":"trivia-royale","achievementId":"gloriously_wrong"}]',
+    'on the profile';
+end $$;
+select pg_temp.expect($q$select public.report_stats('four-in-a-row', '{"best_reaction":1}')$q$, '22023', 'Unknown stat best_reaction');
+select pg_temp.expect($q$select public.unlock_achievement('hot-takes', 'under_200')$q$, '22023', 'Unknown achievement under_200');
+reset role;
+
 -- Internal stage 3 helpers are not callable by clients
 set role authenticated;
 select pg_temp.login('alice_x');
@@ -2512,6 +2560,752 @@ select pg_temp.expect($q$select public.apply_stats((select a from public.apps a 
 select pg_temp.expect($q$select public.grant_achievement((select a from public.apps a where slug = 'stat-game'), auth.uid(), 'zero')$q$, '42501');
 select pg_temp.expect($q$select public.app_api_player(auth.uid())$q$, '42501');
 select pg_temp.expect($q$select * from public.rate_limit_hits$q$, '42501');
+reset role;
+
+-- ================================================================ v2 stage 4: shipping
+reset role;
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('77777777-7777-4777-8777-777777777777', null, '{"user_name":"rita","full_name":"Rita Reviewer"}'),
+  ('88888888-8888-4888-8888-888888888888', null, '{"user_name":"tess","full_name":"Tess Tester"}');
+-- Admins are set by hand in SQL.
+update public.profiles set is_admin = true where handle = 'rita';
+
+-- A version's JSON by key (as its owner sees it in list_app_versions).
+create function pg_temp.ver(p_key text) returns jsonb language sql as $$
+  select x from jsonb_array_elements(public.list_app_versions('ship-game')) x where x->>'id' = pg_temp.cv(p_key);
+$$;
+create function pg_temp.vstatus(p_key text) returns text language sql as $$
+  select pg_temp.ver(p_key)->>'status';
+$$;
+
+do $$
+begin
+  assert not (select is_admin from public.profiles where handle = 'tess'), 'is_admin defaults to false';
+  -- Every community app registered so far got version 1.0.0 (official apps are managed in code).
+  assert not exists (select 1 from public.apps a where not a.official
+                      and not exists (select 1 from public.app_versions v where v.app_slug = a.slug)), 'community apps have versions';
+  assert not exists (select 1 from public.app_versions v join public.apps a on a.slug = v.app_slug where a.official), 'no official versions';
+  assert (select v.status = 'published' and a.published_version_id = v.id and v.version = '1.0.0'
+            from public.apps a join public.app_versions v on v.app_slug = a.slug where a.slug = 'ref-duel'),
+    'apps inserted published get a published 1.0.0';
+  assert (select v.status from public.app_versions v where v.app_slug = 'my-game') = 'in_review', 'pending apps: 1.0.0 in review';
+  assert (select published_version_id from public.apps where slug = 'my-game') is null, 'nothing published yet';
+  assert (select manifest from public.app_versions where app_slug = 'ref-duel')
+         = public.app_version_manifest((select public.app_row_manifest(a) from public.apps a where a.slug = 'ref-duel')),
+    'registration manifest is normalized';
+end $$;
+
+-- Clients can't make themselves admins (only bio is client-writable).
+set role authenticated;
+select pg_temp.login('tess');
+select pg_temp.expect($q$update public.profiles set is_admin = true where id = auth.uid()$q$, '42501');
+select pg_temp.expect($q$insert into public.profiles (id, handle, is_admin) values (gen_random_uuid(), 'sneaky', true)$q$, '42501');
+
+-- ---------------------------------------------------------------- Registering creates 1.0.0 in review
+select pg_temp.login('bob');
+insert into public.apps (slug, name, tagline, category, url, modes, min_players, max_players, how_to)
+values ('ship-game', 'Ship Game', 'Version one', 'games', 'https://ship.example.com/v1', '{live,async,practice}', 2, 4, '{Play}');
+insert into ctx values ('sv1', (select public.list_app_versions('ship-game')->0->>'id'));
+do $$
+declare
+  l jsonb := public.list_app_versions('ship-game');
+begin
+  assert jsonb_array_length(l) = 1, l::text;
+  assert l->0 ?& array['id', 'appSlug', 'version', 'url', 'manifest', 'status', 'notes', 'reviewNotes',
+                       'createdAt', 'submittedAt', 'reviewedAt', 'publishedAt'], 'AppVersion shape';
+  assert l->0->>'version' = '1.0.0' and l->0->>'status' = 'in_review' and l->0->>'appSlug' = 'ship-game', l::text;
+  assert l->0->>'url' = 'https://ship.example.com/v1' and l->0->>'submittedAt' is not null
+         and l->0->'reviewedAt' = 'null' and l->0->'publishedAt' = 'null', l::text;
+  assert l->0->'manifest' = '{"name":"Ship Game","tagline":"Version one","description":"","category":"games","icon":"✨",
+    "accent":["#5b74ff","#a35cff"],"modes":["live","async","practice"],"players":{"min":2,"max":4},"teams":0,
+    "spectators":true,"setup":false,"turnBased":false,"scoring":"high","votesToWin":5,"howTo":["Play"],
+    "stats":[],"achievements":[]}'::jsonb, l->0->>'manifest';
+end $$;
+-- Direct writes can't point the app at a version.
+update public.apps set published_version_id = pg_temp.mid('sv1') where slug = 'ship-game';
+insert into public.apps (slug, name, category, url, published_version_id)
+values ('ship-sneaky', 'Sneaky', 'games', 'https://sneaky.example.com/', pg_temp.mid('sv1'));
+reset role;
+do $$
+begin
+  assert (select published_version_id from public.apps where slug = 'ship-game') is null, 'client update ignored';
+  assert (select published_version_id from public.apps where slug = 'ship-sneaky') is null, 'client insert ignored';
+  assert (select status from public.apps where slug = 'ship-game') = 'pending', 'still pending';
+end $$;
+
+-- ---------------------------------------------------------------- Version RPCs: access
+set role authenticated;
+select pg_temp.login('carol');
+select pg_temp.expect($q$select public.list_app_versions('ship-game')$q$, '42501');
+select pg_temp.expect(format('select public.submit_app_version(%L)', pg_temp.mid('sv1')), '42501');
+select pg_temp.expect(format('select public.withdraw_app_version(%L)', pg_temp.mid('sv1')), '42501');
+select pg_temp.expect(format('select public.update_app_version(%L, null, null, %L)', pg_temp.mid('sv1'), 'x'), '42501');
+select pg_temp.expect(format('select public.publish_app_version(%L)', pg_temp.mid('sv1')), '42501');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '2.0.0')$q$, '42501');
+select pg_temp.expect($q$select public.list_app_testers('ship-game')$q$, '42501');
+select pg_temp.expect($q$select public.add_app_tester('ship-game', 'carol')$q$, '42501');
+select pg_temp.expect(format('select public.remove_app_tester(%L, %L)', 'ship-game', pg_temp.uid('tess')), '42501');
+select pg_temp.expect($q$select public.list_review_queue()$q$, '42501', 'Only reviewers%');
+select pg_temp.expect(format('select public.review_app_version(%L, %L, null)', pg_temp.mid('sv1'), 'approve'), '42501');
+select pg_temp.expect($q$select public.app_analytics('ship-game')$q$, '42501');
+select pg_temp.expect($q$select public.list_app_logs('ship-game')$q$, '42501');
+select pg_temp.login('bob');
+select pg_temp.expect($q$select public.create_app_version('quick-draw', '2.0.0')$q$, '42501', 'Official apps%');
+select pg_temp.expect($q$select public.list_app_testers('quick-draw')$q$, '42501', 'Official apps%');
+select pg_temp.expect($q$select public.create_app_version('no-such-app', '2.0.0')$q$, 'P0002');
+select pg_temp.expect(format('select public.submit_app_version(%L)', gen_random_uuid()), 'P0002');
+set role anon;
+select set_config('request.jwt.claim.sub', '', false);
+select pg_temp.expect($q$select public.list_app_versions('ship-game')$q$, '42501');
+select pg_temp.expect($q$select public.list_review_queue()$q$, '42501');
+select pg_temp.expect($q$select public.list_my_notices()$q$, '42501');
+select pg_temp.expect($q$select public.log_app_event('ship-game', null, 'info', 'hi')$q$, '42501');
+set role authenticated;
+select set_config('request.jwt.claim.sub', '', false);
+select pg_temp.expect($q$select public.list_app_versions('ship-game')$q$, '28000');
+select pg_temp.expect($q$select public.log_app_event('ship-game', null, 'info', 'hi')$q$, '28000');
+-- Admins can read any app's versions.
+select pg_temp.login('rita');
+do $$
+begin
+  assert jsonb_array_length(public.list_app_versions('ship-game')) = 1, 'admin reads versions';
+end $$;
+
+-- ---------------------------------------------------------------- Testers
+select pg_temp.login('tess');
+do $$
+begin
+  assert (select count(*) from public.apps where slug = 'ship-game') = 0, 'pending app hidden from non-testers';
+end $$;
+select pg_temp.login('bob');
+do $$
+declare l jsonb;
+begin
+  assert public.list_app_testers('ship-game') = '[]'::jsonb, 'no testers yet';
+  l := public.add_app_tester('ship-game', ' @Tess ');
+  assert jsonb_array_length(l) = 1 and l->0->>'handle' = 'tess' and l->0 ?& array['id', 'handle', 'name', 'avatarUrl', 'isBot'], l::text;
+  assert public.add_app_tester('ship-game', 'tess') = l, 'adding twice is a no-op';
+  assert jsonb_array_length(public.add_app_tester('ship-game', 'carol')) = 2, 'carol added';
+  assert public.list_app_testers('ship-game') @> '[{"handle":"carol"},{"handle":"tess"}]', 'both listed';
+  assert public.remove_app_tester('ship-game', pg_temp.uid('carol')) = l, 'carol removed';
+  assert public.remove_app_tester('ship-game', pg_temp.uid('carol')) = l, 'removing a non-tester is a no-op';
+end $$;
+select pg_temp.expect($q$select public.add_app_tester('ship-game', 'bob')$q$, '22023', '%your own app%');
+select pg_temp.expect($q$select public.add_app_tester('ship-game', 'nobody_here')$q$, 'P0002');
+select pg_temp.expect($q$select public.add_app_tester('ship-game', 'xapps_bot')$q$, 'P0002');
+select pg_temp.expect($q$select public.add_app_tester('ship-game', '  ')$q$, '22023');
+select pg_temp.expect($q$select * from public.app_testers$q$, '42501');
+select pg_temp.expect($q$select * from public.app_versions$q$, '42501');
+select pg_temp.login('tess');
+do $$
+begin
+  assert (select count(*) from public.apps where slug = 'ship-game') = 1, 'testers see the app they test';
+end $$;
+
+-- ---------------------------------------------------------------- Test builds of an app still in review
+select pg_temp.login('tess');
+insert into ctx values ('tb_prac', public.start_practice('ship-game', null, pg_temp.mid('sv1'))::text);
+do $$
+declare m jsonb := public.get_match(pg_temp.mid('tb_prac'));
+begin
+  assert m->>'versionId' = pg_temp.cv('sv1') and m->>'versionUrl' = 'https://ship.example.com/v1', m::text;
+  assert (select version_id from public.matches where id = pg_temp.mid('tb_prac')) = pg_temp.mid('sv1'), 'recorded';
+  assert (select published_version_id from public.matches where id = pg_temp.mid('tb_prac')) is null, 'no live version for test builds';
+end $$;
+select pg_temp.login('carol');
+select pg_temp.expect(format('select public.start_practice(%L, null, %L)', 'ship-game', pg_temp.mid('sv1')), '42501', 'Only the developer and testers%');
+select pg_temp.expect($q$select public.start_practice('ship-game')$q$, 'P0002');
+select pg_temp.expect(format('select public.start_practice(%L, null, %L)', 'ship-game', gen_random_uuid()), 'P0002', 'Version not found');
+select pg_temp.expect(format('select public.start_practice(%L, null, %L)', 'ref-duel', pg_temp.mid('sv1')), 'P0002', 'Version not found');
+select pg_temp.expect(format('select public.quick_match(%L, %L)', 'ship-game', pg_temp.mid('sv1')), '42501');
+select pg_temp.expect(format('select public.create_challenge(%L, %L, null, %L, null, null, %L)', 'ship-game', 'live', '{}', pg_temp.mid('sv1')), '42501');
+-- Named and positional calls from before stage 4 still resolve.
+select pg_temp.login('alice_x');
+do $$
+begin
+  perform public.cancel_match(public.create_challenge(p_app => 'ref-party', p_mode => 'live', p_max_players => 3));
+  perform public.cancel_match(public.create_challenge('ref-party', 'live', null, '{}', null, 3));
+  assert (select version_id from public.matches where created_by = auth.uid() order by created_at desc limit 1) is null, 'live app';
+end $$;
+
+-- ---------------------------------------------------------------- Review: reject, fix, resubmit, approve (first version goes live)
+select pg_temp.login('rita');
+do $$
+declare
+  q jsonb := public.list_review_queue();
+  e jsonb;
+begin
+  select x into e from jsonb_array_elements(q) x where x->'version'->>'id' = pg_temp.cv('sv1');
+  assert e is not null, q::text;
+  assert e ?& array['version', 'app', 'developer', 'published'], 'ReviewItem shape';
+  assert e->'app'->>'slug' = 'ship-game' and e->'app'->>'accent_from' = '#5b74ff'
+         and e->'app'->'developer'->>'handle' = 'bob', 'app row as the web maps it';
+  assert e->'developer'->>'handle' = 'bob' and e->'published' = 'null', e::text;
+  assert (select coalesce(bool_and(z.ok), true) from (
+            select (x->'version'->>'submittedAt')::timestamptz >= lag((x->'version'->>'submittedAt')::timestamptz) over (order by i) as ok
+              from jsonb_array_elements(q) with ordinality t(x, i)) z), 'oldest first';
+end $$;
+select pg_temp.expect(format('select public.review_app_version(%L, %L, %L)', pg_temp.mid('sv1'), 'reject', '  '), '22023', 'Tell the developer why');
+select pg_temp.expect(format('select public.review_app_version(%L, %L, %L)', pg_temp.mid('sv1'), 'maybe', 'x'), '22023');
+select pg_temp.expect(format('select public.review_app_version(%L, %L, %L)', pg_temp.mid('sv1'), 'approve', repeat('x', 2001)), '22023');
+select pg_temp.expect(format('select public.review_app_version(%L, %L, %L)', gen_random_uuid(), 'approve', null), 'P0002');
+do $$
+declare v jsonb := public.review_app_version(pg_temp.mid('sv1'), 'reject', 'Add more how-to lines');
+begin
+  assert v->>'status' = 'rejected' and v->>'reviewNotes' = 'Add more how-to lines' and v->>'reviewedAt' is not null, v::text;
+end $$;
+reset role;
+do $$
+begin
+  assert (select reviewed_by from public.app_versions where id = pg_temp.mid('sv1')) = pg_temp.uid('rita'), 'reviewer recorded';
+  assert (select status from public.apps where slug = 'ship-game') = 'rejected', 'a new app that was turned down is rejected';
+end $$;
+set role authenticated;
+select pg_temp.login('rita');
+select pg_temp.expect(format('select public.review_app_version(%L, %L, null)', pg_temp.mid('sv1'), 'approve'), '55000');
+
+select pg_temp.login('bob');
+do $$
+declare
+  n jsonb := public.list_my_notices();
+  v jsonb;
+begin
+  assert jsonb_array_length(n) = 1, n::text;
+  assert n->0 ?& array['id', 'kind', 'appSlug', 'versionId', 'version', 'message', 'createdAt', 'readAt'], 'notice shape';
+  assert n->0->>'kind' = 'version_rejected' and n->0->>'appSlug' = 'ship-game' and n->0->>'version' = '1.0.0'
+         and n->0->>'message' like '%Add more how-to lines%' and n->0->'readAt' = 'null', n::text;
+  -- Rejected versions can be edited (null keeps a field) and resubmitted.
+  v := public.update_app_version(pg_temp.mid('sv1'), null,
+         (pg_temp.ver('sv1')->'manifest') || '{"howTo":["Play","Win"]}', 'More help');
+  assert v->>'status' = 'rejected' and v->'manifest'->'howTo' = '["Play","Win"]' and v->>'notes' = 'More help'
+         and v->>'url' = 'https://ship.example.com/v1', v::text;
+  v := public.submit_app_version(pg_temp.mid('sv1'));
+  assert v->>'status' = 'in_review', v::text;
+  assert (select status from public.apps where slug = 'ship-game') = 'pending', 'back in review';
+  v := public.withdraw_app_version(pg_temp.mid('sv1'));
+  assert v->>'status' = 'draft' and v->'submittedAt' = 'null', v::text;
+  v := public.update_app_version(pg_temp.mid('sv1'), 'https://ship.example.com/v1b');
+  assert v->>'url' = 'https://ship.example.com/v1b' and v->'manifest'->'howTo' = '["Play","Win"]', 'url only';
+  v := public.submit_app_version(pg_temp.mid('sv1'));
+  assert v->>'status' = 'in_review', v::text;
+end $$;
+select pg_temp.expect(format('select public.update_app_version(%L, %L)', pg_temp.mid('sv1'), 'https://ship.example.com/x'), '55000');
+select pg_temp.expect(format('select public.submit_app_version(%L)', pg_temp.mid('sv1')), '55000');
+select pg_temp.expect(format('select public.publish_app_version(%L)', pg_temp.mid('sv1')), '55000', 'Only approved%');
+select pg_temp.expect(format('select public.update_app_version(%L, %L)', pg_temp.mid('sv1'), 'http://ship.example.com/'), '55000');
+
+select pg_temp.login('rita');
+do $$
+declare v jsonb := public.review_app_version(pg_temp.mid('sv1'), 'approve', null);
+begin
+  assert v->>'status' = 'published' and v->>'publishedAt' is not null and v->'reviewNotes' = 'null', v::text;
+end $$;
+reset role;
+do $$
+declare a public.apps;
+begin
+  select * into a from public.apps where slug = 'ship-game';
+  assert a.status = 'published' and a.published_version_id = pg_temp.mid('sv1'), 'first approval publishes the app';
+  assert a.url = 'https://ship.example.com/v1b' and a.how_to = '{Play,Win}', 'fields copied';
+  assert a.developer_id = pg_temp.uid('bob') and not a.official, 'owner fields untouched';
+  assert (select kind from public.developer_notices where app_slug = 'ship-game' order by created_at desc limit 1) = 'version_published', 'notice';
+end $$;
+
+-- ---------------------------------------------------------------- A second version: create, validate, test build, publish
+set role authenticated;
+select pg_temp.login('bob');
+insert into ctx values ('sv2', public.create_app_version('ship-game', ' 1.1.0 ', 'https://ship.example.com/v2',
+  '{"name":"Ship Game Deluxe","tagline":"Version two","description":"Now for six.","category":"trivia","icon":"🚢",
+    "accent":["#112233","#aabbcc"],"modes":["live","practice"],"players":{"min":2,"max":6},"teams":0,
+    "spectators":false,"setup":true,"turnBased":true,"scoring":"low","votesToWin":7,"howTo":["Sail"],
+    "stats":[{"key":"best","label":"Best","aggregate":"min"}],
+    "achievements":[{"id":"ahoy","name":"Ahoy","icon":"⚓","xp":10}],
+    "durationLabel":"~3 min","slug":"ignored"}', 'Six seats')->>'id');
+do $$
+declare v jsonb := pg_temp.ver('sv2');
+begin
+  assert v->>'status' = 'draft' and v->>'version' = '1.1.0' and v->>'notes' = 'Six seats', v::text;
+  assert not (v->'manifest' ? 'durationLabel') and not (v->'manifest' ? 'slug'), 'unknown fields dropped';
+  assert v->'manifest'->'players' = '{"min":2,"max":6}' and v->'manifest'->>'category' = 'trivia', v::text;
+  assert (public.list_app_versions('ship-game')->0->>'id') = pg_temp.cv('sv2'), 'newest first';
+  -- Defaults: no manifest/url = the app as it is now.
+  assert public.create_app_version('ship-game', '1.0.1')->'manifest' = pg_temp.ver('sv1')->'manifest', 'copied from the app';
+  assert public.create_app_version('ship-game', '1.0.2', null, '{"name":"Mini","category":"games","howTo":null}')->'manifest'
+         = '{"name":"Mini","tagline":"","description":"","category":"games","icon":"✨","accent":["#5b74ff","#a35cff"],
+             "modes":["live","practice"],"players":{"min":2,"max":2},"teams":0,"spectators":true,"setup":false,
+             "turnBased":false,"scoring":"high","votesToWin":5,"howTo":[],"stats":[],"achievements":[]}', 'defaults filled';
+end $$;
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.1.0')$q$, '23505', 'Version 1.1.0 already exists');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.1')$q$, '22023', 'Versions look like 1.2.3');
+select pg_temp.expect($q$select public.create_app_version('ship-game', 'v1.2.0')$q$, '22023');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', 'http://ship.example.com/')$q$, '22023', '%https%');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', '/embed/ship')$q$, '22023');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, null, repeat('n', 2001))$q$, '22023');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '[]')$q$, '22023', '%object%');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '{"category":"games"}')$q$, '22023', 'Name%');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '{"name":"X Y","category":"food"}')$q$, '22023', 'Category%');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '{"name":"XY","category":"games","players":{"min":1,"max":4}}')$q$, '22023', 'Players%');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '{"name":"XY","category":"games","players":{"min":2,"max":6},"teams":4}')$q$, '22023', 'Teams%');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '{"name":"XY","category":"games","players":{"min":2,"max":2.5}}')$q$, '22023', 'Players%');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '{"name":"XY","category":"games","modes":[]}')$q$, '22023', 'Modes%');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '{"name":"XY","category":"games","modes":["solo"]}')$q$, '22023', 'Modes%');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '{"name":"XY","category":"games","accent":["#fff","#000000"]}')$q$, '22023', 'Accent%');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '{"name":"XY","category":"games","scoring":"most"}')$q$, '22023', 'Scoring%');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '{"name":"XY","category":"games","votesToWin":0}')$q$, '22023', 'votesToWin%');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '{"name":"XY","category":"games","turnBased":"yes"}')$q$, '22023');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '{"name":"XY","category":"games","howTo":["1","2","3","4","5","6","7"]}')$q$, '22023', 'How to%');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '{"name":"XY","category":"games","tagline":123}')$q$, '22023', 'Tagline%');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '{"name":"XY","category":"games","icon":""}')$q$, '22023', 'Icon%');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '{"name":"XY","category":"games","stats":[{"key":"x"}]}')$q$, '22023', 'Stat%');
+select pg_temp.expect($q$select public.create_app_version('ship-game', '1.2.0', null, '{"name":"XY","category":"games","achievements":[{"id":"a","name":"A","icon":"⭐","xp":101}]}')$q$, '22023', 'Achievement%');
+reset role;
+-- The table constraint holds on its own.
+select pg_temp.expect(format($q$insert into public.app_versions (app_slug, version, url, manifest) values ('ship-game', '9.9.9', 'https://x.example.com/', %L)$q$,
+  (select manifest - 'name' from public.app_versions where id = pg_temp.mid('sv2'))), '23514');
+select pg_temp.expect($q$insert into public.app_versions (app_slug, version, url, manifest) select 'ship-game', '9.9', url, manifest from public.app_versions where version = '1.1.0'$q$, '23514');
+select pg_temp.expect($q$insert into public.app_versions (app_slug, version, url, manifest) select 'ship-game', '9.9.9', 'javascript:x', manifest from public.app_versions where version = '1.1.0'$q$, '23514');
+
+-- Test build of 1.1.0 (a draft): its own manifest (6 seats, turns, low scoring).
+set role authenticated;
+select pg_temp.login('bob');
+insert into ctx values ('xp_ship', pg_temp.stats('ship-game', array['bob', 'tess'])::text);
+insert into ctx values ('ship_plays', (select play_count from public.apps where slug = 'ship-game')::text);
+select pg_temp.expect(format('select public.start_practice(%L, 6)', 'ship-game'), '22023', '%2 to 4 players%');
+insert into ctx values ('tb_six', public.start_practice('ship-game', 6, pg_temp.mid('sv2'))::text);
+do $$
+declare m jsonb := public.get_match(pg_temp.mid('tb_six'));
+begin
+  assert (m->>'maxPlayers')::int = 6 and m->>'scoring' = 'low' and m->>'turnUserId' = pg_temp.uid('bob')::text, m::text;
+  assert m->>'versionUrl' = 'https://ship.example.com/v2', m::text;
+end $$;
+select pg_temp.expect(format('select public.start_practice(%L, null, %L)', 'ship-game', pg_temp.mid('sv1')), '22023', '%live%');
+select pg_temp.expect(format('select public.create_challenge(%L, %L, %L, %L, null, null, %L)', 'ship-game', 'live', 'carol', '{}', pg_temp.mid('sv2')),
+  '22023', '@carol isn''t a tester%');
+select pg_temp.expect(format('select public.create_challenge(%L, %L, null, %L, null, null, %L)', 'ship-game', 'async', '{}', pg_temp.mid('sv2')),
+  '22023', '%async%');
+insert into ctx values ('tb_duel', public.create_challenge('ship-game', 'live', '@tess', '{}', null, null, pg_temp.mid('sv2'))::text);
+insert into ctx values ('tb_open', public.create_challenge('ship-game', 'live', null, '{}', null, 3, pg_temp.mid('sv2'))::text);
+select pg_temp.expect(format('select public.invite_to_match(%L, %L)', pg_temp.mid('tb_open'), '{carol}'), '22023', '@carol isn''t a tester%');
+select public.invite_to_match(pg_temp.mid('tb_open'), '{tess}');
+select pg_temp.login('carol');
+select pg_temp.expect(format('select public.join_match(%L)', pg_temp.mid('tb_open')), '42501', 'Only testers%');
+select pg_temp.expect(format('select public.spectate_match(%L)', pg_temp.mid('tb_duel')), '42501', 'Only testers%');
+do $$
+begin
+  assert public.get_match(pg_temp.mid('tb_duel')) is null, 'test builds are private';
+  assert not exists (select 1 from public.matches where version_id is not null), 'rls hides test builds';
+  assert not (public.list_user_matches(pg_temp.uid('bob')) @> jsonb_build_array(jsonb_build_object('id', pg_temp.cv('tb_duel')))), 'not on profiles';
+end $$;
+select pg_temp.login('tess');
+select public.join_match(pg_temp.mid('tb_duel'));
+select public.submit_entry(pg_temp.mid('tb_duel'), null, 5);
+do $$
+begin
+  assert (select count(*) from public.matches where version_id is not null) >= 3, 'testers see test builds';
+end $$;
+select pg_temp.login('bob');
+select public.submit_entry(pg_temp.mid('tb_duel'), null, 9);
+do $$
+declare
+  m jsonb := public.get_match(pg_temp.mid('tb_duel'));
+begin
+  assert m->>'status' = 'completed' and m->>'versionId' = pg_temp.cv('sv2'), m::text;
+  assert m->>'winnerId' = pg_temp.uid('tess')::text, 'low scoring from the version manifest';
+  assert pg_temp.placements(pg_temp.mid('tb_duel')) = '{"tess":[1,"win",0,"submitted"],"bob":[2,"loss",0,"submitted"]}',
+    pg_temp.placements(pg_temp.mid('tb_duel'))::text;
+  assert public.list_my_matches() @> jsonb_build_array(jsonb_build_object('id', pg_temp.cv('tb_duel'), 'versionId', pg_temp.cv('sv2'))),
+    'my matches label test builds';
+  assert not (public.list_recent_activity() @> jsonb_build_array(jsonb_build_object('id', pg_temp.cv('tb_duel')))), 'not in the public feed';
+end $$;
+-- Practice test build settles without XP either.
+select public.submit_entry(pg_temp.mid('tb_six'), null, 1);
+select public.submit_entry(pg_temp.mid('tb_six'), p.user_id, 2)
+  from public.match_players p where p.match_id = pg_temp.mid('tb_six') and p.is_bot;
+reset role;
+do $$
+begin
+  assert (select status from public.matches where id = pg_temp.mid('tb_six')) = 'completed', 'practice test build settled';
+  assert pg_temp.stats('ship-game', array['bob', 'tess']) = pg_temp.cv('xp_ship')::jsonb, 'no xp, rank or app stats';
+  assert (select play_count from public.apps where slug = 'ship-game') = pg_temp.cv('ship_plays')::int, 'no play count';
+  assert (select sum(xp_delta) from public.match_players where match_id in (pg_temp.mid('tb_duel'), pg_temp.mid('tb_six'))) = 0, 'xpDelta 0';
+end $$;
+
+-- Quick match only pairs the same version.
+set role authenticated;
+select pg_temp.login('tess');
+insert into ctx values ('tb_quick', public.quick_match('ship-game', pg_temp.mid('sv2'))::text);
+select pg_temp.login('bob');
+insert into ctx values ('live_quick', public.quick_match('ship-game')::text);
+do $$
+begin
+  assert pg_temp.mid('live_quick') <> pg_temp.mid('tb_quick'), 'the live app never joins a test lobby';
+  assert (select version_id from public.matches where id = pg_temp.mid('live_quick')) is null, 'live lobby';
+  assert (select published_version_id from public.matches where id = pg_temp.mid('live_quick')) = pg_temp.mid('sv1'), 'live version stamped';
+  assert public.quick_match('ship-game', pg_temp.mid('sv2')) = pg_temp.mid('tb_quick'), 'same version pairs';
+  assert (select status from public.matches where id = pg_temp.mid('live_quick')) = 'open', 'other-version lobby kept';
+  assert (select max_players from public.matches where id = pg_temp.mid('tb_quick')) = 6, 'test lobby sized by the version';
+end $$;
+
+-- Crowd-judged test build: only testers judge, for no XP.
+select pg_temp.login('bob');
+insert into ctx values ('sv3', public.create_app_version('ship-game', '1.2.0', null,
+  '{"name":"Ship Votes","category":"contests","modes":["async"],"scoring":"votes","votesToWin":1}')->>'id');
+insert into ctx values ('tb_vote', public.create_challenge('ship-game', 'async', 'tess', '{}', null, null, pg_temp.mid('sv3'))::text);
+select public.submit_entry(pg_temp.mid('tb_vote'), null, null, null, '{"kind":"text","body":"bob"}');
+select pg_temp.login('tess');
+select public.join_match(pg_temp.mid('tb_vote'));
+select public.submit_entry(pg_temp.mid('tb_vote'), null, null, null, '{"kind":"text","body":"tess"}');
+select pg_temp.login('carol');
+do $$
+begin
+  assert not (public.list_voting_matches() @> jsonb_build_array(jsonb_build_object('id', pg_temp.cv('tb_vote')))), 'not in the voting feed';
+end $$;
+select pg_temp.expect(format('select public.cast_vote(%L, %L)', pg_temp.mid('tb_vote'), pg_temp.uid('tess')), '42501', 'Only testers%');
+select pg_temp.login('bob');
+select public.add_app_tester('ship-game', 'dave');
+select pg_temp.login('dave');
+insert into ctx values ('xp_dave', pg_temp.xp('dave')::text);
+select public.cast_vote(pg_temp.mid('tb_vote'), pg_temp.uid('tess'));
+do $$
+begin
+  assert (public.get_match(pg_temp.mid('tb_vote'))->>'status') = 'completed', 'one vote decides';
+  assert pg_temp.xp('dave') = pg_temp.cv('xp_dave')::int, 'judging test builds earns nothing';
+  assert pg_temp.stats('ship-game', array['bob', 'tess']) = pg_temp.cv('xp_ship')::jsonb, 'still no xp';
+end $$;
+-- 1.1.0 doesn't allow spectators.
+select pg_temp.expect(format('select public.spectate_match(%L)', pg_temp.mid('tb_open')), '42501', '%spectators%');
+
+-- Publishing a later version: approve (app already live) -> owner publishes.
+select pg_temp.login('bob');
+reset role;
+-- Server-authoritative apps can't ship crowd-judged versions.
+update public.apps set authority = 'server' where slug = 'ship-game';
+set role authenticated;
+select pg_temp.login('bob');
+select pg_temp.expect(format('select public.submit_app_version(%L)', pg_temp.mid('sv3')), '22023', 'Crowd-judged%');
+reset role;
+update public.apps set authority = 'client' where slug = 'ship-game';
+set role authenticated;
+select pg_temp.login('bob');
+select public.submit_app_version(pg_temp.mid('sv2'));
+select pg_temp.login('rita');
+do $$
+declare v jsonb := public.review_app_version(pg_temp.mid('sv2'), 'approve', 'Nice');
+begin
+  assert v->>'status' = 'approved' and v->>'reviewNotes' = 'Nice' and v->'publishedAt' = 'null', v::text;
+  assert (select published_version_id from public.apps where slug = 'ship-game') = pg_temp.mid('sv1'), 'not live yet';
+end $$;
+select pg_temp.login('carol');
+select pg_temp.expect(format('select public.publish_app_version(%L)', pg_temp.mid('sv2')), '42501');
+select pg_temp.login('bob');
+do $$
+declare
+  n jsonb := public.list_my_notices();
+  v jsonb;
+begin
+  assert n->0->>'kind' = 'version_approved' and n->0->>'versionId' = pg_temp.cv('sv2') and n->0->>'message' like '%Nice%', n::text;
+  v := public.publish_app_version(pg_temp.mid('sv2'));
+  assert v->>'status' = 'published' and v->>'publishedAt' is not null, v::text;
+  assert pg_temp.vstatus('sv1') = 'retired', 'previous version retired';
+end $$;
+select pg_temp.expect(format('select public.publish_app_version(%L)', pg_temp.mid('sv2')), '55000');
+select pg_temp.expect(format('select public.withdraw_app_version(%L)', pg_temp.mid('sv2')), '55000');
+reset role;
+do $$
+declare a public.apps;
+begin
+  select * into a from public.apps where slug = 'ship-game';
+  assert a.published_version_id = pg_temp.mid('sv2') and a.status = 'published', 'live';
+  assert (a.name, a.tagline, a.description, a.category, a.icon, a.accent_from, a.accent_to, a.url)
+       = ('Ship Game Deluxe', 'Version two', 'Now for six.', 'trivia', '🚢', '#112233', '#aabbcc', 'https://ship.example.com/v2'),
+    'listing copied';
+  assert (a.modes, a.min_players, a.max_players, a.team_count, a.allow_spectators, a.has_setup, a.turn_based,
+          a.scoring, a.votes_to_win, a.how_to)
+       = ('{live,practice}'::text[], 2, 6, 0, false, true, true, 'low', 7, '{Sail}'::text[]), 'capabilities copied';
+  assert a.stats = '[{"key":"best","label":"Best","aggregate":"min"}]' and a.achievements->0->>'id' = 'ahoy', 'stats + achievements copied';
+  assert (select count(*) from public.app_versions where app_slug = 'ship-game' and status = 'published') = 1, 'one live version';
+end $$;
+set role authenticated;
+select pg_temp.login('tess');
+select pg_temp.expect(format('select public.start_practice(%L, null, %L)', 'ship-game', pg_temp.mid('sv2')), '22023', '%live%');
+do $$
+begin
+  -- Retired versions can still be test-played; the live app now has 6 seats.
+  perform public.start_practice('ship-game', null, pg_temp.mid('sv1'));
+  assert (public.get_match(public.start_practice('ship-game', 6))->>'maxPlayers')::int = 6, 'live app updated';
+end $$;
+-- Removed testers lose access.
+select pg_temp.login('bob');
+select public.remove_app_tester('ship-game', pg_temp.uid('tess'));
+select pg_temp.login('tess');
+select pg_temp.expect(format('select public.start_practice(%L, null, %L)', 'ship-game', pg_temp.mid('sv3')), '42501');
+
+-- ---------------------------------------------------------------- Notices
+select pg_temp.login('bob');
+do $$
+declare
+  n jsonb := public.list_my_notices();
+begin
+  assert jsonb_array_length(n) = 3, n::text;
+  assert (n->0->>'createdAt')::timestamptz >= (n->2->>'createdAt')::timestamptz, 'newest first';
+  assert jsonb_array_length(public.list_my_notices(1)) = 1, 'limit';
+  assert public.mark_notices_read(array[(n->0->>'id')::uuid]) = 1, 'one marked';
+  assert public.list_my_notices()->0->>'readAt' is not null, 'read';
+  assert public.mark_notices_read() = 2, 'the rest';
+  assert public.mark_notices_read() = 0, 'nothing left';
+  assert (select count(*) from public.developer_notices) = 3, 'rls: own notices readable';
+end $$;
+select pg_temp.expect($q$insert into public.developer_notices (user_id, kind, app_slug, message) values (auth.uid(), 'version_approved', 'ship-game', 'x')$q$, '42501');
+select pg_temp.expect($q$update public.developer_notices set message = 'x'$q$, '42501');
+select pg_temp.login('carol');
+do $$
+begin
+  assert (select count(*) from public.developer_notices) = 0, 'others'' notices hidden';
+  assert public.list_my_notices() = '[]'::jsonb, 'none';
+  assert public.mark_notices_read() = 0, 'none to mark';
+end $$;
+
+-- ---------------------------------------------------------------- Analytics on a small fixture
+reset role;
+insert into public.apps (slug, name, category, url, modes, min_players, max_players, official, status, developer_id)
+values ('stats-app', 'Stats App', 'games', 'https://stats.example.com/', '{live,async,practice}', 2, 4, false, 'published',
+        pg_temp.uid('carol'));
+insert into public.app_versions (app_slug, version, url, manifest)
+select 'stats-app', '2.0.0', url, manifest from public.app_versions where app_slug = 'stats-app';
+-- Day d (0 = today, UTC) at 01:00 plus p_min minutes.
+create function pg_temp.day_at(d integer, p_min integer default 0) returns timestamptz language sql as $$
+  select (((now() at time zone 'utc')::date - d)::timestamp + interval '1 hour' + make_interval(mins => p_min)) at time zone 'utc';
+$$;
+create function pg_temp.fx(p_key text, p_mode text, p_status text, p_created timestamptz, p_secs integer, p_max integer,
+                           p_players jsonb, p_version uuid default null) returns void language plpgsql as $$
+declare
+  v uuid;
+  r record;
+  i integer := 0;
+begin
+  insert into public.matches (app_slug, mode, status, scoring, created_by, created_at, updated_at, started_at, ended_at,
+                              max_players, version_id)
+  values ('stats-app', p_mode, p_status, 'high', pg_temp.uid(p_players->0->>0), p_created, p_created, p_created,
+          case when p_status = 'completed' then p_created + make_interval(secs => p_secs) end, p_max, p_version)
+  returning id into v;
+  for r in select e from jsonb_array_elements(p_players) e loop
+    insert into public.match_players (match_id, user_id, seat, state, result, is_bot)
+    values (v, pg_temp.uid(r.e->>0), i, r.e->>1, nullif(r.e->>2, ''), coalesce((r.e->>3)::boolean, false));
+    i := i + 1;
+  end loop;
+  insert into ctx values (p_key, v::text);
+end $$;
+select pg_temp.fx('a1', 'live', 'completed', pg_temp.day_at(6), 60, 2, '[["alice_x","submitted","win"],["bob","submitted","loss"]]');
+select pg_temp.fx('a2', 'live', 'completed', pg_temp.day_at(5), 120, 2, '[["alice_x","submitted","win"],["dave","submitted","loss"]]');
+select pg_temp.fx('a3', 'practice', 'completed', pg_temp.day_at(1), 30, 2, '[["alice_x","submitted","win"],["xapps_bot","submitted","loss",true]]');
+select pg_temp.fx('a4', 'async', 'expired', pg_temp.day_at(1, 10), 0, 4, '[["bob","joined",""],["dave","invited",""]]');
+select pg_temp.fx('a5', 'live', 'active', pg_temp.day_at(0), 0, 4, '[["alice_x","joined",""],["bob","joined",""]]');
+select pg_temp.fx('a6', 'live', 'completed', pg_temp.day_at(20), 45, 2, '[["erin","submitted","win"],["alice_x","submitted","loss"]]');
+select pg_temp.fx('a7', 'live', 'completed', pg_temp.day_at(0), 10, 2, '[["tess","submitted","win"],["carol","submitted","loss"]]',
+                  (select id from public.app_versions where app_slug = 'stats-app' and version = '2.0.0'));
+-- One match from before versioning.
+update public.matches set published_version_id = null where id = pg_temp.mid('a1');
+set role authenticated;
+select pg_temp.login('carol');
+do $$
+declare
+  r jsonb := public.app_analytics('stats-app', 7);
+  s jsonb := r->'series';
+  v_live uuid := (select published_version_id from public.apps where slug = 'stats-app');
+begin
+  assert r ?& array['days', 'series', 'totals', 'completionRate', 'medianDurationSec', 'modes', 'tableSizes',
+                    'retention', 'topPlayers', 'versions'], 'AppAnalytics shape';
+  assert (r->>'days')::int = 7 and jsonb_array_length(s) = 7, 'seven days';
+  assert s->6->>'date' = to_char((now() at time zone 'utc')::date, 'YYYY-MM-DD')
+         and s->0->>'date' = to_char((now() at time zone 'utc')::date - 6, 'YYYY-MM-DD'), 'oldest to today';
+  assert s->0 = '{"date":"x","matchesCreated":1,"matchesCompleted":1,"matchesAbandoned":0,"players":2,"newPlayers":1}'::jsonb
+               || jsonb_build_object('date', s->0->'date'), s->0::text;
+  assert s->1 = '{"matchesCreated":1,"matchesCompleted":1,"matchesAbandoned":0,"players":2,"newPlayers":1}'::jsonb
+               || jsonb_build_object('date', s->1->'date'), s->1::text;
+  assert (s->2) - 'date' = '{"matchesCreated":0,"matchesCompleted":0,"matchesAbandoned":0,"players":0,"newPlayers":0}', 'empty day';
+  assert (s->5) - 'date' = '{"matchesCreated":2,"matchesCompleted":1,"matchesAbandoned":1,"players":2,"newPlayers":0}', s->5::text;
+  assert (s->6) - 'date' = '{"matchesCreated":1,"matchesCompleted":0,"matchesAbandoned":0,"players":2,"newPlayers":0}',
+    'today (the test build is left out): ' || (s->6)::text;
+  assert r->'totals' = '{"matches":5,"completed":3,"players":3,"newPlayers":2}', r->>'totals';
+  assert (r->>'completionRate')::numeric = 0.6, 'of 5 created, 3 completed: ' || (r->>'completionRate');
+  assert (r->>'medianDurationSec')::numeric = 60, r->>'medianDurationSec';
+  assert r->'modes' = '[{"mode":"live","matches":3},{"mode":"async","matches":1},{"mode":"practice","matches":1}]', r->>'modes';
+  assert r->'tableSizes' = '[{"players":2,"matches":3},{"players":4,"matches":2}]', r->>'tableSizes';
+  -- New: bob (back 5 days later) and dave (only invited since): d1 = 1/2; nobody's first match is 7 days old.
+  assert r->'retention' = '{"d1":0.5,"d7":null}', r->>'retention';
+  assert jsonb_array_length(r->'topPlayers') = 3, r->>'topPlayers';
+  assert (r->'topPlayers'->0->'profile'->>'handle', (r->'topPlayers'->0->>'matches')::int, (r->'topPlayers'->0->>'wins')::int)
+       = ('alice_x', 4, 3), r->'topPlayers'->>0;
+  assert (r->'topPlayers'->1->'profile'->>'handle', (r->'topPlayers'->1->>'matches')::int, (r->'topPlayers'->1->>'wins')::int)
+       = ('bob', 3, 0), r->'topPlayers'->>1;
+  assert r->'topPlayers'->2->'profile'->>'handle' = 'dave' and r->'topPlayers'->0->'profile' ? 'avatarUrl', 'profile_json';
+  assert r->'versions' = jsonb_build_array(
+           jsonb_build_object('versionId', v_live, 'version', '1.0.0', 'matches', 4),
+           jsonb_build_object('versionId', null, 'version', null, 'matches', 1)), r->>'versions';
+  -- A wider window picks up the old match and its players.
+  r := public.app_analytics('stats-app');
+  assert (r->>'days')::int = 30 and jsonb_array_length(r->'series') = 30, 'default 30 days';
+  assert r->'totals' = '{"matches":6,"completed":4,"players":4,"newPlayers":4}', r->>'totals';
+  assert (r->>'medianDurationSec')::numeric = 52.5, r->>'medianDurationSec';
+  assert r->'retention' = '{"d1":0.5,"d7":0.5}', 'alice came back 14 days later, erin never: ' || (r->>'retention');
+  r := public.app_analytics('stats-app', 1);
+  assert jsonb_array_length(r->'series') = 1 and (r->'totals'->>'matches')::int = 1 and r->'medianDurationSec' = 'null'
+         and r->'retention' = '{"d1":null,"d7":null}', r::text;
+end $$;
+select pg_temp.expect($q$select public.app_analytics('stats-app', 0)$q$, '22023');
+select pg_temp.expect($q$select public.app_analytics('stats-app', 366)$q$, '22023');
+select pg_temp.expect($q$select public.app_analytics('no-such-app')$q$, 'P0002');
+select pg_temp.login('bob');
+select pg_temp.expect($q$select public.app_analytics('stats-app')$q$, '42501');
+select pg_temp.expect($q$select public.app_analytics('quick-draw')$q$, '42501');
+select pg_temp.login('rita');
+do $$
+begin
+  assert (public.app_analytics('stats-app', 7)->'totals'->>'matches')::int = 5, 'admins see any app';
+  assert (public.app_analytics('quick-draw')->'totals'->>'matches')::int >= 0, 'official apps too';
+end $$;
+
+-- ---------------------------------------------------------------- Logs
+select pg_temp.login('alice_x');
+insert into ctx values ('log_match', public.start_practice('ship-game')::text);
+do $$
+begin
+  assert public.log_app_event('ship-game', pg_temp.mid('log_match'), 'info', ' hello ', '{"a":1}', 'app'), 'player logs';
+  assert public.log_app_event('ship-game', pg_temp.mid('log_match'), 'error', repeat('é', 600), 'null', 'host'), 'host logs';
+end $$;
+reset role;
+do $$
+declare l public.app_logs;
+begin
+  select * into l from public.app_logs where message = 'hello';
+  assert l.app_slug = 'ship-game' and l.match_id = pg_temp.mid('log_match') and l.user_id = pg_temp.uid('alice_x')
+         and l.version_id = pg_temp.mid('sv2') and l.data = '{"a":1}' and l.source = 'app' and l.level = 'info', 'stored';
+  assert (select char_length(message) from public.app_logs where source = 'host' and app_slug = 'ship-game') = 500, 'trimmed to 500';
+  assert (select data from public.app_logs where source = 'host' and app_slug = 'ship-game') is null, 'json null is no data';
+end $$;
+set role authenticated;
+select pg_temp.login('alice_x');
+select pg_temp.expect(format('select public.log_app_event(%L, %L, %L, %L)', 'ship-game', pg_temp.mid('log_match'), 'fatal', 'x'), '22023');
+select pg_temp.expect(format('select public.log_app_event(%L, %L, %L, %L, null, %L)', 'ship-game', pg_temp.mid('log_match'), 'info', 'x', 'server'), '22023');
+select pg_temp.expect(format('select public.log_app_event(%L, %L, %L, %L)', 'ship-game', pg_temp.mid('log_match'), 'info', '   '), '22023');
+select pg_temp.expect(format('select public.log_app_event(%L, %L, %L, %L, %L)', 'ship-game', pg_temp.mid('log_match'), 'info', 'x',
+  jsonb_build_object('big', repeat('x', 4100))), '22023', '%4 KB%');
+select pg_temp.expect(format('select public.log_app_event(%L, %L, %L, %L)', 'ref-duel', pg_temp.mid('log_match'), 'info', 'x'), 'P0002');
+select pg_temp.expect(format('select public.log_app_event(%L, %L, %L, %L)', 'no-such-app', null, 'info', 'x'), 'P0002');
+select pg_temp.expect(format('select public.log_app_event(%L, null, %L, %L)', 'ship-game', 'info', 'x'), '42501', 'Only the developer and testers%');
+select pg_temp.expect($q$select * from public.app_logs$q$, '42501');
+select pg_temp.expect($q$select public.list_app_logs('ship-game')$q$, '42501');
+select pg_temp.login('carol');
+select pg_temp.expect(format('select public.log_app_event(%L, %L, %L, %L)', 'ship-game', pg_temp.mid('log_match'), 'info', 'x'), '42501');
+-- The developer and testers can log without a match, and into any match of their app.
+select pg_temp.login('dave');
+select public.log_app_event('ship-game', null, 'debug', 'tester note');
+select pg_temp.login('bob');
+select public.log_app_event('ship-game', pg_temp.mid('log_match'), 'warn', 'owner note', '{"k":[1,2]}');
+do $$
+declare
+  l jsonb := public.list_app_logs('ship-game');
+  e jsonb;
+begin
+  assert jsonb_array_length(l) = 4, l::text;
+  assert l->0 ?& array['id', 'appSlug', 'versionId', 'matchId', 'userId', 'level', 'message', 'data', 'source', 'createdAt'], 'AppLogEntry shape';
+  assert l->0->>'message' = 'owner note' and l->0->'data' = '{"k":[1,2]}' and l->0->>'level' = 'warn', 'newest first';
+  assert l->1->>'message' = 'tester note' and l->1->'matchId' = 'null' and l->1->>'versionId' = pg_temp.cv('sv2'), l->>1;
+  assert (select bool_and((x->>'createdAt')::timestamptz >= (y->>'createdAt')::timestamptz)
+            from jsonb_array_elements(l) with ordinality a(x, i) join jsonb_array_elements(l) with ordinality b(y, j) on j = i + 1),
+    'ordered';
+  assert jsonb_array_length(public.list_app_logs('ship-game', 'info')) = 3, 'level filter is a minimum: info, warn, error';
+  assert jsonb_array_length(public.list_app_logs('ship-game', 'warn')) = 2, 'warn + error';
+  assert jsonb_array_length(public.list_app_logs('ship-game', 'error')) = 1
+         and public.list_app_logs('ship-game', 'error')->0->>'source' = 'host', 'error level';
+  assert jsonb_array_length(public.list_app_logs('ship-game', 'debug')) = 4, 'debug = everything';
+  assert jsonb_array_length(public.list_app_logs('ship-game', null, pg_temp.mid('log_match'))) = 3, 'match filter';
+  assert jsonb_array_length(public.list_app_logs('ship-game', null, null, null, 2)) = 2, 'limit';
+  e := public.list_app_logs('ship-game', null, null, (l->1->>'createdAt')::timestamptz);
+  assert jsonb_array_length(e) = 2 and e @> '[{"message":"hello"}]', 'before pages back';
+end $$;
+select pg_temp.expect($q$select public.list_app_logs('ship-game', 'fatal')$q$, '22023');
+select pg_temp.expect($q$select public.list_app_logs('no-such-app')$q$, 'P0002');
+select pg_temp.login('rita');
+do $$
+begin
+  assert jsonb_array_length(public.list_app_logs('ship-game')) = 4, 'admins read logs';
+end $$;
+
+-- Rate limit: 60 a minute per user per app, then dropped silently.
+reset role;
+delete from public.rate_limit_hits where user_id = pg_temp.uid('dave');
+set role authenticated;
+select pg_temp.login('dave');
+do $$
+declare
+  n integer := 0;
+  i integer;
+begin
+  for i in 1 .. 65 loop
+    if public.log_app_event('ship-game', null, 'debug', 'spam ' || i) then
+      n := n + 1;
+    end if;
+  end loop;
+  assert n = 60, 'stored ' || n;
+end $$;
+reset role;
+do $$
+begin
+  assert (select count(*) from public.app_logs where message like 'spam %') = 60, 'the rest were dropped';
+  assert not exists (select 1 from public.app_logs where message = 'spam 61'), 'past the limit';
+end $$;
+
+-- Retention: 7 days (list hides older rows; the daily cleanup deletes them).
+update public.app_logs set created_at = now() - interval '8 days' where message in ('hello', 'tester note');
+set role authenticated;
+select pg_temp.login('bob');
+do $$
+begin
+  assert not (public.list_app_logs('ship-game') @> '[{"message":"hello"}]'), 'older than 7 days hidden';
+end $$;
+select pg_temp.expect($q$select public.cleanup_app_logs()$q$, '42501');
+reset role;
+do $$
+begin
+  assert public.cleanup_app_logs() = 2, 'two expired';
+  assert not exists (select 1 from public.app_logs where message in ('hello', 'tester note')), 'deleted';
+  assert (select count(*) from public.app_logs where app_slug = 'ship-game') = 62, 'the rest kept';
+end $$;
+
+-- ---------------------------------------------------------------- Deleting an app takes its versions, test builds and logs
+set role authenticated;
+select pg_temp.login('carol');
+insert into public.apps (slug, name, category, url) values ('ship-temp', 'Ship Temp', 'games', 'https://temp.example.com/');
+select pg_temp.login('rita');
+select public.review_app_version((select (public.list_app_versions('ship-temp')->0->>'id')::uuid), 'approve');
+select pg_temp.login('carol');
+select public.log_app_event('ship-temp', public.start_practice('ship-temp', null,
+  (public.create_app_version('ship-temp', '1.0.1')->>'id')::uuid), 'info', 'bye');
+delete from public.apps where slug = 'ship-temp';
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.apps where slug = 'ship-temp'), 'deleted';
+  assert not exists (select 1 from public.app_versions where app_slug = 'ship-temp'), 'versions gone';
+  assert not exists (select 1 from public.app_logs where app_slug = 'ship-temp'), 'logs gone';
+  assert not exists (select 1 from public.developer_notices where app_slug = 'ship-temp'), 'notices gone';
+end $$;
+
+-- Internal stage 4 helpers are not callable by clients
+set role authenticated;
+select pg_temp.login('bob');
+select pg_temp.expect($q$select public.managed_app('ship-game')$q$, '42501');
+select pg_temp.expect($q$select public.insight_app('ship-game')$q$, '42501');
+select pg_temp.expect(format('select public.publish_version(%L)', pg_temp.mid('sv3')), '42501');
+select pg_temp.expect(format('select public.play_app(%L, %L)', 'ship-game', pg_temp.mid('sv3')), '42501');
+select pg_temp.expect(format('select public.can_test_app(%L, %L)', 'ship-game', pg_temp.uid('bob')), '42501');
+select pg_temp.expect($q$select public.is_admin_user(auth.uid())$q$, '42501');
+select pg_temp.expect($q$select public.app_version_manifest('{}')$q$, '42501');
+select pg_temp.expect($q$select public.require_admin()$q$, '42501');
+select pg_temp.expect($q$select public.app_testers_json('ship-game')$q$, '42501');
+select pg_temp.expect($q$select public.app_row_json((select a from public.apps a where slug = 'ship-game'))$q$, '42501');
+select pg_temp.expect(format('select public.managed_version(%L)', pg_temp.mid('sv3')), '42501');
 reset role;
 
 \echo 'All database lifecycle checks passed ✔'
