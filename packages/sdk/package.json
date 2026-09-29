@@ -24,6 +24,10 @@
     "./protocol": {
       "types": "./dist/protocol.d.ts",
       "default": "./dist/protocol.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
     }
   },
   "files": [

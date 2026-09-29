@@ -242,3 +242,123 @@ The core validates params and refuses by purpose and role (read from `context()`
 ## Trust model
 
 Scores are reported by clients. Use the shared seed for anything both players must agree on, commit-reveal for secret picks (see `examples/rps`), and crowd judging for creative formats.
+
+For matches that must not trust clients at all, run a server: see below.
+
+## Server authority & webhooks
+
+An app with its own server can be the referee. Players' browsers stay untrusted; your server holds two secrets from the app's **Server** panel on XApps (each shown once):
+
+- the **app secret** (`xas_…`) to call the server API, and
+- the **webhook signing secret** (`whsec_…`) to verify the events XApps sends to your webhook URL.
+
+Switch the app to `authority: "server"` and `xapps.submit()` only records entries (the score is a *claim*): the match settles when your server calls `reportResult`. If every player has submitted and your server hasn't reported within 24 h, the platform settles a draw and sends `match.ended` with `reason: "server_timeout"`.
+
+`@xapps/sdk/server` uses only `fetch` and Web Crypto, so it runs on Node 20+, Deno, Bun, Cloudflare Workers and edge runtimes. Never import it in browser code.
+
+```ts
+import { createServerClient } from "@xapps/sdk/server";
+
+const xapps = createServerClient({ secret: process.env.XAPPS_SECRET!, baseUrl: "https://<xapps-host>" });
+
+await xapps.getMatch(id);                                  // every player's entry (data included)
+await xapps.setState(id, state, expectedVersion);           // → { version }; XAppsError "conflict" if it moved
+await xapps.updateState(id, (state, match) => next);        // read-modify-write, retries on conflict
+await xapps.endTurn(id, nextPlayerId);                      // or endTurn(id) for the next seat
+await xapps.setRound(id, 3);
+await xapps.reportResult(id, { scores: { [alice]: 12, [bob]: 9 } });          // ranked by your scoring
+await xapps.reportResult(id, { ranks: { [alice]: 1, [bob]: 2 } }, { leavers: [carol] });
+```
+
+### Next.js route (Node or edge)
+
+```ts
+// app/api/xapps/webhook/route.ts
+import { createServerClient, verifyWebhook, XAppsError } from "@xapps/sdk/server";
+
+const xapps = createServerClient({ secret: process.env.XAPPS_SECRET!, baseUrl: process.env.XAPPS_URL! });
+
+export async function POST(request: Request) {
+  const raw = await request.text(); // the raw body: don't JSON.parse before verifying
+  let event;
+  try {
+    event = await verifyWebhook(raw, request.headers.get("x-xapps-signature"), process.env.XAPPS_WEBHOOK_SECRET!);
+  } catch (error) {
+    if (error instanceof XAppsError) return new Response(error.code, { status: 400 });
+    throw error;
+  }
+
+  if (event.type === "match.submitted") {
+    const { match } = event;
+    const players = match.players.filter((p) => p.role === "player");
+    if (players.every((p) => p.state === "submitted")) {
+      // Re-score every entry on the server instead of trusting the claimed scores.
+      const scores = Object.fromEntries(players.map((p) => [p.userId, scoreEntry(p.submission?.data)]));
+      await xapps.reportResult(match.id, { scores }).catch((error) => {
+        // Another delivery already settled it.
+        if (!(error instanceof XAppsError && error.code === "invalid_state")) throw error;
+      });
+    }
+  }
+  return new Response("ok"); // any 2xx marks the delivery done; anything else is retried with backoff
+}
+```
+
+With Express, verify against the raw bytes: `app.post("/xapps/webhook", express.raw({ type: "application/json" }), …)` and pass `req.body.toString("utf8")` and `req.get("x-xapps-signature")`.
+
+### Cloudflare Worker
+
+```ts
+import { createServerClient, verifyWebhook, XAppsError } from "@xapps/sdk/server";
+
+interface Env {
+  XAPPS_URL: string;
+  XAPPS_SECRET: string;
+  XAPPS_WEBHOOK_SECRET: string;
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+    const raw = await request.text();
+    try {
+      const event = await verifyWebhook(raw, request.headers.get("x-xapps-signature"), env.XAPPS_WEBHOOK_SECRET);
+      if (event.type === "match.state" && isGameOver(event.match.state)) {
+        const xapps = createServerClient({ secret: env.XAPPS_SECRET, baseUrl: env.XAPPS_URL });
+        await xapps.reportResult(event.match.id, { ranks: ranksFrom(event.match.state) });
+      }
+      return new Response("ok");
+    } catch (error) {
+      if (error instanceof XAppsError && error.code.endsWith("_signature")) return new Response(error.code, { status: 400 });
+      throw error; // a 5xx makes XApps retry
+    }
+  },
+};
+```
+
+### Webhooks
+
+| Event | When |
+| --- | --- |
+| `match.created` / `match.started` | A match of your app was created / started |
+| `match.state` | The shared state changed (debounced: at most one pending per match) |
+| `match.turn` | The turn moved |
+| `match.submitted` | A player submitted an entry |
+| `match.ended` | The match settled (`reason: "server_timeout"` for the 24 h safety valve) |
+| `ping` | "Send test event" in the Server panel (`match` is null) |
+
+Each delivery is a `POST` with the JSON body `{ id, type, createdAt, app: { slug }, match }` (the match as it was when the event was queued; call `getMatch` for the latest) and the headers `X-XApps-Event`, `X-XApps-Delivery` (a uuid) and `X-XApps-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(signing secret, t + "." + body)>`. `verifyWebhook` rejects signatures older than 5 minutes (`toleranceSeconds`), accepts any of several `v1` values, and throws `XAppsError` with code `invalid_signature`, `stale_signature` or `invalid_payload`. Non-2xx responses are retried with backoff (1, 2, 4 … 256 min, 9 attempts), so handle events idempotently (dedupe by `event.id`). `signWebhook(body, secret)` builds a header for tests.
+
+### Server API
+
+The client wraps these routes on the XApps host. Call them directly from any language with `Authorization: Bearer xas_…`:
+
+| Route | Body | Success |
+| --- | --- | --- |
+| `GET /api/v1/matches/:id` | | the match |
+| `PUT /api/v1/matches/:id/state` | `{ state, expectedVersion }` | `{ version }` |
+| `POST /api/v1/matches/:id/turn` | `{ next? }` | `{ ok: true }` |
+| `POST /api/v1/matches/:id/round` | `{ round }` | `{ ok: true }` |
+| `POST /api/v1/matches/:id/result` | `{ scores }` or `{ ranks }`, optional `leavers` | `{ ok: true }` |
+
+Errors are `{ error: { code, message } }`: 401 `unauthorized` (missing or wrong secret), 403 `forbidden` (another app's match), 404 `not_found`, 409 `conflict` (state version moved) or `invalid_state` (e.g. already settled), 422 `invalid_params`, 501 `not_configured` (the host runs in demo mode: the server API and webhooks need Supabase).

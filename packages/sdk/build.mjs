@@ -1,14 +1,18 @@
 // Builds the publishable ESM package (dist/*.js + .d.ts) and a drop-in
 // browser bundle (dist/xapps.js, dist/xapps.global.js) for no-build apps.
+// `@xapps/sdk/server` (dist/server.js) is ESM only.
 import { build } from "esbuild";
 import { execFileSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
+// Paths below are relative to the package, wherever the script is run from.
+process.chdir(fileURLToPath(new URL(".", import.meta.url)));
 rmSync("dist", { recursive: true, force: true });
 
-const shared = { bundle: true, target: "es2020", sourcemap: true, logLevel: "warning" };
+const shared = { absWorkingDir: process.cwd(), bundle: true, target: "es2020", sourcemap: true, logLevel: "warning" };
 
 await build({
   ...shared,
@@ -17,6 +21,8 @@ await build({
     react: "src/react.tsx",
     host: "src/host.ts",
     protocol: "src/protocol.ts",
+    // App servers only (webhook verification + server API); never in the browser bundles below.
+    server: "src/server.ts",
   },
   outdir: "dist",
   format: "esm",

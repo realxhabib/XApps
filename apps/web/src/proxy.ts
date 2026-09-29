@@ -48,7 +48,8 @@ export async function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
-    // Skip static assets, the SDK bundle, examples and first-party app frames.
-    "/((?!_next/static|_next/image|favicon.ico|icon.svg|sdk/|examples/|embed/|api/meme-image|api/x-media|api/trending-memes|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|js|map)$).*)",
+    // Skip static assets, the SDK bundle, examples, first-party app frames and the
+    // server API (/api/v1: app servers authenticate with a secret, not a session).
+    "/((?!_next/static|_next/image|favicon.ico|icon.svg|sdk/|examples/|embed/|api/meme-image|api/x-media|api/trending-memes|api/v1/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|js|map)$).*)",
   ],
 };
