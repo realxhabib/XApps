@@ -229,13 +229,14 @@ export const OFFICIAL_APPS: AppManifest[] = [
   },
 ];
 
-/** Manifest defaults for the v2 fields (players 2–2, free for all, watchable, no setup, no turns). */
+/** Manifest defaults for the v2 fields (players 2–2, free for all, watchable, no setup, no turns, client-settled). */
 export const MANIFEST_DEFAULTS = {
   players: { min: 2, max: 2 },
   teams: 0,
   spectators: true,
   setup: false,
   turnBased: false,
+  authority: "client",
 } as const;
 
 /** Fills in any v2 manifest fields an older row or registration left out. */
@@ -247,6 +248,7 @@ export function withManifestDefaults(app: AppManifest): AppManifest {
     spectators: app.spectators ?? MANIFEST_DEFAULTS.spectators,
     setup: app.setup ?? MANIFEST_DEFAULTS.setup,
     turnBased: app.turnBased ?? MANIFEST_DEFAULTS.turnBased,
+    authority: app.authority ?? MANIFEST_DEFAULTS.authority,
   };
 }
 

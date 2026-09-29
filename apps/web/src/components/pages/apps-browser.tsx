@@ -90,7 +90,7 @@ export function AppsBrowser() {
       </motion.div>
 
       {isPending ? (
-        <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {Array.from({ length: 6 }).map((_, i) => (
             <Skeleton key={i} className="h-80 rounded-[2rem]" />
           ))}
@@ -100,7 +100,7 @@ export function AppsBrowser() {
           Try another search — or build the app you were looking for.
         </EmptyState>
       ) : (
-        <motion.div layout className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <motion.div layout className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <AnimatePresence mode="popLayout">
             {visible.map((app, i) => (
               <motion.div

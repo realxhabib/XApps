@@ -22,6 +22,28 @@ export const CATEGORIES: { id: AppCategory; label: string; emoji: string }[] = [
 
 export type AppStatus = "published" | "pending" | "rejected";
 
+export type AppAuthority = "client" | "server";
+
+/** Owner-only view of an app's server settings (Stage 2). Secrets are never readable after creation. */
+export interface AppServerConfig {
+  secretPrefix: string | null;
+  hasSecret: boolean;
+  webhookUrl: string | null;
+  hasWebhook: boolean;
+  authority: AppAuthority;
+}
+
+export interface WebhookDelivery {
+  id: string;
+  event: string;
+  matchId: string | null;
+  createdAt: string;
+  attempts: number;
+  deliveredAt: string | null;
+  lastStatus: number | null;
+  lastError: string | null;
+}
+
 /** Modes a user can pick when starting a match (practice is always available). */
 export type PlayableMode = Extract<MatchMode, "live" | "async" | "practice">;
 
@@ -48,6 +70,8 @@ export interface AppManifest {
   setup?: boolean;
   /** Players take turns (live or over days); the host shows turn UI and "your turn" inbox items. */
   turnBased?: boolean;
+  /** Who settles matches: players' clients (default) or the app's server via the server API. */
+  authority?: AppAuthority;
   scoring: Scoring;
   /** For `votes` scoring: votes needed to decide a match. */
   votesToWin?: number;

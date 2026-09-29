@@ -75,7 +75,7 @@ export function YourMove() {
           </Button>
         }
       />
-      <Reveal className="grid gap-3 md:grid-cols-2">
+      <Reveal className="grid grid-cols-1 gap-3 md:grid-cols-2">
         {mine.map((m) => (
           <RevealItem key={m.id}>
             <MatchCard match={m} viewerId={viewer.id} />
@@ -107,7 +107,7 @@ export function FeaturedApps() {
           </Button>
         }
       />
-      <Reveal className="grid gap-4 md:grid-cols-6" stagger={0.07}>
+      <Reveal className="grid grid-cols-1 gap-4 md:grid-cols-6" stagger={0.07}>
         {layout.map(({ slug, className, size }) => {
           const app = byslug(slug);
           return (
@@ -155,7 +155,7 @@ export function ArenaTeaser() {
       <div className="relative overflow-hidden rounded-[2.5rem] border border-white/[0.08] bg-ink-850/70 p-6 sm:p-10">
         <div aria-hidden className="pointer-events-none absolute -left-24 -top-24 size-96 rounded-full bg-flare/20 blur-3xl" />
         <div aria-hidden className="pointer-events-none absolute -bottom-24 -right-24 size-96 rounded-full bg-nova-500/20 blur-3xl" />
-        <div className="relative grid items-center gap-8 lg:grid-cols-[1fr_1.3fr]">
+        <div className="relative grid grid-cols-1 items-center gap-8 lg:grid-cols-[1fr_1.3fr]">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.22em] text-flare">The Arena</p>
             <h2 className="mt-3 font-display text-4xl font-extrabold leading-tight tracking-tight sm:text-5xl">
@@ -217,7 +217,7 @@ export function HowItWorks() {
   return (
     <section className="mt-24" ref={ref}>
       <SectionHeading eyebrow="How it works" title="From timeline to showdown in seconds" />
-      <div className="relative grid gap-4 md:grid-cols-3">
+      <div className="relative grid grid-cols-1 gap-4 md:grid-cols-3">
         <div className="absolute left-[16%] right-[16%] top-10 hidden h-px bg-white/10 md:block">
           <motion.div
             className="h-full origin-left bg-[linear-gradient(90deg,var(--color-nova-400),var(--color-flare),var(--color-volt))]"
@@ -264,7 +264,7 @@ await xapps.submit({ score: 42 });      // the platform settles & awards XP`;
 export function BuildTeaser() {
   return (
     <section className="mt-24">
-      <div className="grid items-center gap-10 lg:grid-cols-2">
+      <div className="grid grid-cols-1 items-center gap-10 lg:grid-cols-2">
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.22em] text-nova-300">For builders</p>
           <h2 className="mt-3 font-display text-4xl font-extrabold leading-tight tracking-tight sm:text-5xl">

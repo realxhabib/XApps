@@ -4,6 +4,10 @@ import { motion } from "motion/react";
 import {
   ArrowRight,
   Boxes,
+  KeyRound,
+  ServerCog,
+  Smartphone,
+  Webhook,
   FlaskConical,
   Fingerprint,
   Gavel,
@@ -17,6 +21,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
+import { SERVER_ROUTES, SIGNATURE_FORMAT, API_ERRORS, WEBHOOK_EVENTS, reportSnippet, webhookSnippet } from "@/components/developers/server-snippets";
 import { AppGlyph } from "@/components/marketplace/app-glyph";
 import { Reveal, RevealItem } from "@/components/motion/reveal";
 import { TiltCard } from "@/components/motion/tilt-card";
@@ -27,7 +32,8 @@ import { Segmented } from "@/components/ui/segmented";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { useViewer } from "@/platform/client";
-import { useMyApps } from "@/platform/queries";
+import { useAppServerConfig, useMyApps } from "@/platform/queries";
+import type { AppManifest } from "@/platform/types";
 import { LIMITS } from "@xapps/sdk";
 
 const FEATURES = [
@@ -39,6 +45,7 @@ const FEATURES = [
   { icon: Trophy, title: "Results & XP", body: "Submit a score; the platform settles the match, awards XP and updates leaderboards." },
   { icon: Gavel, title: "Crowd judging", body: "Contest apps submit an entry and the Arena crowd votes. Ideal for creative formats." },
   { icon: MonitorPlay, title: "Host-rendered drama", body: "VS intro, countdown, HUD, emoji reactions, confetti and results screens come free." },
+  { icon: ServerCog, title: "Your server as referee", body: "An app secret, a server API and signed webhooks. Declare server authority and only your backend can settle a match." },
 ];
 
 const REACT_SNIPPET = `import { XAppsProvider, useXApps, useRoomEvent, useMatchStarted } from "@xapps/sdk/react";
@@ -183,6 +190,17 @@ const API: { group: string; rows: [string, string][] }[] = [
     ],
   },
   {
+    group: "Server SDK (@xapps/sdk/server)",
+    rows: [
+      ["verifyWebhook(rawBody, signatureHeader, secret, { toleranceSeconds? })", "Checks X-XApps-Signature and returns the parsed event. Throws XAppsError invalid_signature or stale_signature (older than 5 min by default). Accepts several v1 signatures during a rotation. Web Crypto only: Node 18+, Deno, Workers, edge."],
+      ["createServerClient({ secret, baseUrl })", "A client for the server API, authenticated with your xas_ secret. Never ship it to the browser."],
+      ["server.getMatch(id)", "The match with every player's submission, data included."],
+      ["server.setState(id, state, version) · updateState(id, fn)", "Compare-and-set the shared state; updateState re-reads and retries on 409."],
+      ["server.endTurn(id, next?) · setRound(id, round)", "Drive turns and rounds from your server."],
+      ["server.reportResult(id, { scores } | { ranks }, { leavers? })", "Settle the match (ranks win if both are given). The only way to settle with server authority."],
+    ],
+  },
+  {
     group: "React (@xapps/sdk/react)",
     rows: [
       ["<XAppsProvider fallback errorFallback>", "Connects once and provides the client."],
@@ -208,6 +226,7 @@ const MANIFEST: [string, string][] = [
   ["turnBased", "Players take turns; the host shows turn UI and pings whoever's up"],
   ["setup", "You render your own challenge setup screen"],
   ["scoring", "high (bigger wins) · low (smaller wins) · votes (crowd decides)"],
+  ["authority", "client (default) · server — set on your app's Server panel once it has a secret; not for votes apps"],
   ["howTo", "Up to 3 short steps shown on your listing"],
 ];
 
@@ -218,17 +237,188 @@ function MyApps() {
   return (
     <section className="mt-16">
       <h2 className="font-display text-2xl font-extrabold">Your apps</h2>
-      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
         {data.map((app) => (
-          <Link key={app.slug} href={`/apps/${app.slug}`} className="flex items-center gap-3 rounded-3xl glass p-4 transition hover:bg-white/[0.06]">
-            <AppGlyph app={app} size={44} />
-            <div className="min-w-0 flex-1">
-              <p className="truncate font-semibold">{app.name}</p>
-              <p className="truncate text-xs text-ink-400">{app.url}</p>
-            </div>
-            <Badge tone={app.status === "published" ? "success" : app.status === "pending" ? "gold" : "danger"}>{app.status}</Badge>
-          </Link>
+          <MyAppCard key={app.slug} app={app} />
         ))}
+      </div>
+    </section>
+  );
+}
+
+function MyAppCard({ app }: { app: AppManifest }) {
+  const { data: server } = useAppServerConfig(app.slug);
+  const authority = server?.authority ?? app.authority ?? "client";
+  return (
+    <div className="rounded-3xl glass p-2 transition hover:bg-white/[0.05]">
+      <Link href={`/apps/${app.slug}`} className="flex items-center gap-3 rounded-2xl p-2">
+        <AppGlyph app={app} size={44} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-semibold">{app.name}</p>
+          <p className="truncate text-xs text-ink-400">{app.url}</p>
+        </div>
+        <Badge tone={app.status === "published" ? "success" : app.status === "pending" ? "gold" : "danger"}>{app.status}</Badge>
+      </Link>
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-white/[0.06] px-2 pb-1 pt-2.5 text-xs text-ink-400">
+        <span className={cn("flex items-center gap-1.5", authority === "server" ? "text-volt" : "text-ink-300")}>
+          {authority === "server" ? <ServerCog className="size-3.5" /> : <Smartphone className="size-3.5" />}
+          {authority === "server" ? "Server settles" : "Clients settle"}
+        </span>
+        <span className={cn("flex items-center gap-1.5", server?.hasSecret && "text-ink-200")}>
+          <KeyRound className="size-3.5" /> {server ? (server.hasSecret ? <span className="font-mono">{server.secretPrefix}…</span> : "No secret") : "…"}
+        </span>
+        <span className={cn("flex items-center gap-1.5", server?.hasWebhook && "text-ink-200")}>
+          <Webhook className="size-3.5" /> {server ? (server.hasWebhook ? "Webhook on" : "No webhook") : "…"}
+        </span>
+        <Link href={`/apps/${app.slug}#server`} className="ml-auto inline-flex items-center gap-1 font-semibold text-nova-300 hover:underline">
+          Server settings <ArrowRight className="size-3" />
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+const TRUST_PILLARS = [
+  {
+    icon: KeyRound,
+    title: "App secret",
+    body: "xas_ + 48 hex, shown once when you create or rotate it. We keep a SHA-256 hash and an 8-character prefix; rotating kills the old one instantly.",
+  },
+  {
+    icon: Webhook,
+    title: "Signed webhooks",
+    body: "An https URL plus its own whsec_ signing secret. Deliveries retry with backoff (1 → 256 min, 9 attempts) and show up live on your Server panel.",
+  },
+  {
+    icon: ServerCog,
+    title: "Server authority",
+    body: "Your server settles every match via POST /api/v1/matches/:id/result; players' scores become claims. If it stays silent 24 h after everyone submits, the match is a draw.",
+  },
+];
+
+function TrustSection() {
+  const [tab, setTab] = useState<"verify" | "report">("verify");
+  return (
+    <section className="mt-20" id="trust">
+      <p className="text-xs font-bold uppercase tracking-[0.22em] text-ink-400">Trust</p>
+      <h2 className="mt-2 font-display text-3xl font-extrabold tracking-tight sm:text-4xl">Let your server referee</h2>
+      <p className="mt-3 max-w-2xl text-ink-300">
+        Players&apos; browsers are untrusted. Give your app a secret and its own backend can read and write matches, get signed
+        webhooks and — with server authority — be the only one that decides who won.
+      </p>
+
+      <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-3">
+        {TRUST_PILLARS.map((pillar, i) => {
+          const Icon = pillar.icon;
+          return (
+            <motion.div
+              key={pillar.title}
+              className="rounded-[2rem] glass p-6"
+              initial={{ opacity: 0, y: 16 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }}
+              transition={{ delay: i * 0.07, ...spring.soft }}
+            >
+              <span className="flex size-11 items-center justify-center rounded-2xl bg-white/[0.06]">
+                <Icon className="size-5" />
+              </span>
+              <h3 className="mt-4 font-display text-lg font-extrabold">{pillar.title}</h3>
+              <p className="mt-1.5 text-sm leading-relaxed text-ink-300">{pillar.body}</p>
+            </motion.div>
+          );
+        })}
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[1.25fr_1fr]">
+        <motion.section
+          className="min-w-0 rounded-[2rem] glass p-6"
+          initial={{ opacity: 0, y: 20 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true, margin: "-40px" }}
+          transition={spring.soft}
+        >
+          <h3 className="font-display text-lg font-extrabold">Server API</h3>
+          <p className="mt-1 text-sm text-ink-300">
+            Send <code className="font-mono text-[13px] text-ink-100">Authorization: Bearer xas_…</code>. Every route returns the
+            match JSON with all submissions visible to your server.
+          </p>
+          <div className="mt-4 space-y-2">
+            {SERVER_ROUTES.map((route) => (
+              <div key={route.method + route.path} className="rounded-2xl border border-white/[0.06] bg-ink-900/50 p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={cn(
+                      "rounded-md px-1.5 py-0.5 font-mono text-[11px] font-bold",
+                      route.method === "GET" ? "bg-success/15 text-success" : route.method === "PUT" ? "bg-gold/15 text-gold" : "bg-nova-500/20 text-nova-300",
+                    )}
+                  >
+                    {route.method}
+                  </span>
+                  <code className="break-all font-mono text-[13px] text-ink-50">{route.path}</code>
+                </div>
+                <p className="mt-1.5 text-xs text-ink-400">
+                  {route.body !== "—" && <code className="mr-2 font-mono text-flare">{route.body}</code>}
+                  {route.note}
+                </p>
+              </div>
+            ))}
+          </div>
+          <p className="mt-4 text-xs leading-relaxed text-ink-400">
+            Errors are <code className="font-mono">{"{ error: { code, message } }"}</code>: {API_ERRORS}.
+          </p>
+        </motion.section>
+
+        <motion.section
+          className="min-w-0 rounded-[2rem] glass p-6"
+          initial={{ opacity: 0, y: 20 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true, margin: "-40px" }}
+          transition={{ delay: 0.06, ...spring.soft }}
+        >
+          <h3 className="font-display text-lg font-extrabold">Webhooks</h3>
+          <p className="mt-1 text-sm text-ink-300">
+            POSTed as <code className="font-mono text-[13px] text-ink-100">{"{ id, type, createdAt, app, match }"}</code>.
+          </p>
+          <dl className="mt-4 space-y-2.5">
+            {WEBHOOK_EVENTS.map(([event, desc]) => (
+              <div key={event} className="grid grid-cols-1 gap-0.5 sm:grid-cols-[8.5rem_1fr] sm:gap-3">
+                <dt className="font-mono text-[13px] text-nova-300">{event}</dt>
+                <dd className="text-sm text-ink-300">{desc}</dd>
+              </div>
+            ))}
+          </dl>
+          <div className="mt-5 rounded-2xl border border-white/[0.06] bg-ink-950/60 p-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-ink-500">Headers</p>
+            <p className="mt-1.5 break-all font-mono text-xs leading-relaxed text-ink-200">
+              X-XApps-Event · X-XApps-Delivery (uuid)
+              <br />
+              {SIGNATURE_FORMAT}
+            </p>
+            <p className="mt-2 text-xs text-ink-400">Reject timestamps older than 5 minutes — verifyWebhook does both checks.</p>
+          </div>
+        </motion.section>
+      </div>
+
+      <div className="mt-6">
+        <Segmented
+          layoutId="trust-snippet"
+          value={tab}
+          onChange={setTab}
+          items={[
+            { id: "verify", label: "Verify a webhook" },
+            { id: "report", label: "Report a result" },
+          ]}
+        />
+        <motion.div key={tab} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={spring.snappy} className="mt-4">
+          <CodeBlock
+            filename={tab === "verify" ? "app/api/xapps/webhook/route.ts" : "lib/xapps.ts"}
+            code={tab === "verify" ? webhookSnippet() : reportSnippet()}
+          />
+        </motion.div>
+        <p className="mt-3 text-sm text-ink-400">
+          Create the secret, webhook and authority on your app&apos;s page under <b className="text-ink-200">Server</b>. The
+          server API and webhooks need the Supabase backend; demo mode previews the settings only.
+        </p>
       </div>
     </section>
   );
@@ -238,7 +428,7 @@ export function Developers() {
   const [tab, setTab] = useState<"react" | "vanilla" | "contest" | "turns">("react");
   return (
     <div>
-      <section className="grid items-center gap-10 lg:grid-cols-[1.1fr_1fr]">
+      <section className="grid grid-cols-1 items-center gap-10 lg:grid-cols-[1.1fr_1fr]">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={spring.soft}>
           <Badge tone="nova">@xapps/sdk · v0.1</Badge>
           <h1 className="mt-5 font-display text-[clamp(2.6rem,6vw,4.6rem)] font-extrabold leading-[0.95] tracking-[-0.04em]">
@@ -262,7 +452,7 @@ export function Developers() {
         </motion.div>
       </section>
 
-      <Reveal className="mt-16 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <Reveal className="mt-16 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {FEATURES.map((f) => {
           const Icon = f.icon;
           return (
@@ -338,7 +528,7 @@ export function Developers() {
       <section className="mt-20" id="api">
         <p className="text-xs font-bold uppercase tracking-[0.22em] text-ink-400">Reference</p>
         <h2 className="mt-2 font-display text-3xl font-extrabold tracking-tight sm:text-4xl">The whole API</h2>
-        <div className="mt-8 grid gap-4 lg:grid-cols-2">
+        <div className="mt-8 grid grid-cols-1 gap-4 lg:grid-cols-2">
           {API.map((section) => (
             <motion.section
               key={section.group}
@@ -369,7 +559,7 @@ export function Developers() {
             <h3 className="font-display text-lg font-extrabold">App manifest</h3>
             <dl className="mt-4 space-y-3">
               {MANIFEST.map(([field, desc]) => (
-                <div key={field} className="grid gap-1 sm:grid-cols-[10rem_1fr]">
+                <div key={field} className="grid grid-cols-1 gap-1 sm:grid-cols-[10rem_1fr]">
                   <dt className="font-mono text-[13px] text-flare">{field}</dt>
                   <dd className="text-sm text-ink-300">{desc}</dd>
                 </div>
@@ -379,7 +569,9 @@ export function Developers() {
         </div>
       </section>
 
-      <section className="mt-20 grid gap-4 lg:grid-cols-3">
+      <TrustSection />
+
+      <section className="mt-20 grid grid-cols-1 gap-4 lg:grid-cols-3">
         {[
           {
             icon: ShieldCheck,
@@ -394,7 +586,7 @@ export function Developers() {
           {
             icon: Trophy,
             title: "Trust model",
-            body: "Scores are client-reported, so settle what you can deterministically (seeded RNG), use commit-reveal for secret picks, and keep crowd-judged formats for creative work.",
+            body: "By default players' clients report scores. For anything competitive, give your app server authority: your server settles every match and client scores are only claims. Client-settled apps should still lean on seeded RNG and commit-reveal.",
           },
         ].map((card, i) => {
           const Icon = card.icon;

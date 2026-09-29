@@ -62,3 +62,49 @@ grant select, insert on realtime.messages to authenticated;
 grant usage on sequence realtime.messages_id_seq to authenticated;
 alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
 alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
+
+-- pgcrypto lives in the `extensions` schema on Supabase.
+create schema if not exists extensions;
+create extension if not exists pgcrypto with schema extensions;
+grant usage on schema extensions to anon, authenticated, service_role;
+
+-- pg_net stand-in: net.http_post has the real signature and queues the request
+-- (body stored the way pg_net sends it: convert_to(body::text, 'UTF8'));
+-- tests write responses into net._http_response themselves. pg_cron is not
+-- stubbed: the migration must skip scheduling without it.
+create schema net;
+create table net.http_request_queue (
+  id bigserial primary key,
+  method text not null,
+  url text not null,
+  headers jsonb,
+  body bytea,
+  timeout_milliseconds integer not null,
+  created_at timestamptz not null default now()
+);
+create table net._http_response (
+  id bigint,
+  status_code integer,
+  content_type text,
+  headers jsonb,
+  content text,
+  timed_out boolean,
+  error_msg text,
+  created timestamptz not null default now()
+);
+create function net.http_post(
+  url text,
+  body jsonb default '{}'::jsonb,
+  params jsonb default '{}'::jsonb,
+  headers jsonb default '{"Content-Type": "application/json"}'::jsonb,
+  timeout_milliseconds integer default 5000
+)
+returns bigint
+language sql
+volatile
+as $$
+  insert into net.http_request_queue (method, url, headers, body, timeout_milliseconds)
+  values ('POST', url, headers, convert_to(body::text, 'UTF8'), timeout_milliseconds)
+  returning id;
+$$;
+grant usage on schema public to service_role;

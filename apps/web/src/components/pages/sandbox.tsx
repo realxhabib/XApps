@@ -415,7 +415,7 @@ export function Sandbox() {
           <code className="font-mono text-ink-100">http://localhost</code> works too if it allows framing.
         </div>
       ) : (
-        <div className="mt-6 grid gap-4 xl:grid-cols-[1fr_22rem]">
+        <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-[1fr_22rem]">
           <div className={cn("grid gap-4", humanSeats === 2 ? "md:grid-cols-2" : "")}>
             {Array.from({ length: humanSeats }).map((_, seat) => {
               const me = players[seat]!;
@@ -523,7 +523,7 @@ export function Sandbox() {
             transition={spring.soft}
           >
             <h2 className="font-display text-2xl font-extrabold">You&apos;re the crowd — pick a winner</h2>
-            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
               {players.map((p) => (
                 <button
                   key={p.id}

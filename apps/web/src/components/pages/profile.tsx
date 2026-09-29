@@ -141,7 +141,7 @@ export function ProfileView({ handle }: { handle: string }) {
         ) : matches.length === 0 ? (
           <p className="text-sm text-ink-400">No public matches yet.</p>
         ) : (
-          <Reveal className={cn("grid gap-3 md:grid-cols-2")}>
+          <Reveal className={cn("grid grid-cols-1 gap-3 md:grid-cols-2")}>
             {matches.map((m) => (
               <RevealItem key={m.id}>
                 <MatchCard match={m} viewerId={viewer?.id} subject={{ id: profile.id, handle: profile.handle }} apps={apps} />

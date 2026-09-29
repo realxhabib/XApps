@@ -81,6 +81,29 @@ export interface AppStatsRow {
   xp: number;
 }
 
+/** Stage 2 credentials, like `app_credentials`: only hashes and a display prefix are kept. */
+export interface CredentialRow {
+  secretHash: string | null;
+  secretPrefix: string | null;
+  webhookUrl: string | null;
+  /** The real table keeps the signing secret to sign with; demo mode never sends, so a hash will do. */
+  webhookSecretHash: string | null;
+  createdAt: string;
+  rotatedAt: string | null;
+}
+
+export interface WebhookDeliveryRow {
+  id: string;
+  appSlug: string;
+  event: string;
+  matchId: string | null;
+  createdAt: string;
+  attempts: number;
+  deliveredAt: string | null;
+  lastStatus: number | null;
+  lastError: string | null;
+}
+
 export interface DemoDb {
   version: 4;
   profiles: Record<string, Profile>;
@@ -90,6 +113,9 @@ export interface DemoDb {
   votes: VoteRow[];
   storage: Record<string, Json>;
   appStats: Record<string, AppStatsRow>;
+  /** Stage 2 (added without a version bump; absent in older demo databases). */
+  credentials?: Record<string, CredentialRow>;
+  webhookDeliveries?: WebhookDeliveryRow[];
 }
 
 export const DB_VERSION = 4 as const;

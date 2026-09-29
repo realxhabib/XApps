@@ -8,6 +8,7 @@ import { useState } from "react";
 import { toast } from "@/components/chrome/toasts";
 import { AppArt } from "@/components/marketplace/app-art";
 import { AppGlyph } from "@/components/marketplace/app-glyph";
+import { ServerPanel, useIsAppOwner } from "@/components/developers/server-panel";
 import { ChallengeSheet } from "@/components/marketplace/challenge-sheet";
 import { ActivityPill } from "@/components/marketplace/match-card";
 import { Reveal, RevealItem } from "@/components/motion/reveal";
@@ -37,6 +38,7 @@ export function AppDetail({ slug }: { slug: string }) {
   const [practiceSeats, setPracticeSeats] = useState<number | null>(null);
   const { data: leaders } = useLeaderboard(slug);
   const { data: activity } = useActivity();
+  const isOwner = useIsAppOwner(app);
 
   if (!app) {
     return isPending ? (
@@ -86,7 +88,7 @@ export function AppDetail({ slug }: { slug: string }) {
           className="absolute inset-0 opacity-50"
           style={{ background: `radial-gradient(ellipse at 85% 0%, ${app.accent[0]}55, transparent 55%), radial-gradient(ellipse at 100% 100%, ${app.accent[1]}44, transparent 55%)` }}
         />
-        <div className="relative grid gap-6 p-6 sm:p-10 lg:grid-cols-[1.2fr_1fr]">
+        <div className="relative grid grid-cols-1 gap-6 p-6 sm:p-10 lg:grid-cols-[1.2fr_1fr]">
           <div>
             <div className="flex items-center gap-4">
               <AppGlyph app={app} size={96} morph />
@@ -218,7 +220,7 @@ export function AppDetail({ slug }: { slug: string }) {
         </div>
       </section>
 
-      <div className="mt-10 grid gap-6 lg:grid-cols-[1.4fr_1fr]">
+      <div className="mt-10 grid grid-cols-1 gap-6 lg:grid-cols-[1.4fr_1fr]">
         <div className="space-y-6">
           <section className="rounded-[2rem] glass p-6 sm:p-8">
             <h2 className="font-display text-2xl font-extrabold">How to play</h2>
@@ -351,6 +353,8 @@ export function AppDetail({ slug }: { slug: string }) {
           )}
         </section>
       </div>
+
+      {isOwner && <ServerPanel app={app} className="mt-16" />}
 
       <ChallengeSheet app={app} open={sheet} onClose={() => setSheet(false)} />
     </div>

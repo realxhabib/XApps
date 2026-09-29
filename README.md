@@ -55,6 +55,8 @@ Without Supabase keys, XApps runs in **demo mode**. Everything lives in your bro
    NEXT_PUBLIC_SITE_URL=http://localhost:3000
    ```
 
+**App servers & webhooks (optional).** Apps can have their own server settle results through `/api/v1` and receive signed webhooks. Webhooks are sent from the database, so enable the **pg_net** and **pg_cron** extensions in Supabase (*Database → Extensions*) before running `20261001000000_trust.sql`. The migration schedules the jobs itself; if an extension is missing it skips that step and tells you. Developers manage secrets, webhooks and authority from the **Server** panel on their app's page.
+
 **Trending memes (optional).** Add a server-only `XAI_API_KEY` from [console.x.ai](https://console.x.ai) and Meme Duel's *Trending* tab shows images going viral on X, found by Grok's X Search. Grok's X Search bills per post it reads, so the list refreshes every `TRENDING_MEMES_REFRESH_HOURS` (default 6), roughly 20–60 posts per refresh. Without a key, *Trending* shows imgflip's currently popular templates.
 
 If the keys are set but the schema isn't installed yet, the app says so and offers a one-click switch to demo mode.

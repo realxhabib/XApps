@@ -1,4 +1,7 @@
 import type {
+  AppAuthority,
+  AppServerConfig,
+  WebhookDelivery,
   AppManifest,
   CreateChallengeInput,
   Json,
@@ -55,6 +58,19 @@ export interface Backend {
   getApp(slug: string): Promise<AppManifest | null>;
   registerApp(input: RegisterAppInput): Promise<AppManifest>;
   listMyApps(): Promise<AppManifest[]>;
+
+  // App server settings (owner only, Stage 2) ---------------------------
+  /** False when the backend has no server API or webhooks (demo mode). */
+  readonly serverApi: boolean;
+  getAppServerConfig(appSlug: string): Promise<AppServerConfig>;
+  /** Returns the new secret. It can't be read again. */
+  rotateAppSecret(appSlug: string): Promise<string>;
+  /** Returns the new signing secret when the URL is set or changed, null when cleared. */
+  setAppWebhook(appSlug: string, url: string | null): Promise<string | null>;
+  rotateWebhookSecret(appSlug: string): Promise<string>;
+  setAppAuthority(appSlug: string, authority: AppAuthority): Promise<void>;
+  listWebhookDeliveries(appSlug: string): Promise<WebhookDelivery[]>;
+  sendTestWebhook(appSlug: string): Promise<void>;
 
   // People -------------------------------------------------------------
   getProfile(handle: string): Promise<Profile | null>;

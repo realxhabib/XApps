@@ -5,7 +5,7 @@ import { useEffect, useMemo } from "react";
 import { getOfficialApp } from "./catalog";
 import { useBackend, useViewer } from "./client";
 import { isYourTurn, needsAttention } from "./match-utils";
-import type { CreateChallengeInput, Json, Match, RegisterAppInput } from "./types";
+import type { AppAuthority, AppServerConfig, CreateChallengeInput, Json, Match, RegisterAppInput, WebhookDelivery } from "./types";
 
 export function useApps() {
   const backend = useBackend();
@@ -290,5 +290,127 @@ export function useRegisterApp() {
       void queryClient.invalidateQueries({ queryKey: ["apps"] });
       void queryClient.invalidateQueries({ queryKey: ["my-apps"] });
     },
+  });
+}
+
+/* ---------------------------------------------------------------------- */
+/* App server settings (owner only, Stage 2)                              */
+/* ---------------------------------------------------------------------- */
+
+const serverConfigKey = (slug: string) => ["app-server", slug] as const;
+const deliveriesKey = (slug: string) => ["webhook-deliveries", slug] as const;
+
+/** The owner's view of an app's secret, webhook and authority. Pass `enabled: false` for non-owners. */
+export function useAppServerConfig(slug: string, enabled = true) {
+  const backend = useBackend();
+  const { viewer } = useViewer();
+  return useQuery({
+    queryKey: [...serverConfigKey(slug), viewer?.id],
+    queryFn: () => backend.getAppServerConfig(slug),
+    enabled: enabled && !!slug && !!viewer,
+    retry: false,
+  });
+}
+
+/** Recent webhook deliveries, polled every 10 s while the page is visible. */
+export function useWebhookDeliveries(slug: string, enabled = true) {
+  const backend = useBackend();
+  const { viewer } = useViewer();
+  return useQuery({
+    queryKey: [...deliveriesKey(slug), viewer?.id],
+    queryFn: () => backend.listWebhookDeliveries(slug),
+    enabled: enabled && !!slug && !!viewer,
+    refetchInterval: 10_000,
+    refetchIntervalInBackground: false,
+    retry: false,
+  });
+}
+
+function refreshServerSettings(queryClient: QueryClient, slug: string, appChanged = false) {
+  void queryClient.invalidateQueries({ queryKey: serverConfigKey(slug) });
+  if (appChanged) {
+    void queryClient.invalidateQueries({ queryKey: ["app", slug] });
+    void queryClient.invalidateQueries({ queryKey: ["apps"] });
+    void queryClient.invalidateQueries({ queryKey: ["my-apps"] });
+  }
+}
+
+/** Creates or rotates the app secret; resolves to the new secret (shown once). */
+export function useRotateAppSecret(slug: string) {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => backend.rotateAppSecret(slug),
+    onSuccess: () => refreshServerSettings(queryClient, slug),
+  });
+}
+
+/** Sets (or clears, with null) the webhook URL; resolves to a new signing secret when the URL changed. */
+export function useSetAppWebhook(slug: string) {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (url: string | null) => backend.setAppWebhook(slug, url),
+    onSuccess: () => {
+      refreshServerSettings(queryClient, slug);
+      void queryClient.invalidateQueries({ queryKey: deliveriesKey(slug) });
+    },
+  });
+}
+
+export function useRotateWebhookSecret(slug: string) {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => backend.rotateWebhookSecret(slug),
+    onSuccess: () => refreshServerSettings(queryClient, slug),
+  });
+}
+
+export function useSetAppAuthority(slug: string) {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (authority: AppAuthority) => backend.setAppAuthority(slug, authority),
+    // Flip the switch right away; roll back if the server says no.
+    onMutate: async (authority) => {
+      await queryClient.cancelQueries({ queryKey: serverConfigKey(slug) });
+      const previous = queryClient.getQueriesData<AppServerConfig>({ queryKey: serverConfigKey(slug) });
+      queryClient.setQueriesData<AppServerConfig>({ queryKey: serverConfigKey(slug) }, (old) => (old ? { ...old, authority } : old));
+      return { previous };
+    },
+    onError: (_error, _authority, context) => {
+      for (const [key, data] of context?.previous ?? []) queryClient.setQueryData(key, data);
+    },
+    onSettled: () => refreshServerSettings(queryClient, slug, true),
+  });
+}
+
+/** Enqueues a `ping`, showing it in the log straight away. */
+export function useSendTestWebhook(slug: string) {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => backend.sendTestWebhook(slug),
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: deliveriesKey(slug) });
+      const previous = queryClient.getQueriesData<WebhookDelivery[]>({ queryKey: deliveriesKey(slug) });
+      const optimistic: WebhookDelivery = {
+        id: `optimistic-${Date.now()}`,
+        event: "ping",
+        matchId: null,
+        createdAt: new Date().toISOString(),
+        attempts: 0,
+        deliveredAt: null,
+        lastStatus: null,
+        lastError: null,
+      };
+      queryClient.setQueriesData<WebhookDelivery[]>({ queryKey: deliveriesKey(slug) }, (old) => [optimistic, ...(old ?? [])]);
+      return { previous };
+    },
+    onError: (_error, _vars, context) => {
+      for (const [key, data] of context?.previous ?? []) queryClient.setQueryData(key, data);
+    },
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: deliveriesKey(slug) }),
   });
 }

@@ -4,7 +4,9 @@ import { BackendError, type Backend, type DemoControls, type RoomTransport } fro
 import { OFFICIAL_APPS, getOfficialApp, manifestShapeError, withManifestDefaults } from "../catalog";
 import { XP, teamForSeat } from "../scoring";
 import type {
+  AppAuthority,
   AppManifest,
+  AppServerConfig,
   CreateChallengeInput,
   Json,
   LeaderRow,
@@ -13,9 +15,20 @@ import type {
   Profile,
   RegisterAppInput,
   SubmitInput,
+  WebhookDelivery,
 } from "../types";
 import { createDemoRoom } from "./room";
 import { addPersonaContest, applySettlement, buildSeed, isPracticeBot, newMatchId, PRACTICE_BOTS, upgradeDb } from "./seed";
+import {
+  credentialsFor,
+  deliveriesFor,
+  newAppSecret,
+  newWebhookSecret,
+  recordWebhook,
+  SECRET_PREFIX_LENGTH,
+  sha256Hex,
+  webhookUrlError,
+} from "./server-settings";
 import {
   MATCH_V2_DEFAULTS,
   getViewerId,
@@ -106,6 +119,7 @@ function teamsReady(row: MatchRow): boolean {
 /** open/pending → active. Turn-based apps hand the first turn to the lowest seat. */
 function activate(db: DemoDb, row: MatchRow): void {
   row.status = "active";
+  recordWebhook(db, row.appSlug, "match.started", row.id);
   if (appFor(db, row.appSlug)?.turnBased && !row.turnUserId) setTurn(row, inRows(row)[0]?.userId ?? null);
 }
 
@@ -402,6 +416,120 @@ export class DemoBackend implements Backend {
   }
 
   /* ---------------------------------------------------------------- */
+  /* App server settings (owner only)                                 */
+  /* ---------------------------------------------------------------- */
+
+  /** The server API and webhooks need Supabase; everything below is a local preview. */
+  readonly serverApi = false;
+
+  /** Mirrors the owner RPCs' check: the caller must be the app's developer. */
+  private requireOwnedApp(db: DemoDb, appSlug: string): AppManifest {
+    const viewer = this.requireViewer();
+    const app = db.apps[appSlug];
+    if (!app) {
+      if (getOfficialApp(appSlug)) throw new BackendError("Only the app's developer can manage its server settings", "forbidden");
+      throw new BackendError("App not found", "not_found");
+    }
+    if (app.developer.id !== viewer.id) {
+      throw new BackendError("Only the app's developer can manage its server settings", "forbidden");
+    }
+    return app;
+  }
+
+  async getAppServerConfig(appSlug: string): Promise<AppServerConfig> {
+    const db = load();
+    const app = this.requireOwnedApp(db, appSlug);
+    const creds = db.credentials?.[appSlug];
+    return {
+      secretPrefix: creds?.secretHash ? creds.secretPrefix : null,
+      hasSecret: !!creds?.secretHash,
+      webhookUrl: creds?.webhookUrl ?? null,
+      hasWebhook: !!creds?.webhookUrl,
+      authority: app.authority ?? "client",
+    };
+  }
+
+  async rotateAppSecret(appSlug: string): Promise<string> {
+    this.requireOwnedApp(load(), appSlug);
+    const secret = newAppSecret();
+    const hash = await sha256Hex(secret);
+    mutate((db) => {
+      this.requireOwnedApp(db, appSlug);
+      const creds = credentialsFor(db, appSlug);
+      // The old secret stops working immediately: only the new hash is kept.
+      if (creds.secretHash) creds.rotatedAt = nowIso();
+      creds.secretHash = hash;
+      creds.secretPrefix = secret.slice(0, SECRET_PREFIX_LENGTH);
+    });
+    return secret;
+  }
+
+  async setAppWebhook(appSlug: string, url: string | null): Promise<string | null> {
+    this.requireOwnedApp(load(), appSlug);
+    const clean = url?.trim() || null;
+    if (clean) {
+      const invalid = webhookUrlError(clean);
+      if (invalid) throw new BackendError(invalid, "invalid");
+    }
+    const secret = newWebhookSecret();
+    const hash = await sha256Hex(secret);
+    return mutate((db) => {
+      this.requireOwnedApp(db, appSlug);
+      const creds = credentialsFor(db, appSlug);
+      if (!clean) {
+        creds.webhookUrl = null;
+        creds.webhookSecretHash = null;
+        return null;
+      }
+      // Same URL again: nothing changes and the current signing secret stays valid.
+      if (creds.webhookUrl === clean && creds.webhookSecretHash) return null;
+      creds.webhookUrl = clean;
+      creds.webhookSecretHash = hash;
+      return secret;
+    });
+  }
+
+  async rotateWebhookSecret(appSlug: string): Promise<string> {
+    this.requireOwnedApp(load(), appSlug);
+    const secret = newWebhookSecret();
+    const hash = await sha256Hex(secret);
+    mutate((db) => {
+      this.requireOwnedApp(db, appSlug);
+      const creds = credentialsFor(db, appSlug);
+      if (!creds.webhookUrl) throw new BackendError("Add a webhook URL first", "invalid");
+      creds.webhookSecretHash = hash;
+      creds.rotatedAt = nowIso();
+    });
+    return secret;
+  }
+
+  async setAppAuthority(appSlug: string, authority: AppAuthority): Promise<void> {
+    if (authority !== "client" && authority !== "server") throw new BackendError("Authority is client or server", "invalid");
+    mutate((db) => {
+      const app = this.requireOwnedApp(db, appSlug);
+      if (authority === "server") {
+        if (app.scoring === "votes") throw new BackendError("Crowd-judged apps can't be server-authoritative", "invalid");
+        if (!db.credentials?.[appSlug]?.secretHash) throw new BackendError("Create an app secret first", "invalid");
+      }
+      db.apps[appSlug] = { ...app, authority };
+    });
+  }
+
+  async listWebhookDeliveries(appSlug: string): Promise<WebhookDelivery[]> {
+    const db = load();
+    this.requireOwnedApp(db, appSlug);
+    return deliveriesFor(db, appSlug);
+  }
+
+  async sendTestWebhook(appSlug: string): Promise<void> {
+    mutate((db) => {
+      this.requireOwnedApp(db, appSlug);
+      if (!db.credentials?.[appSlug]?.webhookUrl) throw new BackendError("Add a webhook URL first", "invalid");
+      recordWebhook(db, appSlug, "ping", null);
+    });
+  }
+
+  /* ---------------------------------------------------------------- */
   /* People                                                           */
   /* ---------------------------------------------------------------- */
 
@@ -530,6 +658,7 @@ export class DemoBackend implements Backend {
       row.isOpen = k + 1 < size;
       row.status = row.isOpen ? "open" : "pending";
       db.matches[row.id] = row;
+      recordWebhook(db, row.appSlug, "match.created", row.id);
       return hydrate(db, row, viewer.id);
     });
   }
@@ -590,6 +719,7 @@ export class DemoBackend implements Backend {
       row.isOpen = true;
       row.settings = { quick: true };
       db.matches[row.id] = row;
+      recordWebhook(db, row.appSlug, "match.created", row.id);
       return hydrate(db, row, viewer.id);
     });
   }
@@ -612,6 +742,7 @@ export class DemoBackend implements Backend {
       for (const bot of PRACTICE_BOTS.slice(0, seats - 1)) takeSeat(row, bot.id, { isBot: true });
       row.simulatedVotes = app.scoring === "votes";
       row.votesNeeded = 5;
+      recordWebhook(db, row.appSlug, "match.created", row.id);
       activate(db, row);
       db.matches[row.id] = row;
       return hydrate(db, row, viewer.id);
@@ -740,7 +871,7 @@ export class DemoBackend implements Backend {
 
   async endTurn(matchId: string, next?: string | null): Promise<Match> {
     const viewer = this.requireViewer();
-    return this.withMatch(matchId, (_db, row) => {
+    return this.withMatch(matchId, (db, row) => {
       this.requirePlayer(row, viewer.id, "pass the turn");
       if (row.status !== "active") throw new BackendError("This match isn't running", "conflict");
       if (row.turnUserId && row.turnUserId !== viewer.id) {
@@ -757,6 +888,7 @@ export class DemoBackend implements Backend {
       } else {
         setTurn(row, nextTurnAfter(row, row.turnUserId ?? viewer.id));
       }
+      recordWebhook(db, row.appSlug, "match.turn", row.id);
     });
   }
 
@@ -915,6 +1047,7 @@ export class DemoBackend implements Backend {
       target.score = typeof input.score === "number" ? input.score : null;
       target.submission = { data: input.data, display: input.display };
       target.lastSeenAt = nowIso();
+      recordWebhook(db, row.appSlug, "match.submitted", row.id);
       // An invitee playing an async match counts as having joined.
       tryActivate(db, row);
       maybeSettle(db, row);

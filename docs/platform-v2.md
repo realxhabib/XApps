@@ -163,7 +163,14 @@ rotating turns, and setup purpose when the page URL has `?xapps-purpose=setup`.
 
 ---
 
-## Stage 2: Trust
+## Stage 2: Trust (shipped)
+
+Migration: `20261001000000_trust.sql`. Notes from the build: practice matches
+always settle on the client (no rank at stake, and the app server may not
+know about them); forfeits and timeouts still settle server-authoritative
+matches; webhook URLs must be public https hosts; pg_cron runs
+`xapps-webhooks` every minute and `xapps-finalize` every 5 minutes (the 24 h
+safety valve and crowd-voting deadlines).
 
 Goal: an app with its own server can be the referee. Players' browsers stay
 untrusted; the app server holds a secret, reads and writes matches through a

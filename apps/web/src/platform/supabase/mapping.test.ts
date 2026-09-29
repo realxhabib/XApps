@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { Match, Profile } from "../types";
-import { appInsert, challengeArgs, errorKind, normalizeMatch, toApp, toBackendError, type AppRow } from "./mapping";
+import {
+  appInsert,
+  challengeArgs,
+  errorKind,
+  normalizeMatch,
+  toApp,
+  toBackendError,
+  toSecret,
+  toServerConfig,
+  toWebhookDeliveries,
+  type AppRow,
+} from "./mapping";
 
 const profile = (id: string): Profile => ({
   id,
@@ -191,5 +202,40 @@ describe("errors", () => {
     expect(errorKind("55000")).toBe("conflict");
     expect(errorKind("P0002")).toBe("not_found");
     expect(toBackendError({ code: "PGRST202", message: "missing" }).code).toBe("setup_required");
+  });
+});
+
+describe("stage 2 mapping", () => {
+  it("maps apps.authority, defaulting to client", () => {
+    expect(toApp(appRow).authority).toBe("client");
+    expect(toApp({ ...appRow, authority: null }).authority).toBe("client");
+    expect(toApp({ ...appRow, authority: "server" }).authority).toBe("server");
+  });
+
+  it("reads get_app_server_config in camelCase, snake_case, or as a one-row set", () => {
+    const expected = { secretPrefix: "xas_ab12", hasSecret: true, webhookUrl: "https://h.test", hasWebhook: true, authority: "server" };
+    expect(toServerConfig(expected)).toEqual(expected);
+    expect(
+      toServerConfig([{ secret_prefix: "xas_ab12", has_secret: true, webhook_url: "https://h.test", has_webhook: true, authority: "server" }]),
+    ).toEqual(expected);
+    expect(toServerConfig(null)).toEqual({ secretPrefix: null, hasSecret: false, webhookUrl: null, hasWebhook: false, authority: "client" });
+  });
+
+  it("maps deliveries newest first, coercing numbers", () => {
+    const rows = toWebhookDeliveries([
+      { id: "1", event: "ping", matchId: null, createdAt: "2026-01-01T00:00:00Z", attempts: 1, deliveredAt: null, lastStatus: "500", lastError: "boom" },
+      { id: "2", event: "match.ended", match_id: "m", created_at: "2026-01-02T00:00:00Z", attempts: 2, delivered_at: "2026-01-02T00:01:00Z", last_status: 200, last_error: null },
+    ]);
+    expect(rows.map((r) => r.id)).toEqual(["2", "1"]);
+    expect(rows[0]).toMatchObject({ matchId: "m", lastStatus: 200, deliveredAt: "2026-01-02T00:01:00Z", lastError: null });
+    expect(rows[1]).toMatchObject({ lastStatus: 500, attempts: 1, lastError: "boom" });
+    expect(toWebhookDeliveries(null)).toEqual([]);
+  });
+
+  it("reads secrets returned as text or wrapped", () => {
+    expect(toSecret("xas_1")).toBe("xas_1");
+    expect(toSecret({ secret: "whsec_1" })).toBe("whsec_1");
+    expect(toSecret([{ rotate_app_secret: "xas_2" }])).toBe("xas_2");
+    expect(toSecret(null)).toBeNull();
   });
 });

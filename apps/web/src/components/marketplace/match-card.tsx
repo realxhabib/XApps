@@ -236,11 +236,11 @@ export function ActivityPill({ match, apps }: { match: Match; apps?: AppManifest
   return (
     <Link
       href={match.status === "voting" ? "/arena" : match.status === "active" ? `/play/${match.id}` : `/apps/${match.appSlug}`}
-      className="flex h-11 shrink-0 items-center gap-2.5 rounded-full border border-white/[0.07] bg-ink-850/80 py-1 pl-1.5 pr-4 text-sm text-ink-200 transition hover:border-white/20 hover:text-ink-50"
+      className="flex h-11 min-w-0 max-w-full shrink-0 items-center gap-2.5 rounded-full border border-white/[0.07] bg-ink-850/80 py-1 pl-1.5 pr-4 text-sm text-ink-200 transition hover:border-white/20 hover:text-ink-50"
     >
       {app && <AppGlyph app={app} size={30} />}
-      <span className="whitespace-nowrap [&_b]:font-semibold [&_b]:text-ink-50">{text}</span>
-      <span className="whitespace-nowrap text-xs text-ink-500">{timeAgo(match.endedAt ?? match.createdAt)}</span>
+      <span className="min-w-0 truncate [&_b]:font-semibold [&_b]:text-ink-50">{text}</span>
+      <span className="shrink-0 whitespace-nowrap text-xs text-ink-500">{timeAgo(match.endedAt ?? match.createdAt)}</span>
     </Link>
   );
 }

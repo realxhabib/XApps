@@ -3,7 +3,9 @@ import { env } from "@/lib/env";
 import { BackendError, type Backend, type RoomTransport } from "../backend";
 import { OFFICIAL_APPS, getOfficialApp, manifestShapeError, withManifestDefaults } from "../catalog";
 import type {
+  AppAuthority,
   AppManifest,
+  AppServerConfig,
   CreateChallengeInput,
   Json,
   LeaderRow,
@@ -11,9 +13,20 @@ import type {
   Profile,
   RegisterAppInput,
   SubmitInput,
+  WebhookDelivery,
 } from "../types";
 import { getBrowserSupabase } from "./client";
-import { appInsert, challengeArgs, normalizeMatch, toApp, toBackendError, type AppRow } from "./mapping";
+import {
+  appInsert,
+  challengeArgs,
+  normalizeMatch,
+  toApp,
+  toBackendError,
+  toSecret,
+  toServerConfig,
+  toWebhookDeliveries,
+  type AppRow,
+} from "./mapping";
 import { createSupabaseRoom } from "./room";
 
 interface ProfileRow {
@@ -79,6 +92,7 @@ async function resolveXProvider(): Promise<"x" | "twitter"> {
 /** The production backend: X sign-in, Postgres + RLS, Realtime rooms. */
 export class SupabaseBackend implements Backend {
   readonly kind = "supabase" as const;
+  readonly serverApi = true;
   private client: SupabaseClient | null;
 
   constructor(client?: SupabaseClient) {
@@ -190,6 +204,52 @@ export class SupabaseBackend implements Backend {
     const { data, error } = await this.sb.from("apps").select(APP_COLUMNS).eq("developer_id", id).order("created_at", { ascending: false });
     if (error) fail(error);
     return ((data ?? []) as AppRow[]).map(toApp);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* App server settings (owner only)                                 */
+  /* ---------------------------------------------------------------- */
+
+  private async ownerRpc(fn: string, args: Record<string, unknown>): Promise<unknown> {
+    await this.requireUserId();
+    const { data, error } = await this.sb.rpc(fn, args);
+    if (error) fail(error);
+    return data;
+  }
+
+  private async secretRpc(fn: string, args: Record<string, unknown>): Promise<string> {
+    const secret = toSecret(await this.ownerRpc(fn, args));
+    if (!secret) throw new BackendError("The server didn't return a secret", "internal");
+    return secret;
+  }
+
+  async getAppServerConfig(appSlug: string): Promise<AppServerConfig> {
+    return toServerConfig(await this.ownerRpc("get_app_server_config", { p_app: appSlug }));
+  }
+
+  rotateAppSecret(appSlug: string): Promise<string> {
+    return this.secretRpc("rotate_app_secret", { p_app: appSlug });
+  }
+
+  async setAppWebhook(appSlug: string, url: string | null): Promise<string | null> {
+    const clean = url?.trim() || null;
+    return toSecret(await this.ownerRpc("set_app_webhook", { p_app: appSlug, p_url: clean }));
+  }
+
+  rotateWebhookSecret(appSlug: string): Promise<string> {
+    return this.secretRpc("rotate_webhook_secret", { p_app: appSlug });
+  }
+
+  async setAppAuthority(appSlug: string, authority: AppAuthority): Promise<void> {
+    await this.ownerRpc("set_app_authority", { p_app: appSlug, p_authority: authority });
+  }
+
+  async listWebhookDeliveries(appSlug: string): Promise<WebhookDelivery[]> {
+    return toWebhookDeliveries(await this.ownerRpc("list_webhook_deliveries", { p_app: appSlug, p_limit: 50 }));
+  }
+
+  async sendTestWebhook(appSlug: string): Promise<void> {
+    await this.ownerRpc("send_test_webhook", { p_app: appSlug });
   }
 
   /* ---------------------------------------------------------------- */

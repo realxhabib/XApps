@@ -6,6 +6,7 @@ import { OFFICIAL_APPS } from "../catalog";
 import { settle } from "../scoring";
 import type { Profile } from "../types";
 import { DB_VERSION, MATCH_V2_DEFAULTS, newPlayerRow, type DemoDb, type MatchRow, type PlayerRow } from "./store";
+import { recordWebhook } from "./server-settings";
 
 export const PRACTICE_BOT_ID = "bot-xapps";
 
@@ -286,6 +287,7 @@ export function applySettlement(db: DemoDb, match: MatchRow, forfeitBy?: string)
   match.winnerId = winnerId;
   match.winnerTeam = winnerTeam;
   match.status = "completed";
+  recordWebhook(db, match.appSlug, "match.ended", match.id);
   match.isOpen = false;
   match.turnDeadline = null;
   match.endedAt = match.endedAt ?? new Date().toISOString();

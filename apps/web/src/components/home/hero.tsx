@@ -156,7 +156,7 @@ function ViewerCopy() {
 export function Hero() {
   const { viewer, loading } = useViewer();
   return (
-    <section className="relative grid items-center gap-8 pt-6 lg:min-h-[78vh] lg:grid-cols-[1.05fr_1fr] lg:pt-2">
+    <section className="relative grid grid-cols-1 items-center gap-8 pt-6 lg:min-h-[78vh] lg:grid-cols-[1.05fr_1fr] lg:pt-2">
       <div className="relative z-10 order-2 lg:order-1">
         <AnimatePresence mode="wait">{!loading && viewer ? <ViewerCopy /> : <GuestCopy />}</AnimatePresence>
       </div>

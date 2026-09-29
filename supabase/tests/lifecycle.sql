@@ -1094,4 +1094,795 @@ exception when insufficient_privilege then null;
 end $$;
 reset role;
 
+-- ================================================================ v2 stage 2: trust
+reset role;
+
+-- Runs p_sql and asserts it fails with SQLSTATE p_state (and a message like p_like).
+create function pg_temp.expect(p_sql text, p_state text, p_like text default null) returns void language plpgsql as $$
+begin
+  execute p_sql;
+  raise exception 'expected %', p_state;
+exception when others then
+  assert sqlstate = p_state, format('%s -> %s %s (expected %s)', p_sql, sqlstate, sqlerrm, p_state);
+  assert p_like is null or sqlerrm like p_like, format('%s -> message %s', p_sql, sqlerrm);
+end $$;
+create function pg_temp.cv(p_key text) returns text language sql as $$
+  select v from ctx where k = p_key;
+$$;
+-- Per handle: [xp, wins, losses, draws, app played, app xp, app wins, app losses, app draws]
+create function pg_temp.stats(p_app text, p_handles text[]) returns jsonb language sql as $$
+  select jsonb_object_agg(p.handle, jsonb_build_array(p.xp, p.wins, p.losses, p.draws,
+           coalesce(s.played, 0), coalesce(s.xp, 0), coalesce(s.wins, 0), coalesce(s.losses, 0), coalesce(s.draws, 0)))
+    from public.profiles p
+    left join public.app_player_stats s on s.user_id = p.id and s.app_slug = p_app
+   where p.handle = any (p_handles);
+$$;
+create function pg_temp.delta(a jsonb, b jsonb) returns jsonb language sql as $$
+  select jsonb_object_agg(k, (select jsonb_agg((b->k->>i)::int - (a->k->>i)::int order by i)
+                                from generate_series(0, jsonb_array_length(a->k) - 1) i))
+    from jsonb_object_keys(a) k;
+$$;
+-- Per handle: [rank, result, xpDelta, state]
+create function pg_temp.placements(p_match uuid) returns jsonb language sql as $$
+  select jsonb_object_agg(p.handle, jsonb_build_array(mp.rank, mp.result, mp.xp_delta, mp.state))
+    from public.match_players mp join public.profiles p on p.id = mp.user_id
+   where mp.match_id = p_match and mp.role = 'player';
+$$;
+-- A full, active live table on ref-party (first handle creates it).
+create function pg_temp.party(p_key text, p_handles text[]) returns uuid language plpgsql as $$
+declare
+  v uuid;
+  h text;
+begin
+  perform pg_temp.login(p_handles[1]);
+  v := public.create_challenge('ref-party', 'live', null, '{}', p_handles[2:], cardinality(p_handles));
+  foreach h in array p_handles[2:] loop
+    perform pg_temp.login(h);
+    perform public.join_match(v);
+  end loop;
+  insert into ctx values (p_key, v::text);
+  return v;
+end $$;
+create function pg_temp.submit(p_key text, p_handle text, p_score double precision) returns void language plpgsql as $$
+begin
+  perform pg_temp.login(p_handle);
+  perform public.submit_entry(pg_temp.mid(p_key), null, p_score);
+end $$;
+create function pg_temp.report(p_secret_key text, p_key text, p_result jsonb) returns jsonb language sql as $$
+  select public.app_api_report_result(pg_temp.cv(p_secret_key), pg_temp.mid(p_key), p_result);
+$$;
+-- {"<uid of handle>": value, …} from {"<handle>": value, …}
+create function pg_temp.by_uid(p jsonb) returns jsonb language sql as $$
+  select jsonb_object_agg(pg_temp.uid(key)::text, value) from jsonb_each(p);
+$$;
+
+insert into public.apps
+  (slug, name, category, url, modes, min_players, max_players, scoring, turn_based, official, status, developer_id)
+values
+  ('ref-duel', 'Ref Duel', 'games', 'https://ref-duel.example.com/play', '{live,async,practice}', 2, 2, 'high', true, false, 'published', pg_temp.uid('bob')),
+  ('ref-party', 'Ref Party', 'games', 'https://ref-party.example.com/play', '{live,async,practice}', 2, 4, 'high', false, false, 'published', pg_temp.uid('bob')),
+  ('ref-crowd', 'Ref Crowd', 'contests', 'https://ref-crowd.example.com/play', '{async}', 2, 2, 'votes', false, false, 'published', pg_temp.uid('bob')),
+  ('ref-other', 'Ref Other', 'games', 'https://ref-other.example.com/play', '{live}', 2, 2, 'high', false, false, 'published', pg_temp.uid('carol'));
+
+do $$
+begin
+  assert (select bool_and(authority = 'client') from public.apps), 'apps default to client authority';
+  assert (select bool_and(authority = 'client') from public.matches), 'existing matches are client-authoritative';
+  assert not exists (select 1 from public.webhook_deliveries), 'no webhooks without a webhook URL';
+end $$;
+
+-- ---------------------------------------------------------------- Owner RPCs: access
+set role authenticated;
+select pg_temp.login('carol');
+select pg_temp.expect($q$select public.get_app_server_config('ref-duel')$q$, '42501');
+select pg_temp.expect($q$select public.rotate_app_secret('ref-duel')$q$, '42501');
+select pg_temp.expect($q$select public.set_app_webhook('ref-duel', 'https://evil.example.com/hook')$q$, '42501');
+select pg_temp.expect($q$select public.rotate_webhook_secret('ref-duel')$q$, '42501');
+select pg_temp.expect($q$select public.set_app_authority('ref-duel', 'client')$q$, '42501');
+select pg_temp.expect($q$select public.list_webhook_deliveries('ref-duel')$q$, '42501');
+select pg_temp.expect($q$select public.send_test_webhook('ref-duel')$q$, '42501');
+select pg_temp.expect($q$select public.get_app_server_config('no-such-app')$q$, 'P0002');
+select set_config('request.jwt.claim.sub', '', false);
+select pg_temp.expect($q$select public.get_app_server_config('ref-duel')$q$, '28000');
+set role anon;
+select pg_temp.expect($q$select public.rotate_app_secret('ref-duel')$q$, '42501');
+set role authenticated;
+
+-- ---------------------------------------------------------------- App secret: format, hashing, rotation
+select pg_temp.login('bob');
+do $$
+begin
+  assert public.get_app_server_config('ref-duel')
+    = '{"secretPrefix":null,"hasSecret":false,"webhookUrl":null,"hasWebhook":false,"authority":"client"}'::jsonb, 'fresh config';
+end $$;
+select pg_temp.expect($q$select public.set_app_authority('ref-duel', 'server')$q$, '55000', '%secret first%');
+insert into ctx values ('sec_old', public.rotate_app_secret('ref-duel'));
+insert into ctx values ('sec_duel', public.rotate_app_secret('ref-duel'));
+do $$
+declare c jsonb := public.get_app_server_config('ref-duel');
+begin
+  assert pg_temp.cv('sec_duel') ~ '^xas_[0-9a-f]{48}$' and pg_temp.cv('sec_old') ~ '^xas_[0-9a-f]{48}$', 'secret format';
+  assert pg_temp.cv('sec_old') <> pg_temp.cv('sec_duel'), 'rotation makes a new secret';
+  assert (c->>'hasSecret')::boolean and c->>'secretPrefix' = left(pg_temp.cv('sec_duel'), 8)
+     and char_length(c->>'secretPrefix') = 8, c::text;
+end $$;
+-- The old secret stops working at once; the new one authenticates.
+select pg_temp.expect(format('select public.app_api_get_match(%L, %L)', pg_temp.cv('sec_old'), gen_random_uuid()), '28000', 'invalid_secret');
+select pg_temp.expect(format('select public.app_api_get_match(%L, %L)', pg_temp.cv('sec_duel'), gen_random_uuid()), 'P0002');
+-- Credentials and deliveries are never readable by clients.
+select pg_temp.expect('select * from public.app_credentials', '42501');
+select pg_temp.expect('select * from public.webhook_deliveries', '42501');
+select pg_temp.expect('update public.app_credentials set webhook_url = null', '42501');
+reset role;
+do $$
+begin
+  assert (select secret_hash from public.app_credentials where app_slug = 'ref-duel')
+       = encode(extensions.digest(pg_temp.cv('sec_duel'), 'sha256'), 'hex'), 'stored as a SHA-256 hash';
+  assert not exists (select 1 from public.app_credentials c
+                      where c::text like '%' || substr(pg_temp.cv('sec_duel'), 5) || '%'
+                         or c::text like '%' || substr(pg_temp.cv('sec_old'), 5) || '%'), 'secrets never stored in clear';
+end $$;
+
+-- ---------------------------------------------------------------- Webhook URL + signing secret
+set role authenticated;
+select pg_temp.login('bob');
+select pg_temp.expect($q$select public.rotate_webhook_secret('ref-duel')$q$, '55000');
+select pg_temp.expect($q$select public.send_test_webhook('ref-duel')$q$, '55000');
+select pg_temp.expect($q$select public.set_app_webhook('ref-duel', 'http://hooks.example.com/x')$q$, '22023', '%https%');
+select pg_temp.expect($q$select public.set_app_webhook('ref-duel', 'https://localhost:3000/x')$q$, '22023');
+select pg_temp.expect($q$select public.set_app_webhook('ref-duel', 'https://api.localhost/x')$q$, '22023');
+select pg_temp.expect($q$select public.set_app_webhook('ref-duel', 'https://192.168.1.10/x')$q$, '22023');
+select pg_temp.expect($q$select public.set_app_webhook('ref-duel', 'https://127.0.0.1/x')$q$, '22023');
+select pg_temp.expect($q$select public.set_app_webhook('ref-duel', 'https://user:pw@hooks.example.com/x')$q$, '22023');
+select pg_temp.expect($q$select public.set_app_webhook('ref-duel', 'https://intranet/x')$q$, '22023');
+select pg_temp.expect($q$select public.set_app_webhook('ref-duel', 'https://hooks.example.com/a b')$q$, '22023');
+select pg_temp.expect($q$select public.set_app_webhook('ref-duel', 'javascript:alert(1)')$q$, '22023');
+insert into ctx values ('wh1', public.set_app_webhook('ref-duel', 'https://hooks.example.com/xapps'));
+do $$
+declare c jsonb := public.get_app_server_config('ref-duel');
+begin
+  assert pg_temp.cv('wh1') ~ '^whsec_[0-9a-f]{48}$', 'signing secret format';
+  assert c->>'webhookUrl' = 'https://hooks.example.com/xapps' and (c->>'hasWebhook')::boolean, c::text;
+  assert not (c ? 'webhookSecret'), 'signing secret is never readable';
+  assert public.set_app_webhook('ref-duel', ' https://hooks.example.com/xapps ') is null, 'same URL: no new secret';
+end $$;
+insert into ctx values ('wh2', public.set_app_webhook('ref-duel', 'https://hooks.example.com:8443/v2?app=ref-duel'));
+insert into ctx values ('wh3', public.rotate_webhook_secret('ref-duel'));
+reset role;
+do $$
+begin
+  assert pg_temp.cv('wh2') ~ '^whsec_[0-9a-f]{48}$' and pg_temp.cv('wh2') <> pg_temp.cv('wh1'), 'changed URL: new secret';
+  assert pg_temp.cv('wh3') ~ '^whsec_[0-9a-f]{48}$' and pg_temp.cv('wh3') <> pg_temp.cv('wh2'), 'rotated';
+  assert (select webhook_secret from public.app_credentials where app_slug = 'ref-duel') = pg_temp.cv('wh3'), 'rotation replaces the secret';
+  assert (select webhook_url from public.app_credentials where app_slug = 'ref-duel') = 'https://hooks.example.com:8443/v2?app=ref-duel', 'url stored';
+end $$;
+set role authenticated;
+select pg_temp.login('bob');
+do $$
+declare c jsonb;
+begin
+  assert public.set_app_webhook('ref-duel', null) is null, 'clearing returns null';
+  c := public.get_app_server_config('ref-duel');
+  assert not (c->>'hasWebhook')::boolean and c->'webhookUrl' = 'null'::jsonb and (c->>'hasSecret')::boolean, c::text;
+  assert public.set_app_webhook('ref-duel', '') is null, 'clearing twice is fine';
+end $$;
+select pg_temp.expect($q$select public.rotate_webhook_secret('ref-duel')$q$, '55000');
+insert into ctx values ('wh_duel', public.set_app_webhook('ref-duel', 'https://duel.example.com/webhooks'));
+insert into ctx values ('sec_party', public.rotate_app_secret('ref-party'));
+insert into ctx values ('wh_party', public.set_app_webhook('ref-party', 'https://party.example.com/webhooks'));
+select pg_temp.login('carol');
+insert into ctx values ('sec_other', public.rotate_app_secret('ref-other'));
+
+-- ---------------------------------------------------------------- Authority
+select pg_temp.login('bob');
+select pg_temp.expect($q$select public.set_app_authority('ref-duel', 'referee')$q$, '22023');
+select pg_temp.expect($q$select public.set_app_authority('ref-duel', null)$q$, '22023');
+insert into ctx values ('sec_crowd', public.rotate_app_secret('ref-crowd'));
+select pg_temp.expect($q$select public.set_app_authority('ref-crowd', 'server')$q$, '22023', '%Crowd-judged%');
+select public.set_app_authority('ref-duel', 'server');
+do $$
+begin
+  assert public.get_app_server_config('ref-duel')->>'authority' = 'server', 'server authority';
+end $$;
+-- Direct writes can't change authority (it needs the RPC's checks).
+select pg_temp.login('alice_x');
+update public.apps set authority = 'server' where slug = 'my-game';
+insert into public.apps (slug, name, category, url, authority)
+values ('my-server-app', 'My Server App', 'games', 'https://my-server.example.com/', 'server');
+reset role;
+do $$
+begin
+  assert (select authority from public.apps where slug = 'my-game') = 'client', 'client update ignored';
+  assert (select authority from public.apps where slug = 'my-server-app') = 'client', 'client insert forced to client';
+  assert (select status from public.apps where slug = 'ref-duel') = 'published', 'set_app_authority keeps the app published';
+end $$;
+do $$
+begin
+  update public.apps set authority = 'server' where slug = 'ref-crowd';
+  raise exception 'expected failure';
+exception when check_violation then null;
+end $$;
+
+-- ---------------------------------------------------------------- Server-authoritative 1v1: server API
+set role authenticated;
+select pg_temp.login('alice_x');
+insert into ctx values ('sa', public.create_challenge('ref-duel', 'live', 'carol')::text);
+select pg_temp.login('carol');
+select public.join_match(pg_temp.mid('sa'));
+select pg_temp.login('carol');
+insert into ctx values ('om', public.create_challenge('ref-other', 'live', 'alice_x')::text);
+reset role;
+do $$
+declare d public.webhook_deliveries;
+begin
+  assert (select authority from public.matches where id = pg_temp.mid('sa')) = 'server', 'matches snapshot the app authority';
+  select * into d from public.webhook_deliveries where match_id = pg_temp.mid('sa') and event = 'match.created';
+  assert d.payload->>'type' = 'match.created' and d.payload->>'id' = d.id::text, d.payload::text;
+  assert d.payload->'app' = '{"slug":"ref-duel"}'::jsonb and d.app_slug = 'ref-duel', 'app';
+  assert (d.payload->>'createdAt')::timestamptz = d.created_at, 'createdAt';
+  assert d.payload->'match'->>'id' = pg_temp.mid('sa')::text and d.payload->'match'->>'status' = 'pending', 'match at enqueue time';
+  assert jsonb_array_length(d.payload->'match'->'players') = 2, 'enqueued at commit: players already seated';
+  assert d.attempts = 0 and d.request_id is null and d.delivered_at is null and d.next_attempt_at <= now(), 'queued';
+  assert not (d.payload ? 'reason'), 'no reason';
+  assert (select array_agg(event order by created_at) from public.webhook_deliveries where match_id = pg_temp.mid('sa'))
+       = array['match.created', 'match.started', 'match.turn'], 'created, then started + first turn on join';
+  assert (select payload->'match'->>'turnUserId' from public.webhook_deliveries
+           where match_id = pg_temp.mid('sa') and event = 'match.turn') = pg_temp.uid('alice_x')::text, 'turn payload';
+  assert not exists (select 1 from public.webhook_deliveries where match_id = pg_temp.mid('om')), 'apps without a webhook get none';
+end $$;
+
+-- The routes call the server API with the anon key and no user session.
+set role anon;
+select set_config('request.jwt.claim.sub', '', false);
+do $$
+declare m jsonb := public.app_api_get_match(pg_temp.cv('sec_duel'), pg_temp.mid('sa'));
+begin
+  assert m->>'id' = pg_temp.mid('sa')::text and m->>'status' = 'active' and m->>'authority' = 'server', m::text;
+  assert m->>'appSlug' = 'ref-duel' and (m->>'maxPlayers')::int = 2 and m ? 'stateVersion' and m ? 'spectatorCount', 'match shape';
+  assert jsonb_array_length(m->'players') = 2 and pg_temp.pl(m, 'carol')->>'role' = 'player', 'players';
+  assert pg_temp.pl(m, 'carol') ? 'claimedScore', 'claims visible to the app server';
+end $$;
+-- Bad, missing or foreign credentials
+select pg_temp.expect(format('select public.app_api_get_match(%L, %L)', 'xas_' || repeat('0', 48), pg_temp.mid('sa')), '28000', 'invalid_secret');
+select pg_temp.expect(format('select public.app_api_get_match(null, %L)', pg_temp.mid('sa')), '28000', 'invalid_secret');
+select pg_temp.expect(format('select public.app_api_get_match(%L, %L)', 'Bearer nope', pg_temp.mid('sa')), '28000', 'invalid_secret');
+select pg_temp.expect(format('select public.app_api_set_state(%L, %L, %L, 0)', 'xas_nope', pg_temp.mid('sa'), '{}'), '28000', 'invalid_secret');
+select pg_temp.expect(format('select public.app_api_end_turn(%L, %L)', 'xas_nope', pg_temp.mid('sa')), '28000', 'invalid_secret');
+select pg_temp.expect(format('select public.app_api_set_round(%L, %L, 1)', 'xas_nope', pg_temp.mid('sa')), '28000', 'invalid_secret');
+select pg_temp.expect(format('select public.app_api_report_result(%L, %L, %L)', 'xas_nope', pg_temp.mid('sa'), '{}'), '28000', 'invalid_secret');
+select pg_temp.expect(format('select public.app_api_get_match(%L, %L)', pg_temp.cv('sec_other'), pg_temp.mid('sa')), '42501');
+select pg_temp.expect(format('select public.app_api_get_match(%L, %L)', pg_temp.cv('sec_duel'), pg_temp.mid('om')), '42501');
+select pg_temp.expect(format('select public.app_api_set_state(%L, %L, %L, 0)', pg_temp.cv('sec_other'), pg_temp.mid('sa'), '{}'), '42501');
+select pg_temp.expect(format('select public.app_api_end_turn(%L, %L)', pg_temp.cv('sec_other'), pg_temp.mid('sa')), '42501');
+select pg_temp.expect(format('select public.app_api_set_round(%L, %L, 1)', pg_temp.cv('sec_other'), pg_temp.mid('sa')), '42501');
+select pg_temp.expect(format('select public.app_api_report_result(%L, %L, %L)', pg_temp.cv('sec_other'), pg_temp.mid('sa'), '{}'), '42501');
+select pg_temp.expect(format('select public.app_api_get_match(%L, %L)', pg_temp.cv('sec_duel'), gen_random_uuid()), 'P0002');
+select pg_temp.expect(format('select public.app_api_set_state(%L, %L, %L, 0)', pg_temp.cv('sec_duel'), gen_random_uuid(), '{}'), 'P0002');
+select pg_temp.expect(format('select public.app_api_end_turn(%L, %L)', pg_temp.cv('sec_duel'), gen_random_uuid()), 'P0002');
+select pg_temp.expect(format('select public.app_api_set_round(%L, %L, 1)', pg_temp.cv('sec_duel'), gen_random_uuid()), 'P0002');
+select pg_temp.expect(format('select public.app_api_report_result(%L, %L, %L)', pg_temp.cv('sec_duel'), gen_random_uuid(), '{}'), 'P0002');
+
+-- Shared state: compare-and-set (two writes -> one debounced match.state webhook)
+select public.app_api_set_state(pg_temp.cv('sec_duel'), pg_temp.mid('sa'), '{"board":[1]}', 0);
+select pg_temp.expect(format('select public.app_api_set_state(%L, %L, %L, 0)', pg_temp.cv('sec_duel'), pg_temp.mid('sa'), '{"board":[2]}'),
+  '40001', 'state_conflict');
+do $$
+begin
+  assert public.app_api_set_state(pg_temp.cv('sec_duel'), pg_temp.mid('sa'), '{"board":[1,2]}', 1) = 2, 'second write';
+end $$;
+select pg_temp.expect(format('select public.app_api_set_state(%L, %L, %L, null)', pg_temp.cv('sec_duel'), pg_temp.mid('sa'), '{}'), '22023');
+select pg_temp.expect(format('select public.app_api_set_state(%L, %L, %L, 2)', pg_temp.cv('sec_duel'), pg_temp.mid('sa'),
+  jsonb_build_object('blob', repeat('x', 70000))), '22023', '%too large%');
+-- Turns + rounds: the server can pass anyone's turn
+select pg_temp.expect(format('select public.app_api_end_turn(%L, %L, %L)', pg_temp.cv('sec_duel'), pg_temp.mid('sa'), pg_temp.uid('erin')), '22023');
+do $$
+declare m jsonb := public.app_api_end_turn(pg_temp.cv('sec_duel'), pg_temp.mid('sa'));
+begin
+  assert m->>'turnUserId' = pg_temp.uid('carol')::text, 'alice -> carol';
+  assert m->'turnDeadline' = 'null'::jsonb, 'live: no deadline';
+end $$;
+do $$
+declare m jsonb := public.app_api_end_turn(pg_temp.cv('sec_duel'), pg_temp.mid('sa'), pg_temp.uid('alice_x'));
+begin
+  assert m->>'turnUserId' = pg_temp.uid('alice_x')::text, 'explicit next';
+  assert (public.app_api_set_round(pg_temp.cv('sec_duel'), pg_temp.mid('sa'), 3)->>'round')::int = 3, 'round';
+  assert (public.app_api_set_round(pg_temp.cv('sec_duel'), pg_temp.mid('sa'), 3)->>'round')::int = 3, 'same round is fine';
+end $$;
+select pg_temp.expect(format('select public.app_api_set_round(%L, %L, 1)', pg_temp.cv('sec_duel'), pg_temp.mid('sa')), '22023');
+select pg_temp.expect(format('select public.app_api_set_round(%L, %L, null)', pg_temp.cv('sec_duel'), pg_temp.mid('sa')), '22023');
+
+-- Players submit: stored + marked submitted, but never settled; scores are claims.
+set role authenticated;
+select pg_temp.login('alice_x');
+select public.submit_entry(pg_temp.mid('sa'), null, 99, '{"moves":[3,4]}', '{"kind":"text","body":"gg"}');
+select pg_temp.login('carol');
+do $$
+declare m jsonb := public.get_match(pg_temp.mid('sa'));
+begin
+  assert pg_temp.pl(m, 'alice_x')->'submission' = 'null'::jsonb, 'players still can''t peek';
+  assert pg_temp.pl(m, 'alice_x')->>'state' = 'submitted' and pg_temp.pl(m, 'alice_x')->'score' = 'null'::jsonb, 'claim is not a score';
+  assert m->'state' = '{"board":[1,2]}'::jsonb and (m->>'stateVersion')::int = 2 and (m->>'round')::int = 3, 'server writes visible to players';
+end $$;
+-- The score is optional when the server referees.
+select public.submit_entry(pg_temp.mid('sa'), null, null, '{"moves":[1]}');
+do $$
+declare m jsonb := public.get_match(pg_temp.mid('sa'));
+begin
+  assert m->>'status' = 'active' and m->'winnerId' = 'null'::jsonb, 'server-authoritative: submitting never settles';
+end $$;
+set role anon;
+select set_config('request.jwt.claim.sub', '', false);
+do $$
+declare m jsonb := public.app_api_get_match(pg_temp.cv('sec_duel'), pg_temp.mid('sa'));
+begin
+  assert pg_temp.pl(m, 'alice_x')->'submission' = '{"data":{"moves":[3,4]},"display":{"kind":"text","body":"gg"}}'::jsonb, 'app server sees every entry';
+  assert pg_temp.pl(m, 'carol')->'submission'->'data' = '{"moves":[1]}'::jsonb, 'both entries';
+  assert (pg_temp.pl(m, 'alice_x')->>'claimedScore')::numeric = 99 and pg_temp.pl(m, 'alice_x')->'score' = 'null'::jsonb, 'claim';
+  assert pg_temp.pl(m, 'carol')->'claimedScore' = 'null'::jsonb, 'no claim';
+end $$;
+reset role;
+do $$
+begin
+  assert (select all_submitted_at from public.matches where id = pg_temp.mid('sa')) > now() - interval '1 minute', 'waiting for the report';
+  perform public.finalize_due_matches();
+  assert (select status from public.matches where id = pg_temp.mid('sa')) = 'active', 'no timeout before 24 h';
+end $$;
+
+-- report_result: invalid bodies (nothing changes)
+set role anon;
+create function pg_temp.bad_report(p_body jsonb, p_like text default null) returns void language sql as $$
+  select pg_temp.expect(format('select public.app_api_report_result(%L, %L, %L)', pg_temp.cv('sec_duel'), pg_temp.mid('sa'), p_body),
+    '22023', p_like);
+$$;
+select pg_temp.bad_report('[]');
+select pg_temp.bad_report('{}', '%scores or ranks%');
+select pg_temp.bad_report('{"scores":null,"ranks":null}');
+select pg_temp.bad_report('{"scores":[1,2]}');
+select pg_temp.bad_report('{"scores":{"not-a-uuid":1}}');
+select pg_temp.bad_report(jsonb_build_object('scores', pg_temp.by_uid('{"alice_x":1,"carol":2,"erin":3}')), '%isn''t a player%');
+select pg_temp.bad_report(jsonb_build_object('scores', pg_temp.by_uid('{"alice_x":1}')), 'Missing a score%');
+select pg_temp.bad_report(jsonb_build_object('scores', pg_temp.by_uid('{"alice_x":"1","carol":2}')));
+select pg_temp.bad_report(jsonb_build_object('scores', pg_temp.by_uid('{"alice_x":1e12,"carol":2}')));
+select pg_temp.bad_report(jsonb_build_object('ranks', pg_temp.by_uid('{"alice_x":1}')), 'Missing a rank%');
+select pg_temp.bad_report(jsonb_build_object('ranks', pg_temp.by_uid('{"alice_x":0,"carol":1}')));
+select pg_temp.bad_report(jsonb_build_object('ranks', pg_temp.by_uid('{"alice_x":1.5,"carol":1}')));
+select pg_temp.bad_report(jsonb_build_object('ranks', pg_temp.by_uid('{"alice_x":1,"carol":2}'), 'leavers', 'x'));
+select pg_temp.bad_report(jsonb_build_object('ranks', pg_temp.by_uid('{"alice_x":1}'), 'leavers', jsonb_build_array(pg_temp.uid('erin'))));
+select pg_temp.bad_report(jsonb_build_object('ranks', pg_temp.by_uid('{"alice_x":1}'), 'leavers', jsonb_build_array(42)));
+select pg_temp.bad_report(jsonb_build_object('ranks', pg_temp.by_uid('{"alice_x":1,"carol":2}'), 'leavers', jsonb_build_array(pg_temp.uid('carol'))));
+reset role;
+do $$
+begin
+  assert (select status from public.matches where id = pg_temp.mid('sa')) = 'active', 'invalid reports change nothing';
+  assert (select count(*) from public.match_players where match_id = pg_temp.mid('sa') and (state <> 'submitted' or rank is not null)) = 0, 'untouched';
+end $$;
+
+-- report_result with ranks: honored over the players' claims (alice claimed 99).
+set role anon;
+do $$
+declare m jsonb := pg_temp.report('sec_duel', 'sa', jsonb_build_object('ranks', pg_temp.by_uid('{"carol":1,"alice_x":2}')));
+begin
+  assert m->>'status' = 'completed' and m->>'winnerId' = pg_temp.uid('carol')::text, 'server decides';
+  assert (pg_temp.pl(m, 'carol')->>'rank')::int = 1 and pg_temp.pl(m, 'carol')->>'result' = 'win'
+     and (pg_temp.pl(m, 'carol')->>'xpDelta')::int = 30, 'winner';
+  assert (pg_temp.pl(m, 'alice_x')->>'rank')::int = 2 and pg_temp.pl(m, 'alice_x')->>'result' = 'loss'
+     and (pg_temp.pl(m, 'alice_x')->>'xpDelta')::int = 8, 'loser';
+  assert pg_temp.pl(m, 'alice_x')->'score' = 'null'::jsonb, 'a ranks-only report sets no scores';
+end $$;
+select pg_temp.expect(format('select public.app_api_report_result(%L, %L, %L)', pg_temp.cv('sec_duel'), pg_temp.mid('sa'),
+  jsonb_build_object('ranks', pg_temp.by_uid('{"carol":1,"alice_x":2}'))), '55000', '%already settled%');
+select pg_temp.expect(format('select public.app_api_set_state(%L, %L, %L, 2)', pg_temp.cv('sec_duel'), pg_temp.mid('sa'), '{}'), '55000');
+select pg_temp.expect(format('select public.app_api_end_turn(%L, %L)', pg_temp.cv('sec_duel'), pg_temp.mid('sa')), '55000');
+select pg_temp.expect(format('select public.app_api_set_round(%L, %L, 4)', pg_temp.cv('sec_duel'), pg_temp.mid('sa')), '55000');
+reset role;
+do $$
+begin
+  assert (select wins from public.app_player_stats where app_slug = 'ref-duel' and user_id = pg_temp.uid('carol')) = 1, 'stats';
+  assert (select array_agg(event order by created_at) from public.webhook_deliveries where match_id = pg_temp.mid('sa'))
+       = array['match.created', 'match.started', 'match.turn', 'match.state', 'match.turn', 'match.turn',
+               'match.submitted', 'match.submitted', 'match.ended'], 'event log';
+  assert (select count(*) from public.webhook_deliveries where match_id = pg_temp.mid('sa') and event = 'match.state') = 1,
+    'match.state debounced to one pending delivery';
+  assert (select payload->'match' from public.webhook_deliveries where match_id = pg_temp.mid('sa') and event = 'match.state')
+         @> '{"state":{"board":[1,2]},"stateVersion":2}'::jsonb, 'debounced payload carries the latest state';
+  assert (select array_agg(payload->>'userId' order by created_at) from public.webhook_deliveries
+           where match_id = pg_temp.mid('sa') and event = 'match.submitted')
+       = array[pg_temp.uid('alice_x')::text, pg_temp.uid('carol')::text], 'match.submitted names the player';
+  assert (select payload->'match'->>'status' from public.webhook_deliveries where match_id = pg_temp.mid('sa') and event = 'match.ended') = 'completed', 'ended';
+  assert not (select payload ? 'reason' from public.webhook_deliveries where match_id = pg_temp.mid('sa') and event = 'match.ended'), 'reported: no reason';
+  assert (select payload->'match'->'players'->0->'submission' from public.webhook_deliveries
+           where match_id = pg_temp.mid('sa') and event = 'match.ended') is not null, 'app-view match in payloads';
+end $$;
+
+-- ---------------------------------------------------------------- Server timeout: a draw after 24 h
+set role authenticated;
+select pg_temp.login('dave');
+insert into ctx values ('st', public.create_challenge('ref-duel', 'async', 'erin')::text);
+select public.submit_entry(pg_temp.mid('st'), null, 5);
+set role anon;
+select pg_temp.expect(format('select public.app_api_report_result(%L, %L, %L)', pg_temp.cv('sec_duel'), pg_temp.mid('st'),
+  jsonb_build_object('ranks', pg_temp.by_uid('{"dave":1,"erin":2}'))), '55000', '%hasn''t started%');
+set role authenticated;
+select pg_temp.login('erin');
+select public.join_match(pg_temp.mid('st'));
+reset role;
+-- Someone still has to play: an old timestamp doesn't matter.
+update public.matches set all_submitted_at = now() - interval '2 days' where id = pg_temp.mid('st');
+do $$
+begin
+  perform public.finalize_due_matches();
+  assert (select status from public.matches where id = pg_temp.mid('st')) = 'active', 'no timeout while players are pending';
+end $$;
+set role authenticated;
+select pg_temp.login('erin');
+select public.submit_entry(pg_temp.mid('st'), null, 7);
+reset role;
+insert into ctx values ('st_before', pg_temp.stats('ref-duel', array['dave', 'erin'])::text);
+do $$
+begin
+  assert (select all_submitted_at from public.matches where id = pg_temp.mid('st')) > now() - interval '1 minute', 'clock restarts at the last submit';
+  perform public.finalize_due_matches();
+  assert (select status from public.matches where id = pg_temp.mid('st')) = 'active', 'still waiting';
+end $$;
+update public.matches set all_submitted_at = now() - interval '25 hours' where id = pg_temp.mid('st');
+do $$
+begin
+  assert public.finalize_due_matches() >= 1, 'timeout processed';
+end $$;
+do $$
+declare
+  m jsonb := public.app_match_json((select x from public.matches x where x.id = pg_temp.mid('st')));
+  d public.webhook_deliveries;
+begin
+  assert m->>'status' = 'completed' and m->'winnerId' = 'null'::jsonb and m->>'endReason' = 'server_timeout', m::text;
+  assert (pg_temp.pl(m, 'dave')->>'rank')::int = 1 and (pg_temp.pl(m, 'erin')->>'rank')::int = 1, 'shared first';
+  assert pg_temp.pl(m, 'dave')->>'result' = 'draw' and (pg_temp.pl(m, 'erin')->>'xpDelta')::int = 15, 'draw xp';
+  assert pg_temp.delta(pg_temp.cv('st_before')::jsonb, pg_temp.stats('ref-duel', array['dave', 'erin']))
+       = '{"dave":[15,0,0,1,1,15,0,0,1],"erin":[15,0,0,1,1,15,0,0,1]}'::jsonb, 'only the draw';
+  select * into d from public.webhook_deliveries where match_id = pg_temp.mid('st') and event = 'match.ended';
+  assert d.payload->>'reason' = 'server_timeout' and d.payload->'match'->>'endReason' = 'server_timeout', d.payload::text;
+end $$;
+
+-- ---------------------------------------------------------------- report_result = settle_match (client-authoritative ref-party)
+-- 2 players, scores: twin A settles from submissions, twin B from the report.
+set role authenticated;
+select pg_temp.party('r2a', array['alice_x', 'bob']);
+insert into ctx values ('s0', pg_temp.stats('ref-party', array['alice_x', 'bob'])::text);
+select pg_temp.submit('r2a', 'alice_x', 10);
+select pg_temp.submit('r2a', 'bob', 5);
+insert into ctx values ('s1', pg_temp.stats('ref-party', array['alice_x', 'bob'])::text);
+select pg_temp.party('r2b', array['alice_x', 'bob']);
+select pg_temp.submit('r2b', 'bob', 700);
+set role anon;
+select pg_temp.report('sec_party', 'r2b', jsonb_build_object('scores', pg_temp.by_uid('{"alice_x":10,"bob":5}')))->>'status';
+insert into ctx values ('s2', pg_temp.stats('ref-party', array['alice_x', 'bob'])::text);
+do $$
+begin
+  assert pg_temp.placements(pg_temp.mid('r2a')) = '{"alice_x":[1,"win",30,"submitted"],"bob":[2,"loss",8,"submitted"]}'::jsonb,
+    pg_temp.placements(pg_temp.mid('r2a'))::text;
+  assert (pg_temp.placements(pg_temp.mid('r2b'))->'alice_x') = '[1,"win",30,"joined"]'::jsonb
+     and (pg_temp.placements(pg_temp.mid('r2b'))->'bob') = '[2,"loss",8,"submitted"]'::jsonb, 'same placements';
+  assert pg_temp.delta(pg_temp.cv('s0')::jsonb, pg_temp.cv('s1')::jsonb) = pg_temp.delta(pg_temp.cv('s1')::jsonb, pg_temp.cv('s2')::jsonb),
+    'same XP/stats as settle_match';
+  assert (select array_agg(score order by seat) from public.match_players where match_id = pg_temp.mid('r2b')) = array[10, 5]::float8[],
+    'reported scores are final (bob''s 700 replaced)';
+  assert (select winner_id from public.matches where id = pg_temp.mid('r2b')) = pg_temp.uid('alice_x'), 'winner';
+end $$;
+
+-- 2 players, ranks win over scores: a draw.
+set role authenticated;
+select pg_temp.party('r2c', array['alice_x', 'bob']);
+select pg_temp.submit('r2c', 'alice_x', 5);
+select pg_temp.submit('r2c', 'bob', 5);
+insert into ctx values ('s3', pg_temp.stats('ref-party', array['alice_x', 'bob'])::text);
+select pg_temp.party('r2d', array['alice_x', 'bob']);
+set role anon;
+select pg_temp.report('sec_party', 'r2d', jsonb_build_object('scores', pg_temp.by_uid('{"alice_x":100,"bob":0}'),
+                                                             'ranks', pg_temp.by_uid('{"alice_x":1,"bob":1}')))->>'status';
+insert into ctx values ('s4', pg_temp.stats('ref-party', array['alice_x', 'bob'])::text);
+do $$
+begin
+  assert pg_temp.placements(pg_temp.mid('r2d')) = '{"alice_x":[1,"draw",15,"joined"],"bob":[1,"draw",15,"joined"]}'::jsonb,
+    pg_temp.placements(pg_temp.mid('r2d'))::text;
+  assert pg_temp.delta(pg_temp.cv('s2')::jsonb, pg_temp.cv('s3')::jsonb) = pg_temp.delta(pg_temp.cv('s3')::jsonb, pg_temp.cv('s4')::jsonb),
+    'draw XP/stats as settle_match';
+  assert (select winner_id from public.matches where id = pg_temp.mid('r2d')) is null, 'no winner';
+end $$;
+
+-- 4 players, scores (tie for first).
+set role authenticated;
+select pg_temp.party('r4a', array['alice_x', 'bob', 'carol', 'dave']);
+insert into ctx values ('s5', pg_temp.stats('ref-party', array['alice_x', 'bob', 'carol', 'dave'])::text);
+select pg_temp.submit('r4a', 'alice_x', 10);
+select pg_temp.submit('r4a', 'bob', 30);
+select pg_temp.submit('r4a', 'carol', 30);
+select pg_temp.submit('r4a', 'dave', 5);
+insert into ctx values ('s6', pg_temp.stats('ref-party', array['alice_x', 'bob', 'carol', 'dave'])::text);
+select pg_temp.party('r4b', array['alice_x', 'bob', 'carol', 'dave']);
+select pg_temp.submit('r4b', 'alice_x', 1000);
+set role anon;
+select pg_temp.report('sec_party', 'r4b', jsonb_build_object('scores', pg_temp.by_uid('{"alice_x":10,"bob":30,"carol":30,"dave":5}')))->>'status';
+insert into ctx values ('s7', pg_temp.stats('ref-party', array['alice_x', 'bob', 'carol', 'dave'])::text);
+do $$
+declare a jsonb := pg_temp.placements(pg_temp.mid('r4a')); b jsonb := pg_temp.placements(pg_temp.mid('r4b'));
+begin
+  assert a = '{"alice_x":[3,"loss",15,"submitted"],"bob":[1,"draw",30,"submitted"],"carol":[1,"draw",30,"submitted"],"dave":[4,"loss",8,"submitted"]}'::jsonb, a::text;
+  assert (select jsonb_object_agg(k, jsonb_path_query_array(a->k, '$[0 to 2]')) from jsonb_object_keys(a) k)
+       = (select jsonb_object_agg(k, jsonb_path_query_array(b->k, '$[0 to 2]')) from jsonb_object_keys(b) k), 'same placements';
+  assert pg_temp.delta(pg_temp.cv('s5')::jsonb, pg_temp.cv('s6')::jsonb) = pg_temp.delta(pg_temp.cv('s6')::jsonb, pg_temp.cv('s7')::jsonb),
+    '4p XP/stats as settle_match';
+end $$;
+
+-- 4 players, ranks (normalised to competition ranking: 1, 3, 3, 7 -> 1, 2, 2, 4).
+set role authenticated;
+select pg_temp.party('r4c', array['alice_x', 'bob', 'carol', 'dave']);
+select pg_temp.submit('r4c', 'alice_x', 40);
+select pg_temp.submit('r4c', 'bob', 20);
+select pg_temp.submit('r4c', 'carol', 20);
+select pg_temp.submit('r4c', 'dave', 1);
+insert into ctx values ('s8', pg_temp.stats('ref-party', array['alice_x', 'bob', 'carol', 'dave'])::text);
+select pg_temp.party('r4d', array['alice_x', 'bob', 'carol', 'dave']);
+select pg_temp.submit('r4d', 'dave', 999);
+set role anon;
+select pg_temp.report('sec_party', 'r4d', jsonb_build_object('ranks', pg_temp.by_uid('{"alice_x":1,"bob":3,"carol":3,"dave":7}')))->>'status';
+insert into ctx values ('s9', pg_temp.stats('ref-party', array['alice_x', 'bob', 'carol', 'dave'])::text);
+do $$
+declare a jsonb := pg_temp.placements(pg_temp.mid('r4c')); b jsonb := pg_temp.placements(pg_temp.mid('r4d'));
+begin
+  assert a = '{"alice_x":[1,"win",30,"submitted"],"bob":[2,"loss",23,"submitted"],"carol":[2,"loss",23,"submitted"],"dave":[4,"loss",8,"submitted"]}'::jsonb, a::text;
+  assert (select jsonb_object_agg(k, jsonb_path_query_array(a->k, '$[0 to 2]')) from jsonb_object_keys(a) k)
+       = (select jsonb_object_agg(k, jsonb_path_query_array(b->k, '$[0 to 2]')) from jsonb_object_keys(b) k), b::text;
+  assert (select winner_id from public.matches where id = pg_temp.mid('r4d')) = pg_temp.uid('alice_x'), 'winner from ranks';
+end $$;
+do $$
+begin
+  -- s7 -> s8 is twin r4c (settle_match), s8 -> s9 is r4d (report)
+  assert pg_temp.delta(pg_temp.cv('s7')::jsonb, pg_temp.cv('s8')::jsonb) = pg_temp.delta(pg_temp.cv('s8')::jsonb, pg_temp.cv('s9')::jsonb),
+    '4p ranks XP/stats as settle_match';
+end $$;
+
+-- 4 players, scores + a leaver (placed last) vs. the same match where dave forfeits.
+set role authenticated;
+select pg_temp.party('r4e', array['alice_x', 'bob', 'carol', 'dave']);
+select pg_temp.submit('r4e', 'alice_x', 5);
+select pg_temp.submit('r4e', 'bob', 6);
+select pg_temp.submit('r4e', 'carol', 7);
+select pg_temp.login('dave');
+select public.forfeit_match(pg_temp.mid('r4e'));
+insert into ctx values ('s10', pg_temp.stats('ref-party', array['alice_x', 'bob', 'carol', 'dave'])::text);
+select pg_temp.party('r4f', array['alice_x', 'bob', 'carol', 'dave']);
+set role anon;
+select pg_temp.report('sec_party', 'r4f', jsonb_build_object('scores', pg_temp.by_uid('{"alice_x":5,"bob":6,"carol":7}'),
+                                                             'leavers', jsonb_build_array(pg_temp.uid('dave'))))->>'status';
+do $$
+declare a jsonb := pg_temp.placements(pg_temp.mid('r4e')); b jsonb := pg_temp.placements(pg_temp.mid('r4f'));
+begin
+  assert a->'dave' = '[4,"loss",8,"left"]'::jsonb and a->'carol' = '[1,"win",30,"submitted"]'::jsonb
+     and a->'bob' = '[2,"loss",23,"submitted"]'::jsonb and a->'alice_x' = '[3,"loss",15,"submitted"]'::jsonb, a::text;
+  assert b->'dave' = '[4,"loss",8,"left"]'::jsonb, 'leaver placed last';
+  assert (select jsonb_object_agg(k, jsonb_path_query_array(a->k, '$[0 to 2]')) from jsonb_object_keys(a) k)
+       = (select jsonb_object_agg(k, jsonb_path_query_array(b->k, '$[0 to 2]')) from jsonb_object_keys(b) k), b::text;
+  assert pg_temp.delta(pg_temp.cv('s9')::jsonb, pg_temp.cv('s10')::jsonb)
+       = pg_temp.delta(pg_temp.cv('s10')::jsonb, pg_temp.stats('ref-party', array['alice_x', 'bob', 'carol', 'dave'])), 'leaver XP/stats';
+end $$;
+
+-- ---------------------------------------------------------------- Test pings + the deliveries log
+set role authenticated;
+select pg_temp.login('bob');
+select public.send_test_webhook('ref-duel');
+do $$
+declare l jsonb := public.list_webhook_deliveries('ref-duel', 3);
+begin
+  assert jsonb_array_length(l) = 3, 'limit';
+  assert l->0->>'event' = 'ping' and l->0->'matchId' = 'null'::jsonb and (l->0->>'attempts')::int = 0
+     and l->0->'deliveredAt' = 'null'::jsonb and l->0->'lastStatus' = 'null'::jsonb, l->0;
+  assert l->0 ?& array['id', 'event', 'matchId', 'createdAt', 'attempts', 'deliveredAt', 'lastStatus', 'lastError'], 'shape';
+  assert (l->0->>'createdAt')::timestamptz >= (l->1->>'createdAt')::timestamptz, 'newest first';
+  assert jsonb_array_length(public.list_webhook_deliveries('ref-duel')) = 16, 'default limit covers them all: sa 9 + st 6 + ping';
+end $$;
+reset role;
+do $$
+declare d public.webhook_deliveries;
+begin
+  select * into d from public.webhook_deliveries where event = 'ping';
+  assert d.payload - 'createdAt' = jsonb_build_object('id', d.id, 'type', 'ping', 'app', '{"slug":"ref-duel"}'::jsonb, 'match', null), d.payload::text;
+  assert d.match_id is null and d.app_slug = 'ref-duel', 'ping row';
+end $$;
+
+-- ---------------------------------------------------------------- deliver_webhooks: signed requests via pg_net
+set role authenticated;
+select pg_temp.expect('select public.deliver_webhooks()', '42501');
+set role anon;
+select pg_temp.expect('select public.deliver_webhooks()', '42501');
+reset role;
+insert into ctx values ('due', (select count(*)::text from public.webhook_deliveries
+                                 where delivered_at is null and request_id is null and next_attempt_at <= now()));
+grant select on ctx to service_role;
+set role service_role;
+do $$
+begin
+  assert pg_temp.cv('due')::int between 20 and 100, pg_temp.cv('due');
+  assert public.deliver_webhooks() = pg_temp.cv('due')::int, 'sent every due delivery';
+end $$;
+reset role;
+do $$
+declare
+  q record;
+  v_secret text;
+  v_t text;
+  v_n integer := 0;
+begin
+  for q in select r.*, convert_from(r.body, 'UTF8') as b from net.http_request_queue r loop
+    v_secret := case q.url when 'https://duel.example.com/webhooks' then pg_temp.cv('wh_duel')
+                           when 'https://party.example.com/webhooks' then pg_temp.cv('wh_party') end;
+    assert v_secret is not null, q.url;
+    assert q.method = 'POST' and q.timeout_milliseconds = 5000, 'post';
+    assert q.headers->>'Content-Type' = 'application/json', 'content type';
+    assert q.headers->>'X-XApps-Event' = q.b::jsonb->>'type', 'event header';
+    assert q.headers->>'X-XApps-Delivery' = q.b::jsonb->>'id', 'delivery header';
+    assert q.headers->>'X-XApps-Signature' ~ '^t=[0-9]+,v1=[0-9a-f]{64}$', q.headers->>'X-XApps-Signature';
+    v_t := substring(q.headers->>'X-XApps-Signature' from '^t=([0-9]+),');
+    assert abs(v_t::bigint - extract(epoch from now())) < 120, 'fresh timestamp';
+    assert substring(q.headers->>'X-XApps-Signature' from 'v1=([0-9a-f]{64})$')
+         = encode(extensions.hmac(v_t || '.' || q.b, v_secret, 'sha256'), 'hex'), 'signature verifies';
+    assert substring(q.headers->>'X-XApps-Signature' from 'v1=([0-9a-f]{64})$')
+        <> encode(extensions.hmac(v_t || '.' || q.b || ' ', v_secret, 'sha256'), 'hex'), 'tampered body fails';
+    assert q.b = (select payload::text from public.webhook_deliveries where id = (q.b::jsonb->>'id')::uuid), 'body is the payload';
+    v_n := v_n + 1;
+  end loop;
+  assert v_n = pg_temp.cv('due')::int, 'one request per delivery';
+  assert not exists (select 1 from public.webhook_deliveries where delivered_at is null and request_id is null and next_attempt_at is not null),
+    'everything in flight';
+  assert (select bool_and(attempts = 1 and sent_at is not null and next_attempt_at between now() + interval '50 seconds' and now() + interval '70 seconds')
+            from public.webhook_deliveries), 'attempt 1, retry in a minute if it fails';
+end $$;
+
+-- Reconcile: most answer 200, the ping 500, sa's match.ended times out, sa's match.created never answers.
+insert into ctx values ('d500', (select id::text from public.webhook_deliveries where event = 'ping'));
+insert into ctx values ('dto', (select id::text from public.webhook_deliveries where match_id = pg_temp.mid('sa') and event = 'match.ended'));
+insert into ctx values ('dnr', (select id::text from public.webhook_deliveries where match_id = pg_temp.mid('sa') and event = 'match.created'));
+insert into net._http_response (id, status_code, content_type, content, timed_out)
+select request_id, case when id::text = pg_temp.cv('d500') then 500 else 200 end, 'text/plain', 'ok', false
+  from public.webhook_deliveries where id::text not in (pg_temp.cv('dto'), pg_temp.cv('dnr'));
+insert into net._http_response (id, status_code, timed_out, error_msg)
+select request_id, null, true, 'Timeout of 5000 ms reached' from public.webhook_deliveries where id::text = pg_temp.cv('dto');
+do $$
+declare d public.webhook_deliveries;
+begin
+  assert public.deliver_webhooks() = 0, 'failed deliveries wait for their backoff';
+  assert (select count(*) from public.webhook_deliveries where delivered_at is not null) = pg_temp.cv('due')::int - 3, '2xx delivered';
+  assert (select bool_and(last_status = 200 and next_attempt_at is null and last_error is null)
+            from public.webhook_deliveries where delivered_at is not null), 'delivered rows';
+  select * into d from public.webhook_deliveries where id = pg_temp.cv('d500')::uuid;
+  assert d.delivered_at is null and d.request_id is null and d.last_status = 500 and d.last_error = 'HTTP 500' and d.attempts = 1, 'failed';
+  assert d.next_attempt_at between now() + interval '50 seconds' and now() + interval '70 seconds', 'retry after 1 minute';
+  select * into d from public.webhook_deliveries where id = pg_temp.cv('dto')::uuid;
+  assert d.request_id is null and d.last_status is null and d.last_error = 'Timeout of 5000 ms reached', 'timed out';
+  select * into d from public.webhook_deliveries where id = pg_temp.cv('dnr')::uuid;
+  assert d.request_id is not null and d.last_error is null, 'no response yet: still in flight';
+end $$;
+-- No response within 10 minutes counts as a failure.
+update public.webhook_deliveries set sent_at = now() - interval '11 minutes' where id = pg_temp.cv('dnr')::uuid;
+do $$
+begin
+  perform public.deliver_webhooks();
+  assert (select request_id is null and last_error = 'No response' and delivered_at is null
+            from public.webhook_deliveries where id = pg_temp.cv('dnr')::uuid), 'lost request failed';
+end $$;
+-- Backoff: attempt 2 is retried after 2 minutes.
+update public.webhook_deliveries set next_attempt_at = now() - interval '1 second' where id = pg_temp.cv('d500')::uuid;
+do $$
+declare d public.webhook_deliveries;
+begin
+  assert public.deliver_webhooks() = 1, 'retried';
+  select * into d from public.webhook_deliveries where id = pg_temp.cv('d500')::uuid;
+  assert d.attempts = 2 and d.request_id is not null and d.last_status = 500, 'attempt 2 in flight';
+  assert d.next_attempt_at between now() + interval '110 seconds' and now() + interval '130 seconds', 'backoff 2 min';
+  assert (select headers->>'X-XApps-Delivery' from net.http_request_queue where id = d.request_id) = d.id::text, 'same delivery id on retry';
+end $$;
+insert into net._http_response (id, status_code) select request_id, 502 from public.webhook_deliveries where id = pg_temp.cv('d500')::uuid;
+do $$
+declare d public.webhook_deliveries;
+begin
+  perform public.deliver_webhooks();
+  select * into d from public.webhook_deliveries where id = pg_temp.cv('d500')::uuid;
+  assert d.request_id is null and d.last_status = 502 and d.next_attempt_at > now() + interval '1 minute', 'waits out the backoff';
+end $$;
+-- The 9th failed attempt gives up.
+update public.webhook_deliveries set attempts = 7, next_attempt_at = now() - interval '1 second' where id = pg_temp.cv('d500')::uuid;
+do $$
+begin
+  assert public.deliver_webhooks() = 1;
+  assert (select attempts = 8 and next_attempt_at between now() + interval '127 minutes' and now() + interval '129 minutes'
+            from public.webhook_deliveries where id = pg_temp.cv('d500')::uuid), 'attempt 8 backs off 128 min';
+end $$;
+insert into net._http_response (id, status_code) select request_id, 500 from public.webhook_deliveries where id = pg_temp.cv('d500')::uuid;
+update public.webhook_deliveries set next_attempt_at = now() - interval '1 second' where id = pg_temp.cv('d500')::uuid;
+do $$
+begin
+  assert public.deliver_webhooks() = 1, 'reconciled and, being due, resent in the same run (attempt 9)';
+  assert (select attempts = 9 and request_id is not null and last_status = 500
+            from public.webhook_deliveries where id = pg_temp.cv('d500')::uuid), 'attempt 9 in flight';
+end $$;
+insert into net._http_response (id, status_code) select request_id, 503 from public.webhook_deliveries where id = pg_temp.cv('d500')::uuid;
+insert into ctx values ('requests', (select count(*)::text from net.http_request_queue));
+do $$
+declare d public.webhook_deliveries;
+begin
+  perform public.deliver_webhooks();
+  select * into d from public.webhook_deliveries where id = pg_temp.cv('d500')::uuid;
+  assert d.attempts = 9 and d.last_status = 503 and d.delivered_at is null and d.request_id is null and d.next_attempt_at is null, 'given up';
+  perform public.deliver_webhooks();
+  assert (select count(*) from net.http_request_queue) = pg_temp.cv('requests')::int, 'never sent again';
+end $$;
+set role authenticated;
+select pg_temp.login('bob');
+do $$
+declare l jsonb := (select e from jsonb_array_elements(public.list_webhook_deliveries('ref-duel')) e where e->>'id' = pg_temp.cv('d500'));
+begin
+  assert (l->>'attempts')::int = 9 and (l->>'lastStatus')::int = 503 and l->>'lastError' = 'HTTP 503' and l->'deliveredAt' = 'null'::jsonb, l::text;
+  assert (select count(*) from jsonb_array_elements(public.list_webhook_deliveries('ref-duel')) e where e->'deliveredAt' <> 'null'::jsonb) = 13, 'delivered: all but the three failures';
+end $$;
+
+-- A state change after the pending one was sent queues a new one.
+set role authenticated;
+select pg_temp.party('wh', array['alice_x', 'bob']);
+select public.update_match_state(pg_temp.mid('wh'), '{"n":1}', 0);
+reset role;
+select public.deliver_webhooks();
+set role authenticated;
+select pg_temp.login('alice_x');
+select public.update_match_state(pg_temp.mid('wh'), '{"n":2}', 1);
+select public.update_match_state(pg_temp.mid('wh'), '{"n":3}', 2);
+reset role;
+do $$
+begin
+  assert (select count(*) from public.webhook_deliveries where match_id = pg_temp.mid('wh') and event = 'match.state') = 2,
+    'one in flight + one pending';
+  assert (select (payload->'match'->>'stateVersion')::int from public.webhook_deliveries
+           where match_id = pg_temp.mid('wh') and event = 'match.state' and request_id is null) = 3, 'pending one has the latest';
+end $$;
+
+-- Removing the webhook stops deliveries and new events.
+set role authenticated;
+select pg_temp.login('bob');
+select public.send_test_webhook('ref-party');
+select public.set_app_webhook('ref-party', null);
+reset role;
+do $$
+begin
+  assert (select next_attempt_at is null and last_error = 'Webhook removed' from public.webhook_deliveries
+           where app_slug = 'ref-party' and event = 'ping'), 'pending deliveries dropped';
+end $$;
+set role authenticated;
+select pg_temp.party('nowh', array['alice_x', 'bob']);
+reset role;
+do $$
+begin
+  assert not exists (select 1 from public.webhook_deliveries where match_id = pg_temp.mid('nowh')), 'no URL, no events';
+  assert not exists (select 1 from public.webhook_deliveries where app_slug not in ('ref-duel', 'ref-party')), 'only apps with webhooks';
+end $$;
+
+-- Internal stage 2 helpers are not callable by clients
+set role authenticated;
+select pg_temp.expect(format('select public.settle_server_timeout(%L)', pg_temp.mid('nowh')), '42501');
+select pg_temp.expect(format('select public.award_placements(%L)', pg_temp.mid('nowh')), '42501');
+select pg_temp.expect(format('select public.place_players(%L, %L)', pg_temp.mid('nowh'), 'high'), '42501');
+select pg_temp.expect($q$select public.enqueue_webhook('ref-duel', 'ping', null)$q$, '42501');
+select pg_temp.expect($q$select public.app_for_secret('xas_x')$q$, '42501');
+select pg_temp.expect(format('select public.app_api_match(%L, %L)', pg_temp.cv('sec_duel'), pg_temp.mid('sa')), '42501');
+reset role;
+
+-- Practice matches of server-authoritative apps settle on the client
+update public.apps set authority = 'server' where slug = 'ref-duel';
+set role authenticated;
+select pg_temp.login('alice_x');
+insert into ctx values ('ref-practice', (select public.start_practice('ref-duel')::text));
+reset role;
+do $$
+begin
+  assert (select authority from public.matches where id = pg_temp.mid('ref-practice')) = 'client', 'practice is client-authoritative';
+  assert (select authority from public.matches where id = pg_temp.mid('sa')) = 'server', 'real matches keep server authority';
+end $$;
+
 \echo 'All database lifecycle checks passed ✔'

@@ -214,7 +214,7 @@ export function RegisterApp() {
         </p>
       </motion.header>
 
-      <div className="mt-10 grid gap-10 lg:grid-cols-[1.2fr_1fr]">
+      <div className="mt-10 grid grid-cols-1 gap-10 lg:grid-cols-[1.2fr_1fr]">
         <form
           className="space-y-6"
           onSubmit={(e) => {
@@ -223,7 +223,7 @@ export function RegisterApp() {
           }}
           noValidate
         >
-          <div className="grid gap-5 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
             <Field label="Name" error={errors.name}>
               <input className={input} value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Tap Race" maxLength={40} />
             </Field>
@@ -276,7 +276,7 @@ export function RegisterApp() {
             </div>
           </div>
 
-          <div className="grid gap-6 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
             <div>
               <span className="text-sm font-semibold">Icon</span>
               <div className="mt-2 flex flex-wrap gap-1.5">
@@ -318,7 +318,7 @@ export function RegisterApp() {
             </div>
           </div>
 
-          <div className="grid gap-6 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
             <div>
               <span className="text-sm font-semibold">Modes</span>
               <div className="mt-2 space-y-2">
@@ -444,7 +444,7 @@ function TableSettings({ value, error, onChange }: { value: TableValue; error?: 
     <div>
       <span className="text-sm font-semibold">Table</span>
       <motion.div
-        className="mt-2 grid gap-4 rounded-3xl border border-white/10 p-4 sm:grid-cols-2"
+        className="mt-2 grid grid-cols-1 gap-4 rounded-3xl border border-white/10 p-4 sm:grid-cols-2"
         animate={error ? { x: [0, -6, 6, -3, 0] } : { x: 0 }}
         transition={{ duration: 0.35 }}
       >

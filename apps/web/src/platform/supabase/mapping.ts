@@ -5,7 +5,9 @@
  */
 import { getOfficialApp, withManifestDefaults } from "../catalog";
 import type {
+  AppAuthority,
   AppCategory,
+  AppServerConfig,
   AppManifest,
   AppStatus,
   CreateChallengeInput,
@@ -14,6 +16,7 @@ import type {
   PlayableMode,
   RegisterAppInput,
   Scoring,
+  WebhookDelivery,
 } from "../types";
 import { BackendError } from "../backend";
 
@@ -35,6 +38,8 @@ export interface AppRow {
   allow_spectators?: boolean | null;
   has_setup?: boolean | null;
   turn_based?: boolean | null;
+  /** Stage 2 column (absent before the trust migration). */
+  authority?: AppAuthority | null;
   scoring: Scoring;
   votes_to_win: number;
   duration_label: string;
@@ -50,7 +55,7 @@ export interface AppRow {
 
 export function toApp(row: AppRow): AppManifest {
   const official = row.official ? getOfficialApp(row.slug) : undefined;
-  if (official) return withManifestDefaults({ ...official, playCount: row.play_count });
+  if (official) return withManifestDefaults({ ...official, playCount: row.play_count, authority: toAuthority(row.authority) });
   return withManifestDefaults({
     slug: row.slug,
     name: row.name,
@@ -66,6 +71,7 @@ export function toApp(row: AppRow): AppManifest {
     spectators: row.allow_spectators ?? true,
     setup: row.has_setup ?? false,
     turnBased: row.turn_based ?? false,
+    authority: toAuthority(row.authority),
     scoring: row.scoring,
     votesToWin: row.votes_to_win,
     durationLabel: row.duration_label || "Community",
@@ -224,4 +230,88 @@ export function challengeArgs(input: CreateChallengeInput): Record<string, unkno
   if (handles.length > 1) args.p_opponents = handles;
   if (typeof input.maxPlayers === "number") args.p_max_players = input.maxPlayers;
   return args;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Stage 2: app server settings                                           */
+/* ---------------------------------------------------------------------- */
+
+export function toAuthority(value: unknown): AppAuthority {
+  return value === "server" ? "server" : "client";
+}
+
+type Loose = Record<string, unknown>;
+
+/** Reads `camelKey`, falling back to its snake_case twin (defensive against either RPC style). */
+function pick(raw: Loose, camelKey: string): unknown {
+  if (camelKey in raw) return raw[camelKey];
+  const snake = camelKey.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+  return raw[snake];
+}
+
+function str(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function num(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
+  return null;
+}
+
+/** An RPC that returns one row may come back as the object, a one-row array, or null. */
+function firstRow(data: unknown): Loose | null {
+  const row = Array.isArray(data) ? data[0] : data;
+  return row && typeof row === "object" ? (row as Loose) : null;
+}
+
+/** `get_app_server_config` → `AppServerConfig`. */
+export function toServerConfig(data: unknown): AppServerConfig {
+  const raw = firstRow(data) ?? {};
+  const secretPrefix = str(pick(raw, "secretPrefix"));
+  const webhookUrl = str(pick(raw, "webhookUrl"));
+  const hasSecret = pick(raw, "hasSecret");
+  const hasWebhook = pick(raw, "hasWebhook");
+  return {
+    secretPrefix,
+    hasSecret: typeof hasSecret === "boolean" ? hasSecret : !!secretPrefix,
+    webhookUrl,
+    hasWebhook: typeof hasWebhook === "boolean" ? hasWebhook : !!webhookUrl,
+    authority: toAuthority(pick(raw, "authority")),
+  };
+}
+
+/** One row of `list_webhook_deliveries` → `WebhookDelivery`. */
+export function toWebhookDelivery(raw: Loose): WebhookDelivery {
+  return {
+    id: String(pick(raw, "id") ?? ""),
+    event: str(pick(raw, "event")) ?? "unknown",
+    matchId: str(pick(raw, "matchId")),
+    createdAt: str(pick(raw, "createdAt")) ?? new Date(0).toISOString(),
+    attempts: num(pick(raw, "attempts")) ?? 0,
+    deliveredAt: str(pick(raw, "deliveredAt")),
+    lastStatus: num(pick(raw, "lastStatus")),
+    lastError: str(pick(raw, "lastError")),
+  };
+}
+
+/** `list_webhook_deliveries` returns a jsonb array or a set of rows; either way, newest first. */
+export function toWebhookDeliveries(data: unknown): WebhookDelivery[] {
+  const rows = Array.isArray(data) ? data : data && typeof data === "object" && Array.isArray((data as Loose).deliveries) ? ((data as Loose).deliveries as unknown[]) : [];
+  return rows
+    .filter((r): r is Loose => !!r && typeof r === "object")
+    .map(toWebhookDelivery)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** A secret-returning RPC (`text`), tolerating a `{ secret }` object or a one-row array. */
+export function toSecret(data: unknown): string | null {
+  if (typeof data === "string") return data || null;
+  const row = firstRow(data);
+  if (!row) return null;
+  for (const key of ["secret", "signingSecret", "signing_secret", "webhookSecret", "webhook_secret"]) {
+    if (typeof row[key] === "string" && row[key]) return row[key] as string;
+  }
+  const values = Object.values(row).filter((v): v is string => typeof v === "string" && v.length > 0);
+  return values.length === 1 ? values[0]! : null;
 }
