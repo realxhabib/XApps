@@ -155,6 +155,7 @@ function Queue() {
                           </span>
                           <span className="block truncate text-xs text-ink-400">
                             @{item.developer.handle} · {ago(item.version.submittedAt ?? item.version.createdAt, now)}
+                            {item.replaces.length > 0 && ` · edited from v${item.replaces[item.replaces.length - 1]}`}
                           </span>
                         </span>
                         {!item.published && (
@@ -209,11 +210,12 @@ function Queue() {
 function ReviewDetail({ item, onBack, onDecided }: { item: ReviewItem; onBack: () => void; onDecided: () => void }) {
   const now = useNow(60_000);
   const review = useReviewVersion();
+  const queryClient = useQueryClient();
   const [notes, setNotes] = useState("");
   const [decision, setDecision] = useState<"approve" | "reject" | null>(null);
   const [notesError, setNotesError] = useState(false);
   const closeConfirm = useCallback(() => setDecision(null), []);
-  const { version, app, developer, published } = item;
+  const { version, app, developer, published, replaces } = item;
   const preview = applyVersionToApp(app, version);
 
   const ask = (d: "approve" | "reject") => {
@@ -240,6 +242,9 @@ function ReviewDetail({ item, onBack, onDecided }: { item: ReviewItem; onBack: (
       onDecided();
     } catch (error) {
       toast(error instanceof Error ? error.message : "Couldn't record the decision", { tone: "danger" });
+      // It may have been replaced by a newer submission meanwhile: show the queue as it is now.
+      setDecision(null);
+      void queryClient.invalidateQueries({ queryKey: ["review-queue"] });
     }
   };
 
@@ -261,8 +266,14 @@ function ReviewDetail({ item, onBack, onDecided }: { item: ReviewItem; onBack: (
                 <Avatar person={developer} size={18} /> @{developer.handle}
               </Link>
               <span>· submitted {ago(version.submittedAt ?? version.createdAt, now)}</span>
-              <span>· {published ? `replaces v${published.version}` : "new app"}</span>
+              <span>· {published ? `replaces live v${published.version}` : "new app"}</span>
             </div>
+            {replaces.length > 0 && (
+              <p className="mt-2 text-xs text-ink-300">
+                The developer edited their submission: this replaces {replaces.map((r) => `v${r}`).join(", ")}, which left the queue.
+                Only this version needs a review.
+              </p>
+            )}
           </div>
         </div>
         {version.notes && (

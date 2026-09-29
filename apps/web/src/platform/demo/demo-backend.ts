@@ -30,6 +30,7 @@ import {
   isLogLevel,
   levelsFrom,
   manifestOf,
+  nextRevisionVersion,
   sortVersions,
   versionLabelError,
   versionManifestError,
@@ -299,7 +300,18 @@ function appForRow(db: DemoDb, row: Pick<MatchRow, "appSlug" | "versionId">): Ap
 function publicVersion(row: VersionRow): AppVersion {
   const copy: Partial<VersionRow> = structuredClone(row);
   delete copy.reviewedBy;
+  copy.supersededBy ??= null;
   return copy as AppVersion;
+}
+
+/** One submission per app in review: `next` takes the place of any other (like submit_app_version). */
+function supersedeQueued(db: DemoDb, next: VersionRow): void {
+  for (const other of Object.values(db.versions ?? {})) {
+    if (other.appSlug === next.appSlug && other.status === "in_review" && other.id !== next.id) {
+      other.status = "superseded";
+      other.supersededBy = next.version;
+    }
+  }
 }
 
 /** The app's developer or one of its testers may play its unpublished versions. */
@@ -635,6 +647,7 @@ export class DemoBackend implements Backend {
         submittedAt: now,
         reviewedAt: now,
         publishedAt: now,
+        supersededBy: null,
         reviewedBy: null,
       };
       (db.versions ??= {})[version.id] = version;
@@ -825,6 +838,7 @@ export class DemoBackend implements Backend {
       submittedAt: at,
       reviewedAt: app.status === "published" ? at : null,
       publishedAt: app.status === "published" ? at : null,
+      supersededBy: null,
       reviewedBy: null,
     };
     (db.versions ??= {})[version.id] = version;
@@ -882,6 +896,7 @@ export class DemoBackend implements Backend {
         submittedAt: null,
         reviewedAt: null,
         publishedAt: null,
+        supersededBy: null,
         reviewedBy: null,
       };
       (db.versions ??= {})[version.id] = version;
@@ -919,11 +934,56 @@ export class DemoBackend implements Backend {
       if (!EDITABLE_STATUSES.includes(version.status)) throw new BackendError("Only drafts and rejected versions can be submitted", "conflict");
       const app = db.apps[version.appSlug]!;
       authorityCheck(app, version.manifest);
+      supersedeQueued(db, version);
       version.status = "in_review";
       version.submittedAt = nowIso();
       // A new app that was turned down is back in review.
       if (!db.publishedVersions?.[app.slug] && app.status === "rejected") db.apps[app.slug] = { ...app, status: "pending" };
       return publicVersion(version);
+    });
+  }
+
+  async reviseAppVersion(versionId: string, input: { url?: string; manifest?: VersionManifest; notes?: string }): Promise<AppVersion> {
+    if (input.url !== undefined) {
+      const problem = versionUrlError(input.url);
+      if (problem) throw new BackendError(problem, "invalid");
+    }
+    if (input.manifest !== undefined) {
+      const problem = versionManifestError(input.manifest);
+      if (problem) throw new BackendError(problem, "invalid");
+    }
+    if (input.notes !== undefined && (typeof input.notes !== "string" || input.notes.length > VERSION_NOTES_MAX)) {
+      throw new BackendError("Release notes are at most 2,000 characters", "invalid");
+    }
+    return mutate((db) => {
+      const edited = this.ownedVersion(db, versionId);
+      if (edited.status !== "in_review") throw new BackendError("Only versions in review can be edited this way", "conflict");
+      const siblings = Object.values(db.versions ?? {}).filter((v) => v.appSlug === edited.appSlug);
+      if (siblings.length >= MAX_VERSIONS_PER_APP) {
+        throw new BackendError(`An app can have at most ${MAX_VERSIONS_PER_APP} versions`, "rate_limited");
+      }
+      const manifest = input.manifest !== undefined ? cleanManifest(input.manifest) : structuredClone(edited.manifest);
+      authorityCheck(db.apps[edited.appSlug]!, manifest);
+      const now = nowIso();
+      const next: VersionRow = {
+        id: newVersionId(),
+        appSlug: edited.appSlug,
+        version: nextRevisionVersion(edited.version, siblings.map((v) => v.version)),
+        url: input.url?.trim() || edited.url,
+        manifest,
+        status: "in_review",
+        notes: input.notes ?? edited.notes,
+        reviewNotes: null,
+        createdAt: now,
+        submittedAt: now,
+        reviewedAt: null,
+        publishedAt: null,
+        supersededBy: null,
+        reviewedBy: null,
+      };
+      supersedeQueued(db, next);
+      db.versions![next.id] = next;
+      return publicVersion(next);
     });
   }
 
@@ -1003,6 +1063,13 @@ export class DemoBackend implements Backend {
     const queue = Object.values(db.versions ?? {})
       .filter((v) => v.status === "in_review")
       .sort((a, b) => (a.submittedAt ?? a.createdAt).localeCompare(b.submittedAt ?? b.createdAt));
+    /** The chain of submissions `label` replaced, newest first. */
+    const replacedBy = (appSlug: string, label: string): string[] => {
+      const earlier = Object.values(db.versions ?? {})
+        .filter((v) => v.appSlug === appSlug && v.status === "superseded" && v.supersededBy === label)
+        .sort((a, b) => (b.submittedAt ?? b.createdAt).localeCompare(a.submittedAt ?? a.createdAt));
+      return earlier.flatMap((v) => [v.version, ...replacedBy(appSlug, v.version)]);
+    };
     for (const version of queue) {
       const app = appFor(db, version.appSlug);
       if (!app) continue;
@@ -1027,6 +1094,7 @@ export class DemoBackend implements Backend {
           createdAt: app.createdAt,
         },
         published,
+        replaces: replacedBy(version.appSlug, version.version),
       });
     }
     return items;
@@ -1041,6 +1109,9 @@ export class DemoBackend implements Backend {
     return mutate((db) => {
       const version = db.versions?.[versionId];
       if (!version) throw new BackendError("Version not found", "not_found");
+      if (version.status === "superseded") {
+        throw new BackendError(`v${version.version} was replaced by v${version.supersededBy ?? "a newer submission"}. Review that one instead`, "conflict");
+      }
       if (version.status !== "in_review") throw new BackendError("That version isn't in review", "conflict");
       version.status = decision === "approve" ? "approved" : "rejected";
       version.reviewNotes = clean || null;

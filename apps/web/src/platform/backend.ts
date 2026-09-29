@@ -90,7 +90,13 @@ export interface Backend {
   listAppVersions(appSlug: string): Promise<AppVersion[]>;
   createAppVersion(appSlug: string, input: { version: string; url: string; manifest: VersionManifest; notes?: string }): Promise<AppVersion>;
   updateAppVersion(versionId: string, input: { url?: string; manifest?: VersionManifest; notes?: string }): Promise<AppVersion>;
+  /** Sends a draft or rejected version to review; any other version of the app in review is superseded. */
   submitAppVersion(versionId: string): Promise<AppVersion>;
+  /**
+   * Edits a version that's in review: saves the changes as the next patch version (1.1.0 → 1.1.1),
+   * submits it and supersedes the edited one. Resolves with the new version.
+   */
+  reviseAppVersion(versionId: string, input: { url?: string; manifest?: VersionManifest; notes?: string }): Promise<AppVersion>;
   withdrawAppVersion(versionId: string): Promise<AppVersion>;
   publishAppVersion(versionId: string): Promise<AppVersion>;
   listAppTesters(appSlug: string): Promise<Profile[]>;

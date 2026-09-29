@@ -213,6 +213,58 @@ describe("demo backend: review queue", () => {
   });
 });
 
+describe("demo backend: one submission per app in review", () => {
+  it("submitting a version replaces the app's other submission in the queue", async () => {
+    const manifest = await registered();
+    const a = await backend.createAppVersion("gizmo", { version: "1.1.0", url: "https://example.com/a", manifest });
+    const b = await backend.createAppVersion("gizmo", { version: "1.2.0", url: "https://example.com/b", manifest });
+    await backend.submitAppVersion(a.id);
+    await backend.submitAppVersion(b.id);
+    const byLabel = Object.fromEntries((await backend.listAppVersions("gizmo")).map((v) => [v.version, v]));
+    expect([byLabel["1.1.0"]?.status, byLabel["1.1.0"]?.supersededBy]).toEqual(["superseded", "1.2.0"]);
+    expect([byLabel["1.2.0"]?.status, byLabel["1.2.0"]?.supersededBy]).toEqual(["in_review", null]);
+    await expectCode(backend.withdrawAppVersion(a.id), "conflict");
+    await expectCode(backend.submitAppVersion(a.id), "conflict");
+  });
+
+  it("editing a submission submits the next patch and supersedes the edited one", async () => {
+    const manifest = await registered();
+    const first = await backend.createAppVersion("gizmo", { version: "1.1.0", url: "https://example.com/a", manifest, notes: "First try" });
+    await backend.submitAppVersion(first.id);
+    const second = await backend.reviseAppVersion(first.id, { manifest: { ...manifest, tagline: "Fixed a typo" } });
+    expect(second).toMatchObject({ version: "1.1.1", status: "in_review", url: "https://example.com/a", notes: "First try", supersededBy: null });
+    expect(second.manifest.tagline).toBe("Fixed a typo");
+    const third = await backend.reviseAppVersion(second.id, { url: "https://example.com/c", notes: "Again" });
+    expect(third).toMatchObject({ version: "1.1.2", url: "https://example.com/c", notes: "Again" });
+    expect(third.manifest.tagline).toBe("Fixed a typo");
+    const versions = await backend.listAppVersions("gizmo");
+    expect(versions.filter((v) => v.status === "in_review").map((v) => v.version)).toEqual(["1.1.2"]);
+    expect(versions.find((v) => v.id === first.id)).toMatchObject({ status: "superseded", supersededBy: "1.1.1" });
+
+    await expectCode(backend.reviseAppVersion(first.id, {}), "conflict");
+    await expectCode(backend.reviseAppVersion(third.id, { url: "ftp://nope" }), "invalid");
+    await as("bob");
+    await expectCode(backend.reviseAppVersion(third.id, {}), "forbidden");
+
+    // Reviewers see only the latest submission, and what it replaced.
+    await backend.demo.setAdmin(true);
+    const queue = await backend.listReviewQueue();
+    const mine = queue.filter((item) => item.app.slug === "gizmo");
+    expect(mine.map((item) => [item.version.version, item.replaces])).toEqual([["1.1.2", ["1.1.1", "1.1.0"]]]);
+    const error = await backend.reviewAppVersion(first.id, "approve", "").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(BackendError);
+    expect((error as BackendError).message).toMatch(/v1\.1\.0 was replaced by v1\.1\.1/);
+  });
+
+  it("revisions take the next free patch in the line", async () => {
+    const manifest = await registered();
+    await backend.createAppVersion("gizmo", { version: "1.1.1", url: "https://example.com/x", manifest });
+    const queued = await backend.createAppVersion("gizmo", { version: "1.1.0", url: "https://example.com/a", manifest });
+    await backend.submitAppVersion(queued.id);
+    expect((await backend.reviseAppVersion(queued.id, {})).version).toBe("1.1.2");
+  });
+});
+
 describe("demo backend: developer notices", () => {
   it("tells the developer about review decisions and marks them read", async () => {
     const manifest = await registered();
@@ -220,11 +272,13 @@ describe("demo backend: developer notices", () => {
     // Missing url/manifest copy the app's.
     expect(a).toMatchObject({ url: "https://example.com/app", manifest: { name: manifest.name } });
     await backend.submitAppVersion(a.id);
-    const b = await backend.createAppVersion("gizmo", { version: "1.2.0", url: "https://example.com/b", manifest });
-    await backend.submitAppVersion(b.id);
     await as("bob");
     await backend.demo.setAdmin(true);
     await backend.reviewAppVersion(a.id, "approve", "Nice");
+    await as("alice");
+    const b = await backend.createAppVersion("gizmo", { version: "1.2.0", url: "https://example.com/b", manifest });
+    await backend.submitAppVersion(b.id);
+    await as("bob");
     await backend.reviewAppVersion(b.id, "reject", "Broken on phones");
     expect(await backend.listMyNotices()).toEqual([]);
 

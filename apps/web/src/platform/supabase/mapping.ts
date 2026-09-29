@@ -477,7 +477,7 @@ export function toStorageKeys(data: unknown): string[] {
 /* Stage 4: versions, review, analytics & logs                            */
 /* ---------------------------------------------------------------------- */
 
-const VERSION_STATUSES: readonly AppVersionStatus[] = ["draft", "in_review", "approved", "rejected", "published", "retired"];
+const VERSION_STATUSES: readonly AppVersionStatus[] = ["draft", "in_review", "approved", "rejected", "published", "retired", "superseded"];
 const LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];
 
 function bool(value: unknown, fallback: boolean): boolean {
@@ -540,6 +540,7 @@ export function toAppVersion(raw: unknown): AppVersion | null {
     submittedAt: str(pick(r, "submittedAt")),
     reviewedAt: str(pick(r, "reviewedAt")),
     publishedAt: str(pick(r, "publishedAt")),
+    supersededBy: str(pick(r, "supersededBy")),
   };
 }
 
@@ -622,6 +623,7 @@ export function toReviewQueue(data: unknown): ReviewItem[] {
       app,
       developer,
       published: toAppVersion(r.published ?? pick(r, "publishedVersion")),
+      replaces: strings(r.replaces),
     });
   }
   return out;

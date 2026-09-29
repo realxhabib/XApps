@@ -40,6 +40,7 @@ export function VersionsTab({ app }: { app: AppManifest }) {
 
   const versions = [...(data ?? [])].sort((a, b) => compareSemver(b.version, a.version));
   const live = versions.find((v) => v.status === "published") ?? null;
+  const queued = versions.find((v) => v.status === "in_review") ?? null;
 
   const run = async () => {
     if (!confirm) return;
@@ -48,7 +49,10 @@ export function VersionsTab({ app }: { app: AppManifest }) {
       if (kind === "submit") {
         await submit.mutateAsync(version.id);
         play("whoosh");
-        toast(`v${version.version} sent for review`, { tone: "success", description: "We'll let you know in your inbox." });
+        toast(`v${version.version} sent for review`, {
+          tone: "success",
+          description: queued && queued.id !== version.id ? `It replaces v${queued.version} in the review queue.` : "We'll let you know in your inbox.",
+        });
       } else if (kind === "withdraw") {
         await withdraw.mutateAsync(version.id);
         play("pop");
@@ -153,7 +157,9 @@ export function VersionsTab({ app }: { app: AppManifest }) {
               : "Players get it on their next match."
             : confirm?.kind === "withdraw"
               ? "It goes back to draft so you can keep editing. You'll need to resubmit."
-              : "A reviewer checks the build and the listing. You can't edit it while it's in review."
+              : queued && queued.id !== confirm?.version.id
+                ? `v${queued.version} is waiting for review. This replaces it in the queue, so reviewers only see v${confirm?.version.version}.`
+                : "A reviewer checks the build and the listing. Editing it later submits a new patch version in its place."
         }
         confirmLabel={confirm?.kind === "publish" ? "Publish now" : confirm?.kind === "withdraw" ? "Withdraw" : "Submit"}
       >
@@ -196,7 +202,7 @@ function VersionItem({
   const status = VERSION_STATUS[v.status];
   const Icon = status.icon;
   const editable = v.status === "draft" || v.status === "rejected";
-  const playable = v.status !== "retired";
+  const playable = v.status !== "retired" && v.status !== "superseded";
   const timeline = [
     { label: "Created", at: v.createdAt },
     { label: "Submitted", at: v.submittedAt },
@@ -221,7 +227,7 @@ function VersionItem({
       >
         <Icon className="size-3" />
       </span>
-      <div className={cn("rounded-2xl border transition", open ? "border-white/15 bg-white/[0.04]" : "border-white/[0.08] bg-white/[0.02]", v.status === "retired" && "opacity-70")}>
+      <div className={cn("rounded-2xl border transition", open ? "border-white/15 bg-white/[0.04]" : "border-white/[0.08] bg-white/[0.02]", (v.status === "retired" || v.status === "superseded") && "opacity-70")}>
         <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-2 px-3.5 pb-2 pt-3 text-left">
           <span className="font-mono text-base font-bold">v{v.version}</span>
           <VersionStatusChip status={v.status} />
@@ -232,6 +238,9 @@ function VersionItem({
         </button>
         <div className="px-3.5 pb-3">
           <p className="truncate font-mono text-xs text-ink-400">{v.url}</p>
+          {v.status === "superseded" && v.supersededBy && (
+            <p className="mt-1.5 text-sm text-ink-300">Replaced by v{v.supersededBy} in the review queue.</p>
+          )}
           {v.notes && <p className="mt-1.5 line-clamp-2 text-sm text-ink-200">{v.notes}</p>}
           {v.reviewNotes && (
             <p className={cn("mt-2 rounded-xl px-3 py-2 text-sm", v.status === "rejected" ? "bg-danger/10 text-ink-100" : "bg-white/[0.04] text-ink-200")}>
@@ -249,6 +258,11 @@ function VersionItem({
             {editable && (
               <Button size="sm" variant="accent" icon={<Send className="size-3.5" />} onClick={() => onConfirm("submit")}>
                 {v.status === "rejected" ? "Resubmit" : "Submit for review"}
+              </Button>
+            )}
+            {v.status === "in_review" && (
+              <Button size="sm" variant="outline" icon={<Pencil className="size-3.5" />} onClick={onEdit}>
+                Edit submission
               </Button>
             )}
             {v.status === "in_review" && (

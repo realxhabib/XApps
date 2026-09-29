@@ -263,7 +263,8 @@ export interface UserAchievement {
 
 // ---------------------------------------------------------------- Stage 4
 
-export type AppVersionStatus = "draft" | "in_review" | "approved" | "rejected" | "published" | "retired";
+/** `superseded`: a newer submission of the same app replaced it in the review queue (one per app). */
+export type AppVersionStatus = "draft" | "in_review" | "approved" | "rejected" | "published" | "retired" | "superseded";
 
 /** The listing + capability fields a version carries (copied onto the app when published). */
 export type VersionManifest = Pick<
@@ -300,6 +301,8 @@ export interface AppVersion {
   submittedAt: string | null;
   reviewedAt: string | null;
   publishedAt: string | null;
+  /** For `superseded` versions: the version label that replaced it in the queue. */
+  supersededBy: string | null;
 }
 
 export interface ReviewItem {
@@ -308,6 +311,8 @@ export interface ReviewItem {
   developer: Profile;
   /** The currently published version, if any (for diffing). */
   published: AppVersion | null;
+  /** Earlier submissions this one replaced in the queue, newest first (e.g. ["1.1.1", "1.1.0"]). */
+  replaces: string[];
 }
 
 export interface AppAnalytics {

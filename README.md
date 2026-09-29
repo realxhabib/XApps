@@ -124,6 +124,7 @@ cd my-game && npm install && npm run dev   # runs standalone against the SDK's m
 2. **Test** it in the Sandbox (both seats), then invite **testers**. Test builds are never ranked.
 3. **Ship updates** as new versions from the app's console (`/developers/apps/<slug>`): Versions, Analytics, Logs, Server.
 4. **Review.** Admins approve or request changes at `/admin/review`. Approved versions are published from the console.
+   An app has at most one version in review. Submitting another replaces it in the queue, and **Edit submission** on a version in review saves your changes as the next patch (1.1.0 → 1.1.1), which takes its place. Reviewers only ever see the latest.
 
 To make someone an admin, run `update public.profiles set is_admin = true where handle = '<handle>';` in the SQL editor. In demo mode, the review page has a "Become admin" switch.
 

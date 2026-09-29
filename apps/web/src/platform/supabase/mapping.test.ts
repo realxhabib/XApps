@@ -320,6 +320,7 @@ describe("Stage 4 mapping", () => {
     submittedAt: "2026-10-01T01:00:00Z",
     reviewedAt: null,
     publishedAt: null,
+    supersededBy: null,
   };
 
   it("maps versions from camelCase json or snake_case rows", () => {

@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowRight, CircleCheck, CircleDashed, CircleX, Clock3, Minus, Plus, Rocket, Archive, PencilLine } from "lucide-react";
+import { ArrowRight, CircleCheck, CircleDashed, CircleX, Clock3, Minus, Plus, Rocket, Archive, PencilLine, Replace } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { spring } from "@/lib/motion";
@@ -23,6 +23,7 @@ export const VERSION_STATUS: Record<
   rejected: { label: "Changes requested", tone: "danger", icon: CircleX, hint: "Read the notes, edit and resubmit." },
   published: { label: "Live", tone: "success", icon: Rocket, hint: "What players get today." },
   retired: { label: "Retired", tone: "neutral", icon: Archive, hint: "Replaced by a newer version." },
+  superseded: { label: "Replaced", tone: "neutral", icon: Replace, hint: "A newer submission took its place in the review queue." },
 };
 
 export function VersionStatusChip({ status, className }: { status: AppVersionStatus; className?: string }) {

@@ -24,20 +24,30 @@ test("a developer ships a new version through review", async ({ page }) => {
   await page.getByRole("button", { name: /Save & submit for review/ }).click();
   await expect(page.getByText(/in review/i).first()).toBeVisible({ timeout: 10_000 });
 
+  // Editing the submission sends 1.1.1 in its place.
+  await page.getByRole("button", { name: "Edit submission" }).click();
+  await expect(page.getByText("Your changes are submitted as v1.1.1, which replaces v1.1.0 in the review queue.")).toBeVisible();
+  await page.getByLabel("Tagline").fill("Ten seconds. Fastest thumbs win. Now with streaks!");
+  await page.getByRole("button", { name: "Submit v1.1.1" }).click();
+  await expect(page.getByText("Replaced by v1.1.1 in the review queue.")).toBeVisible({ timeout: 10_000 });
+
   // Admin approves (demo lets you become an admin).
   await page.goto("/admin/review");
   const become = page.getByRole("button", { name: "Become admin (demo)" });
   await expect(become.or(page.getByRole("button", { name: new RegExp(`Tap Race ${suffix}`) }).first())).toBeVisible({ timeout: 15_000 });
   if (await become.isVisible()) await become.click();
-  await page.getByRole("button", { name: new RegExp(`Tap Race ${suffix}.*1\\.1\\.0`) }).first().click();
+  // Only the latest submission is queued.
+  await expect(page.getByRole("button", { name: new RegExp(`Tap Race ${suffix}`) })).toHaveCount(1);
+  await page.getByRole("button", { name: new RegExp(`Tap Race ${suffix}.*1\\.1\\.1`) }).first().click();
+  await expect(page.getByText(/this replaces v1\.1\.0, which left the queue/)).toBeVisible();
   await page.getByRole("button", { name: "Approve" }).first().click();
   await page.getByRole("dialog").getByRole("button", { name: "Approve" }).click();
 
-  // Publish; 1.1.0 becomes the live version.
+  // Publish; 1.1.1 becomes the live version.
   await page.goto(`/developers/apps/${slug}?tab=versions`);
   await page.getByRole("button", { name: "Publish", exact: true }).click();
   await page.getByRole("button", { name: "Publish now" }).click();
-  await expect(page.getByText(/1\.1\.0/).first()).toBeVisible();
+  await expect(page.getByText(/1\.1\.1/).first()).toBeVisible();
   await page.goto(`/apps/${slug}`);
-  await expect(page.getByText("Ten seconds. Fastest thumbs win. Now with streaks.").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("Ten seconds. Fastest thumbs win. Now with streaks!").first()).toBeVisible({ timeout: 15_000 });
 });

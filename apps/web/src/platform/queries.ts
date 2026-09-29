@@ -557,6 +557,16 @@ export function useUpdateVersion(slug: string) {
   });
 }
 
+/** Edits a submission in review: saves it as the next patch version, which replaces it in the queue. */
+export function useReviseVersion(slug: string) {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ versionId, ...input }: UpdateVersionInput) => backend.reviseAppVersion(versionId, input),
+    onSuccess: (version) => refreshVersions(queryClient, slug, version),
+  });
+}
+
 /** Sends a draft (or rejected) version to review: `mutate(versionId)`. */
 export function useSubmitVersion(slug: string) {
   const backend = useBackend();

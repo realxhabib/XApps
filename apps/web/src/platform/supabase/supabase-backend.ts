@@ -334,6 +334,20 @@ export class SupabaseBackend implements Backend {
     return this.versionRpc("submit_app_version", { p_version_id: versionId }, versionId);
   }
 
+  async reviseAppVersion(versionId: string, input: { url?: string; manifest?: VersionManifest; notes?: string }): Promise<AppVersion> {
+    // Resolves with the new version (a different id), so no fallback to the edited one.
+    const version = toAppVersionResult(
+      await this.ownerRpc("revise_app_version", {
+        p_version_id: versionId,
+        p_url: input.url?.trim() ?? null,
+        p_manifest: input.manifest ?? null,
+        p_notes: input.notes ?? null,
+      }),
+    );
+    if (!version) throw new BackendError("Couldn't save the new version", "internal");
+    return version;
+  }
+
   withdrawAppVersion(versionId: string): Promise<AppVersion> {
     return this.versionRpc("withdraw_app_version", { p_version_id: versionId }, versionId);
   }

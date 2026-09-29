@@ -9,12 +9,12 @@ import { haptic } from "@/lib/haptics";
 import { spring } from "@/lib/motion";
 import { play } from "@/lib/sfx";
 import { cn } from "@/lib/utils";
-import { useCreateVersion, useSubmitVersion, useUpdateVersion } from "@/platform/queries";
+import { useCreateVersion, useReviseVersion, useSubmitVersion, useUpdateVersion } from "@/platform/queries";
 import type { AppManifest, AppVersion } from "@/platform/types";
 import type { ManifestSide } from "./manifest-diff";
 import { diffManifests } from "./manifest-diff";
 import { ManifestFields, formFromSide, sideFromForm, validateManifestForm, type ManifestErrors, type ManifestForm } from "./manifest-fields";
-import { VERSION_NOTES_MAX, manifestOf, versionLabelError } from "@/platform/shipping";
+import { VERSION_NOTES_MAX, manifestOf, nextRevisionVersion, versionLabelError } from "@/platform/shipping";
 import { bumpSemver, compareSemver, latestSemver, type Bump } from "./semver";
 import { ManifestDiff, Panel, fieldClass } from "./ui";
 
@@ -26,8 +26,9 @@ export function sideOfApp(app: AppManifest): ManifestSide {
 export const sideOf = (v: AppVersion): ManifestSide => ({ url: v.url, manifest: v.manifest });
 
 /**
- * Create a new version (prefilled from the newest one) or edit a draft /
- * rejected version.
+ * Create a new version (prefilled from the newest one), edit a draft /
+ * rejected version, or edit a submission in review: that saves the changes
+ * as the next patch version, which replaces it in the review queue.
  */
 export function VersionEditor({
   app,
@@ -53,7 +54,12 @@ export function VersionEditor({
   const create = useCreateVersion(app.slug);
   const update = useUpdateVersion(app.slug);
   const submit = useSubmitVersion(app.slug);
-  const busy = create.isPending || update.isPending || submit.isPending;
+  const revise = useReviseVersion(app.slug);
+  const busy = create.isPending || update.isPending || submit.isPending || revise.isPending;
+  const revising = editing?.status === "in_review";
+  const revisionLabel = revising ? nextRevisionVersion(editing.version, versions.map((v) => v.version)) : null;
+  /** Another submission waiting for review, which submitting this one replaces. */
+  const queued = versions.find((v) => v.status === "in_review" && v.id !== editing?.id) ?? null;
   const [intent, setIntent] = useState<"draft" | "submit">("draft");
 
   const compareTo = live ? sideOf(live) : null;
@@ -91,6 +97,14 @@ export function VersionEditor({
     }
     setIntent(andSubmit ? "submit" : "draft");
     try {
+      if (revising) {
+        const saved = await revise.mutateAsync({ versionId: editing.id, url: side.url, manifest: side.manifest, notes: notes.trim() });
+        play("whoosh");
+        haptic("success");
+        toast(`v${saved.version} sent for review`, { tone: "success", description: `It replaces v${editing.version} in the review queue.` });
+        onDone(saved);
+        return;
+      }
       let saved = editing
         ? await update.mutateAsync({ versionId: editing.id, url: side.url, manifest: side.manifest, notes: notes.trim() })
         : await create.mutateAsync({ version: version.trim(), url: side.url, manifest: side.manifest, notes: notes.trim() || undefined });
@@ -99,7 +113,11 @@ export function VersionEditor({
       haptic("success");
       toast(andSubmit ? `v${saved.version} sent for review` : `v${saved.version} saved as a draft`, {
         tone: "success",
-        description: andSubmit ? "You and your testers can play it while you wait." : "Submit it when it's ready.",
+        description: andSubmit
+          ? queued
+            ? `It replaces v${queued.version} in the review queue.`
+            : "You and your testers can play it while you wait."
+          : "Submit it when it's ready.",
       });
       onDone(saved);
     } catch (error) {
@@ -114,12 +132,26 @@ export function VersionEditor({
       <Panel>
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-ink-400">{editing ? "Edit version" : "New version"}</p>
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-ink-400">{revising ? "Edit submission" : editing ? "Edit version" : "New version"}</p>
             <h2 className="mt-1 font-display text-2xl font-extrabold tracking-tight">
-              {editing ? `v${editing.version}` : "Ship an update"}
+              {revising ? (
+                <>
+                  v{editing.version} <span className="text-ink-400">→</span> v{revisionLabel}
+                </>
+              ) : editing ? (
+                `v${editing.version}`
+              ) : (
+                "Ship an update"
+              )}
             </h2>
             <p className="mt-1 text-sm text-ink-400">
-              {editing ? "Drafts and versions with requested changes can be edited." : base ? `Prefilled from v${base.version}.` : "Prefilled from your listing."}
+              {revising
+                ? `Your changes are submitted as v${revisionLabel}, which replaces v${editing.version} in the review queue.`
+                : editing
+                  ? "Drafts and versions with requested changes can be edited."
+                  : base
+                    ? `Prefilled from v${base.version}.`
+                    : "Prefilled from your listing."}
             </p>
           </div>
           <Button variant="ghost" size="icon-sm" aria-label="Close editor" onClick={() => onDone(null)}>
@@ -220,7 +252,7 @@ export function VersionEditor({
                 transition={reduced ? { duration: 0 } : spring.soft}
                 className="overflow-hidden"
               >
-                <ManifestDiff className="mt-3" before={compareTo} after={side} beforeLabel={live ? `v${live.version}` : "Published"} afterLabel={editing ? `v${editing.version}` : `v${version}`} />
+                <ManifestDiff className="mt-3" before={compareTo} after={side} beforeLabel={live ? `v${live.version}` : "Published"} afterLabel={revising ? `v${revisionLabel}` : editing ? `v${editing.version}` : `v${version}`} />
               </motion.div>
             )}
           </AnimatePresence>
@@ -230,11 +262,13 @@ export function VersionEditor({
           <Button variant="ghost" onClick={() => onDone(null)} disabled={busy}>
             Cancel
           </Button>
-          <Button variant="glass" icon={<Save className="size-4" />} loading={busy && intent === "draft"} disabled={busy} onClick={() => save(false)}>
-            Save draft
-          </Button>
+          {!revising && (
+            <Button variant="glass" icon={<Save className="size-4" />} loading={busy && intent === "draft"} disabled={busy} onClick={() => save(false)}>
+              Save draft
+            </Button>
+          )}
           <Button variant="accent" icon={<Send className="size-4" />} loading={busy && intent === "submit"} disabled={busy} onClick={() => save(true)}>
-            Save &amp; submit for review
+            {revising ? `Submit v${revisionLabel}` : "Save & submit for review"}
           </Button>
         </div>
       </Panel>

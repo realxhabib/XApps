@@ -33,7 +33,24 @@ export const VERSION_STATUS_LABEL: Record<AppVersionStatus, string> = {
   rejected: "Rejected",
   published: "Live",
   retired: "Retired",
+  superseded: "Replaced",
 };
+
+/**
+ * The version an edited submission becomes: the next free patch in the same
+ * major.minor line (1.1.0 → 1.1.1, or 1.1.3 when 1.1.2 exists). Mirrors
+ * `next_patch_version` in SQL.
+ */
+export function nextRevisionVersion(edited: string, existing: string[]): string {
+  const m = SEMVER_PATTERN.exec(edited);
+  if (!m) return edited;
+  let patch = Number(m[3]);
+  for (const v of existing) {
+    const o = SEMVER_PATTERN.exec(v);
+    if (o && o[1] === m[1] && o[2] === m[2]) patch = Math.max(patch, Number(o[3]));
+  }
+  return `${m[1]}.${m[2]}.${patch + 1}`;
+}
 
 /** Compares two semver labels numerically. */
 export function compareSemver(a: string, b: string): number {

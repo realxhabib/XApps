@@ -3273,6 +3273,74 @@ begin
   assert (select count(*) from public.app_logs where app_slug = 'ship-game') = 62, 'the rest kept';
 end $$;
 
+-- ---------------------------------------------------------------- One submission per app in review; editing a submission bumps the patch
+set role authenticated;
+select pg_temp.login('bob');
+insert into ctx values ('rv1', public.create_app_version('ship-game', '2.0.0', 'https://ship.example.com/r1', null, 'Big one')->>'id');
+insert into ctx values ('rv2', public.create_app_version('ship-game', '2.1.0', 'https://ship.example.com/r2', null, 'Bigger')->>'id');
+select public.submit_app_version(pg_temp.mid('rv1'));
+select public.submit_app_version(pg_temp.mid('rv2'));
+do $$
+begin
+  assert pg_temp.vstatus('rv2') = 'in_review', 'the new submission is queued';
+  assert pg_temp.vstatus('rv1') = 'superseded' and pg_temp.ver('rv1')->>'supersededBy' = '2.1.0', pg_temp.ver('rv1')::text;
+  assert pg_temp.ver('rv2')->'supersededBy' = 'null', 'queued versions aren''t superseded';
+end $$;
+-- Editing the submission saves the next patch, submits it and replaces the edited one.
+insert into ctx values ('rv3', public.revise_app_version(pg_temp.mid('rv2'), null,
+  (pg_temp.ver('rv2')->'manifest') || '{"tagline":"Fixed a typo"}', null)->>'id');
+do $$
+declare v jsonb := pg_temp.ver('rv3');
+begin
+  assert v->>'version' = '2.1.1' and v->>'status' = 'in_review' and v->>'submittedAt' is not null, v::text;
+  assert v->'manifest'->>'tagline' = 'Fixed a typo' and v->>'url' = 'https://ship.example.com/r2' and v->>'notes' = 'Bigger',
+    'null arguments keep the edited version''s values';
+  assert pg_temp.vstatus('rv2') = 'superseded' and pg_temp.ver('rv2')->>'supersededBy' = '2.1.1', pg_temp.ver('rv2')::text;
+end $$;
+insert into ctx values ('rv4', public.revise_app_version(pg_temp.mid('rv3'), 'https://ship.example.com/r3', null, 'Again')->>'id');
+do $$
+declare v jsonb := pg_temp.ver('rv4');
+begin
+  assert v->>'version' = '2.1.2' and v->>'url' = 'https://ship.example.com/r3' and v->>'notes' = 'Again'
+         and v->'manifest'->>'tagline' = 'Fixed a typo', v::text;
+  assert (select count(*) from jsonb_array_elements(public.list_app_versions('ship-game')) x where x->>'status' = 'in_review') = 1, 'one in review';
+end $$;
+-- The next free patch: 2.1.0 is taken by the chain, so revising again from 2.1.2 gives 2.1.3.
+reset role;
+do $$
+begin
+  assert public.next_patch_version('ship-game', '2.1.0') = '2.1.3', public.next_patch_version('ship-game', '2.1.0');
+  assert public.next_patch_version('ship-game', '9.9.4') = '9.9.5', 'a new line starts after its own patch';
+end $$;
+set role authenticated;
+select pg_temp.login('bob');
+select pg_temp.expect(format('select public.revise_app_version(%L)', pg_temp.mid('rv2')), '55000', 'Only versions in review%');
+select pg_temp.expect(format('select public.revise_app_version(%L)', pg_temp.mid('sv3')), '55000', 'Only versions in review%');
+select pg_temp.expect(format('select public.revise_app_version(%L, %L)', pg_temp.mid('rv4'), 'http://ship.example.com/'), '22023');
+select pg_temp.expect(format('select public.withdraw_app_version(%L)', pg_temp.mid('rv2')), '55000');
+select pg_temp.expect(format('select public.submit_app_version(%L)', pg_temp.mid('rv2')), '55000');
+select pg_temp.login('carol');
+select pg_temp.expect(format('select public.revise_app_version(%L)', pg_temp.mid('rv4')), '42501');
+select pg_temp.expect(format('select public.next_patch_version(%L, %L)', 'ship-game', '1.0.0'), '42501');
+
+-- Reviewers see only the latest submission, and what it replaced.
+select pg_temp.login('rita');
+do $$
+declare
+  q jsonb := public.list_review_queue();
+  mine jsonb;
+begin
+  select jsonb_agg(x) into mine from jsonb_array_elements(q) x where x->'app'->>'slug' = 'ship-game';
+  assert jsonb_array_length(mine) = 1 and mine->0->'version'->>'id' = pg_temp.cv('rv4'), mine::text;
+  assert mine->0->'replaces' = '["2.1.1", "2.1.0", "2.0.0"]', mine->0->>'replaces';
+  assert (select bool_and(x->'replaces' = '[]') from jsonb_array_elements(q) x where x->'app'->>'slug' <> 'ship-game') is not false,
+    'others replaced nothing';
+end $$;
+select pg_temp.expect(format('select public.review_app_version(%L, %L, null)', pg_temp.mid('rv2'), 'approve'), '55000', 'v2.1.0 was replaced by v2.1.1%');
+-- Back to a clean queue for the tests below.
+select pg_temp.login('bob');
+select public.withdraw_app_version(pg_temp.mid('rv4'));
+
 -- ---------------------------------------------------------------- Deleting an app takes its versions, test builds and logs
 set role authenticated;
 select pg_temp.login('carol');
