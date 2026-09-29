@@ -1,0 +1,164 @@
+{
+ "size": [
+  1920,
+  1080
+ ],
+ "clips": [
+  {
+   "name": "1 Cold open",
+   "src": "card-open",
+   "start": 0,
+   "end": 96
+  },
+  {
+   "name": "2 Home hero + Featured",
+   "src": "home",
+   "start": 0,
+   "end": 200,
+   "xfade": 8
+  },
+  {
+   "name": "3a Wedge Wars garage",
+   "src": "garage",
+   "start": 42,
+   "end": 160,
+   "caption": {
+    "dir": "cap-garage",
+    "at": 8
+   }
+  },
+  {
+   "name": "3b Play room lock-in + FFA intro",
+   "src": "wwroom",
+   "start": 46,
+   "end": 116
+  },
+  {
+   "name": "3c Arena charge + flip (host HUD)",
+   "src": "wwroom",
+   "start": 256,
+   "end": 306
+  },
+  {
+   "name": "3d Pile-up + KO",
+   "src": "ww3",
+   "start": 14,
+   "end": 125,
+   "caption": {
+    "dir": "cap-ww",
+    "at": 4
+   }
+  },
+  {
+   "name": "4 Starship League in the play room",
+   "src": "sl",
+   "start": 72,
+   "end": 262,
+   "xfade": 6,
+   "caption": {
+    "dir": "cap-sl",
+    "at": 4
+   }
+  },
+  {
+   "name": "5 Arena: Meme Duel voting",
+   "src": "arena",
+   "start": 85,
+   "end": 146,
+   "xfade": 6,
+   "caption": {
+    "dir": "cap-arena",
+    "at": 10
+   }
+  },
+  {
+   "name": "5b Arena: next contest",
+   "src": "arena",
+   "start": 160,
+   "end": 219
+  },
+  {
+   "name": "6a Challenge sheet",
+   "src": "chal",
+   "start": 16,
+   "end": 46,
+   "xfade": 6
+  },
+  {
+   "name": "6b Pick @quickdraw_mcgraw",
+   "src": "chal",
+   "start": 88,
+   "end": 127
+  },
+  {
+   "name": "6c VS intro",
+   "src": "chal",
+   "start": 198,
+   "end": 272,
+   "xfade": 6,
+   "caption": {
+    "dir": "cap-chal",
+    "at": 0
+   }
+  },
+  {
+   "name": "6d 3-2-1",
+   "src": "chal",
+   "start": 286,
+   "end": 336
+  },
+  {
+   "name": "6e Reflexes GO",
+   "src": "chal",
+   "start": 436,
+   "end": 492
+  },
+  {
+   "name": "7 Victory",
+   "src": "chal",
+   "start": 701,
+   "end": 800,
+   "xfade": 6,
+   "caption": {
+    "dir": "cap-win",
+    "at": 14
+   }
+  },
+  {
+   "name": "8a Register an app",
+   "src": "dev",
+   "start": 18,
+   "end": 62,
+   "xfade": 6,
+   "caption": {
+    "dir": "cap-dev",
+    "at": 6
+   }
+  },
+  {
+   "name": "8b Images + live preview",
+   "src": "dev",
+   "start": 110,
+   "end": 160
+  },
+  {
+   "name": "8c Console versions",
+   "src": "dev2",
+   "start": 26,
+   "end": 60
+  },
+  {
+   "name": "8d Admin review queue",
+   "src": "dev2",
+   "start": 70,
+   "end": 150
+  },
+  {
+   "name": "9 End card",
+   "src": "card-end",
+   "start": 0,
+   "end": 105,
+   "xfade": 10
+  }
+ ]
+}

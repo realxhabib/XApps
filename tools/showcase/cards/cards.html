@@ -1,0 +1,147 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>XApps cards</title>
+<style>
+  @font-face { font-family: "Bricolage Grotesque"; font-weight: 200 800; font-stretch: 75% 100%; src: url("74effe3e2193102a-s.p.1jake7ccbq8_p.woff2") format("woff2"); }
+  @font-face { font-family: "Geist"; font-weight: 100 900; src: url("caa3a2e1cccd8315-s.p.0wgildi0cnwt9.woff2") format("woff2"); }
+  @font-face { font-family: "Geist Mono"; font-weight: 100 900; src: url("797e433ab948586e-s.p.0r6juujl39pe6.woff2") format("woff2"); }
+  :root {
+    --ink-950: #05060a; --ink-300: #8d96ad; --ink-200: #b8bfcf; --ink-50: #f6f7fb;
+    --nova-300: #a9b8ff; --nova-500: #5b74ff; --flare: #ff5ca8; --violet: #a35cff; --volt: #c6ff3d;
+  }
+  html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: transparent; }
+  body { font-family: "Geist", system-ui, sans-serif; color: var(--ink-50); font-feature-settings: "ss01", "cv11"; -webkit-font-smoothing: antialiased; }
+  .full { position: absolute; inset: 0; }
+  .bg { background: var(--ink-950); overflow: hidden; }
+  .blob { position: absolute; border-radius: 50%; will-change: transform; }
+  .grid { position: absolute; inset: 0; opacity: .35;
+    background-image: linear-gradient(rgb(255 255 255 / .035) 1px, transparent 1px), linear-gradient(90deg, rgb(255 255 255 / .035) 1px, transparent 1px);
+    background-size: 84px 84px; -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 50%, #000 30%, transparent 75%); }
+  .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .brand { display: flex; align-items: center; gap: 34px; }
+  .word { font-family: "Bricolage Grotesque"; font-weight: 800; font-size: 200px; letter-spacing: -0.045em; line-height: 1; }
+  .tag { font-family: "Bricolage Grotesque"; font-weight: 800; font-size: 76px; letter-spacing: -0.035em; margin-top: 54px; }
+  .grad { background-image: linear-gradient(100deg, #fff 10%, var(--nova-300) 45%, var(--flare) 90%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .eyebrow { font-family: "Geist Mono"; font-weight: 600; font-size: 22px; letter-spacing: .32em; text-transform: uppercase; color: var(--ink-300); }
+  .chip { margin-top: 54px; font-family: "Geist Mono"; font-size: 34px; padding: 20px 36px; border-radius: 999px; border: 1.5px solid rgb(255 255 255 / .14); background: rgb(255 255 255 / .04); color: var(--ink-200); }
+  .chip b { color: var(--volt); font-weight: 600; }
+  /* caption */
+  .cap { position: absolute; left: 96px; bottom: 92px; }
+  .cap .scrim { position: absolute; left: -300px; bottom: -300px; width: 1500px; height: 760px; background: radial-gradient(ellipse 50% 50% at 40% 60%, rgb(5 6 10 / .62), transparent 72%); }
+  .cap .e { position: relative; font-family: "Geist Mono"; font-weight: 600; font-size: 22px; letter-spacing: .3em; text-transform: uppercase; color: var(--volt); margin-bottom: 14px; }
+  .cap .h { position: relative; font-family: "Bricolage Grotesque"; font-weight: 800; font-size: 92px; letter-spacing: -0.04em; line-height: .95; text-shadow: 0 6px 40px rgb(0 0 0 / .45); }
+  .cap.right { left: auto; right: 96px; text-align: right; }
+  .cap.right .scrim { left: auto; right: -300px; background: radial-gradient(ellipse 50% 50% at 60% 60%, rgb(5 6 10 / .62), transparent 72%); }
+  html.v, html.v body { width: 1080px; height: 1920px; }
+  html.v .word { font-size: 170px; }
+  html.v .tag { font-size: 70px; text-align: center; }
+  html.v .cap { left: 72px; bottom: 96px; }
+  html.v .cap.right { right: 72px; }
+  html.v .cap .h { font-size: 96px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const X_PATH = "M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z";
+const mark = (size) => `<svg width="${size}" height="${size}" viewBox="0 0 32 32"><rect x="0.5" y="0.5" width="31" height="31" rx="8" fill="#000" stroke="rgb(255 255 255 / 0.22)" stroke-width="0.6"/><path d="${X_PATH}" fill="#fff" transform="translate(7 7) scale(0.75)"/></svg>`;
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const outExpo = (t) => (t >= 1 ? 1 : 1 - Math.pow(2, -10 * t));
+const outCubic = (t) => 1 - Math.pow(1 - t, 3);
+const inOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+// Damped spring from 0 to 1 (stiffness/damping like motion's "soft").
+function spring(t, k = 170, c = 24, m = 1) {
+  if (t <= 0) return 0;
+  const w0 = Math.sqrt(k / m), z = c / (2 * Math.sqrt(k * m));
+  if (z < 1) { const wd = w0 * Math.sqrt(1 - z * z); return 1 - Math.exp(-z * w0 * t) * (Math.cos(wd * t) + (z * w0 / wd) * Math.sin(wd * t)); }
+  return 1 - Math.exp(-w0 * t) * (1 + w0 * t);
+}
+const p = new URLSearchParams(location.search);
+const kind = p.get("kind") || "open";
+const root = document.getElementById("root");
+if (p.get("v") === "1") document.documentElement.classList.add("v");
+if (kind !== "cap") document.documentElement.style.background = "#000";
+
+function background(extraClass = "") {
+  return `<div class="full bg ${extraClass}" id="bg">
+    <div class="blob" id="b1" style="left:-20%;top:-30%;width:70vmax;height:70vmax;background:radial-gradient(circle,#5b74ff,transparent 70%);opacity:.22"></div>
+    <div class="blob" id="b2" style="right:-25%;top:10%;width:60vmax;height:60vmax;background:radial-gradient(circle,#ff5ca8,transparent 70%);opacity:.16"></div>
+    <div class="blob" id="b3" style="left:20%;bottom:-35%;width:55vmax;height:55vmax;background:radial-gradient(circle,#1fd1b2,transparent 70%);opacity:.12"></div>
+    <div class="grid"></div></div>`;
+}
+function drift(t) {
+  const a = (id, ph, amp) => {
+    const el = document.getElementById(id); if (!el) return;
+    const s = Math.sin((t + ph) * 0.35), c = Math.cos((t + ph) * 0.27);
+    el.style.transform = `translate3d(${s * amp}%, ${c * amp}%, 0) rotate(${s * 6}deg) scale(${1 + 0.06 * c})`;
+  };
+  a("b1", 0, 5); a("b2", 6, 5); a("b3", 11, 5);
+}
+
+if (kind === "open") {
+  root.innerHTML = background() + `<div class="center" id="c">
+    <div class="brand"><div id="m">${mark(200)}</div><div class="word" id="w">Apps</div></div>
+    <div class="tag" id="t"><span>Challenge </span><span class="grad">anyone</span><span> on X.</span></div></div>`;
+  window.render = (t) => {
+    drift(t);
+    document.getElementById("bg").style.opacity = clamp(t / 0.9);
+    const m = document.getElementById("m"), w = document.getElementById("w"), tg = document.getElementById("t");
+    const sm = spring(t - 0.15, 260, 18);
+    m.style.transform = `scale(${0.6 + 0.4 * sm}) rotate(${(1 - sm) * -10}deg)`;
+    m.style.opacity = clamp((t - 0.15) / 0.25);
+    const sw = spring(t - 0.4, 170, 24);
+    w.style.transform = `translateX(${(1 - sw) * -40}px)`;
+    w.style.opacity = clamp((t - 0.4) / 0.35);
+    w.style.filter = `blur(${(1 - outExpo(clamp((t - 0.4) / 0.4))) * 12}px)`;
+    const st = spring(t - 1.15, 170, 24);
+    tg.style.transform = `translateY(${(1 - st) * 30}px)`;
+    tg.style.opacity = clamp((t - 1.15) / 0.35);
+    tg.style.filter = `blur(${(1 - outExpo(clamp((t - 1.15) / 0.4))) * 10}px)`;
+    tg.querySelector(".grad").style.backgroundPosition = `${clamp((t - 1.15) / 2) * 100}% 50%`;
+  };
+} else if (kind === "end") {
+  root.innerHTML = background() + `<div class="center" id="c">
+    <div class="brand" id="m" style="gap:22px"><div>${mark(120)}</div><div class="word" style="font-size:120px">Apps</div></div>
+    <div class="tag" id="t" style="font-size:${p.get("v") === "1" ? 92 : 104}px;margin-top:64px">Build yours${p.get("v") === "1" ? "<br>" : " "}with <span class="grad">@xapps/sdk</span></div>
+    <div class="chip" id="chip"><b>$</b> npm i @xapps/sdk</div>
+    </div>`;
+  window.render = (t) => {
+    drift(t + 3);
+    document.getElementById("bg").style.opacity = clamp(t / 0.5);
+    const m = document.getElementById("m"), tg = document.getElementById("t"), chip = document.getElementById("chip");
+    const sm = spring(t - 0.05, 260, 18);
+    m.style.transform = `scale(${0.6 + 0.4 * sm}) rotate(${(1 - sm) * -10}deg)`;
+    m.style.opacity = clamp((t - 0.05) / 0.25);
+    const st = spring(t - 0.3, 170, 24);
+    tg.style.transform = `translateY(${(1 - st) * 34}px)`;
+    tg.style.opacity = clamp((t - 0.3) / 0.35);
+    tg.style.filter = `blur(${(1 - outExpo(clamp((t - 0.3) / 0.4))) * 10}px)`;
+    tg.querySelector(".grad").style.backgroundPosition = `${clamp((t - 0.3) / 2.4) * 100}% 50%`;
+    const sc = spring(t - 0.75, 170, 24);
+    chip.style.transform = `translateY(${(1 - sc) * 24}px)`;
+    chip.style.opacity = clamp((t - 0.75) / 0.35);
+  };
+} else if (kind === "cap") {
+  const side = p.get("side") || "left";
+  root.innerHTML = `<div class="cap ${side === "right" ? "right" : ""}" id="cap"><div class="scrim" id="s"></div>
+    <div class="e" id="e">${p.get("e") || ""}</div><div class="h" id="h">${p.get("h") || ""}</div></div>`;
+  const dur = Number(p.get("dur") || 2.5);
+  window.render = (t) => {
+    const out = clamp((t - (dur - 0.3)) / 0.3);
+    const s = document.getElementById("s"), e = document.getElementById("e"), h = document.getElementById("h");
+    s.style.opacity = clamp(t / 0.3) * (1 - out);
+    const se = spring(t, 260, 26), sh = spring(t - 0.08, 200, 24);
+    e.style.opacity = clamp(t / 0.2) * (1 - out);
+    e.style.transform = `translateY(${(1 - se) * 16}px)`;
+    h.style.opacity = clamp((t - 0.08) / 0.25) * (1 - out);
+    h.style.transform = `translateY(${(1 - sh) * 28 - out * 10}px)`;
+    h.style.filter = `blur(${(1 - outExpo(clamp((t - 0.08) / 0.35))) * 8 + out * 6}px)`;
+  };
+}
+window.render(0);
+document.fonts.ready.then(() => { window.__ready = true; });
+</script>
+</body>
+</html>

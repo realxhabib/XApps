@@ -1,0 +1,26 @@
+// Wedge Wars garage (standalone, full bleed): turntable, then a quick loadout swap.
+import { launch, Recorder, BASE, sleep, center, cursorAt } from "./rec.mjs";
+const scale = Number(process.argv[2] ?? 1.5);
+const { browser, page } = await launch({ width: 1280, height: 720, scale, seed: 3 });
+await page.goto(`${BASE}/embed/wedge-wars?quality=high&xapps-players=4`);
+await page.getByRole("button", { name: /Lock in/ }).waitFor({ timeout: 120000 });
+await sleep(4000);
+const rec = new Recorder(page, process.argv[3] ?? "garage");
+await rec.pause();
+rec.mouse = { x: 1000, y: 560 };
+await cursorAt(page, 1000, 560);
+await rec.frames(45);
+let p = await center(page.getByRole("button", { name: "Flipper" }));
+await rec.glide(p.x, p.y, 14, { click: true });
+await rec.frames(30);
+p = await center(page.getByRole("button", { name: "Tank" }));
+await rec.glide(p.x, p.y, 12, { click: true });
+await rec.frames(24);
+const paints = page.locator("button[aria-label]").filter({ has: page.locator("xpath=.") });
+const labels = await page.evaluate(() => [...document.querySelectorAll("button[aria-label]")].map((b) => b.getAttribute("aria-label")));
+console.log(labels.join(" | "));
+const pink = labels.find((l) => /pink|flare|magenta|rose/i.test(l)) ?? labels[3];
+p = await center(page.getByRole("button", { name: pink, exact: true }));
+await rec.glide(p.x, p.y, 12, { click: true });
+await rec.frames(40);
+await browser.close();
