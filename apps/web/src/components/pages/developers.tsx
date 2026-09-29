@@ -32,6 +32,7 @@ import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Segmented } from "@/components/ui/segmented";
 import { spring } from "@/lib/motion";
+import { useOrigin } from "@/lib/use-origin";
 import { cn } from "@/lib/utils";
 import { useViewer } from "@/platform/client";
 import { useAppServerConfig, useMyApps } from "@/platform/queries";
@@ -79,8 +80,8 @@ function Game() {
   return started ? <button onClick={tap}>Tap! {taps}</button> : <p>Get ready…</p>;
 }`;
 
-const VANILLA_SNIPPET = `<script type="module">
-  import { connect } from "https://YOUR-XAPPS-HOST/sdk/v1.js";
+const vanillaSnippet = (origin: string) => `<script type="module">
+  import { connect } from "${origin}/sdk/v1.js";
 
   const xapps = await connect();
   document.title = \`@\${xapps.me.handle} vs @\${xapps.opponent?.handle}\`;
@@ -355,6 +356,7 @@ const TRUST_PILLARS = [
 
 function TrustSection() {
   const [tab, setTab] = useState<"verify" | "report">("verify");
+  const origin = useOrigin();
   return (
     <section className="mt-20" id="trust">
       <p className="text-xs font-bold uppercase tracking-[0.22em] text-ink-400">Trust</p>
@@ -475,7 +477,7 @@ function TrustSection() {
         <motion.div key={tab} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={spring.snappy} className="mt-4">
           <CodeBlock
             filename={tab === "verify" ? "app/api/xapps/webhook/route.ts" : "lib/xapps.ts"}
-            code={tab === "verify" ? webhookSnippet() : reportSnippet()}
+            code={tab === "verify" ? webhookSnippet() : reportSnippet(origin)}
           />
         </motion.div>
         <p className="mt-3 text-sm text-ink-400">
@@ -489,6 +491,7 @@ function TrustSection() {
 
 export function Developers() {
   const [tab, setTab] = useState<"react" | "vanilla" | "contest" | "turns" | "media">("react");
+  const origin = useOrigin();
   return (
     <div>
       <section className="grid grid-cols-1 items-center gap-10 lg:grid-cols-[1.1fr_1fr]">
@@ -511,7 +514,7 @@ export function Developers() {
           </div>
         </motion.div>
         <motion.div initial={{ opacity: 0, y: 30, rotate: 2 }} animate={{ opacity: 1, y: 0, rotate: 0 }} transition={{ delay: 0.1, ...spring.soft }}>
-          <CodeBlock filename="terminal" code={`npm install @xapps/sdk\n\n// or, no build step at all:\nimport { connect } from "https://YOUR-XAPPS-HOST/sdk/v1.js";`} />
+          <CodeBlock filename="terminal" code={`npm install @xapps/sdk\n\n// or, no build step at all:\nimport { connect } from "${origin}/sdk/v1.js";`} />
         </motion.div>
       </section>
 
@@ -557,7 +560,7 @@ export function Developers() {
               tab === "react"
                 ? REACT_SNIPPET
                 : tab === "vanilla"
-                  ? VANILLA_SNIPPET
+                  ? vanillaSnippet(origin)
                   : tab === "turns"
                     ? TURNS_SNIPPET
                     : tab === "media"

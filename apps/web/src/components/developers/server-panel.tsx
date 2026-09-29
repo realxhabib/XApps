@@ -45,6 +45,7 @@ import {
 } from "@/platform/queries";
 import type { AppAuthority, AppManifest, AppServerConfig, WebhookDelivery } from "@/platform/types";
 import { webhookUrlError } from "@/platform/webhook-url";
+import { useOrigin } from "@/lib/use-origin";
 import { reportSnippet, webhookSnippet } from "./server-snippets";
 
 /** Give-up point for webhook retries (backoff 1, 2, 4 … 256 min). */
@@ -757,7 +758,7 @@ function DeliveriesCard({ app, config, className }: { app: AppManifest; config: 
 
 function SnippetsCard({ className }: { className?: string }) {
   const [tab, setTab] = useState<"verify" | "report">("verify");
-  const host = typeof window !== "undefined" ? window.location.origin : undefined;
+  const host = useOrigin();
   return (
     <Card icon={<ShieldCheck className="size-5 text-success" />} title="Wire up your server" className={className}>
       <p className="mt-3 text-sm text-ink-300">

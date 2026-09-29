@@ -1,7 +1,5 @@
 /** Copy-paste snippets for app servers (Stage 2), shared by the Server panel and /developers. */
 
-const HOST = "https://YOUR-XAPPS-HOST";
-
 export function webhookSnippet(): string {
   return `// app/api/xapps/webhook/route.ts — a Next.js route handler
 import { verifyWebhook } from "@xapps/sdk/server";
@@ -30,7 +28,8 @@ export async function POST(request: Request) {
 }`;
 }
 
-export function reportSnippet(host = HOST): string {
+/** `host`: this XApps site's origin (see `useOrigin`). */
+export function reportSnippet(host: string): string {
   return `// lib/xapps.ts — runs on your server only, never in the browser
 import { createServerClient } from "@xapps/sdk/server";
 
