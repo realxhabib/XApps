@@ -4,6 +4,7 @@ import { animate, motion, useMotionValue, useTransform, type PanInfo } from "mot
 import { Check, ChevronRight, X } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
+import { TestBuildBadge } from "@/components/play/test-build-badge";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { haptic } from "@/lib/haptics";
@@ -127,6 +128,7 @@ export function MatchCard({
           {yourTurn && match.turnDeadline ? <TurnDeadline deadline={match.turnDeadline} /> : <> · {timeAgo(match.endedAt ?? match.createdAt)}</>}
         </p>
       </div>
+      <TestBuildBadge match={match} compact className="hidden sm:inline-flex" />
       <Faces match={match} />
       <StatusBadge match={match} viewerId={subject?.id ?? viewerId} />
       {!swipeable && <ChevronRight className="size-4 text-ink-500 transition group-hover:translate-x-0.5 group-hover:text-ink-200" />}

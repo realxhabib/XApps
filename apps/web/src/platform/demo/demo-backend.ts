@@ -1330,18 +1330,6 @@ export class DemoBackend implements Backend {
     });
   }
 
-  async uploadImage(image: Blob): Promise<string> {
-    this.requireViewer();
-    // Everything lives in localStorage here, so keep dropped images as small data URLs.
-    if (image.size > 400_000) throw new BackendError("That image is too big for demo mode", "invalid");
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(new BackendError("Couldn't read that image", "invalid"));
-      reader.readAsDataURL(image);
-    });
-  }
-
   async quickMatch(appSlug: string, versionId?: string | null): Promise<Match> {
     const viewer = this.requireViewer();
     return mutate((db) => {

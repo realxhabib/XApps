@@ -281,7 +281,11 @@ status/attempts, "Send test event", and copy-paste snippets for Node
 (Express/Next route) verifying a webhook and reporting a result. Demo mode
 explains that the server API and webhooks need Supabase.
 
-## Stage 3: Media & data
+## Stage 3: Media & data (shipped)
+
+Migrations: `20261002000000_media_and_data.sql`, `…000100_meme_duel_setup.sql`,
+`…000200_first_party_progress.sql`. Meme Duel now renders its own setup;
+the first-party apps report stats and unlock achievements.
 
 Goal: apps can carry real media and real progression. Everything stays
 additive; v1/v2 apps are unaffected.
@@ -365,7 +369,10 @@ Meme Duel declares `setup: true` and renders its own challenge setup in
 setup purpose (template/trending/drop/topic), uploading drops with
 `media.upload`. The platform's hard-coded Meme Duel setup is removed.
 
-## Stage 4: Shipping
+## Stage 4: Shipping (shipped)
+
+Migration: `20261003000000_shipping.sql`. Make yourself an admin with
+`update public.profiles set is_admin = true where handle = '<you>';`.
 
 Goal: developers can iterate safely (versions, staging, testers), get
 reviewed in a real queue, see how their app is doing (analytics, logs), and

@@ -110,7 +110,23 @@ supabase/migrations/       schema, RLS, RPCs, realtime auth
 supabase/tests/            lifecycle tests against a plain local Postgres
 ```
 
-## Build an app
+## Build and ship an app
+
+```bash
+npx create-xapp my-game            # templates: react (default), turn-based, vanilla
+cd my-game && npm install && npm run dev   # runs standalone against the SDK's mock host
+```
+
+1. **Register** it at `/developers/new`. That creates version 1.0.0, which goes to review.
+2. **Test** it in the Sandbox (both seats), then invite **testers**. Test builds are never ranked.
+3. **Ship updates** as new versions from the app's console (`/developers/apps/<slug>`): Versions, Analytics, Logs, Server.
+4. **Review.** Admins approve or request changes at `/admin/review`. Approved versions are published from the console.
+
+To make someone an admin, run `update public.profiles set is_admin = true where handle = '<handle>';` in the SQL editor. In demo mode, the review page has a "Become admin" switch.
+
+`@xapps/sdk` and `create-xapp` are ready for npm (`npm publish` from `packages/sdk` and `packages/create-xapp`). Until you publish them, scaffolded projects can't install the SDK.
+
+## The SDK in 10 lines
 
 Start from a template (no network needed to scaffold):
 
@@ -147,6 +163,7 @@ Full reference: the `/developers` page in the app and [`packages/sdk/README.md`]
 
 ## Known limitations
 
-- **Scores are client-reported.** Deterministic seeds and commit-reveal limit cheating, and a cheater can only turn a loss into a draw by also claiming the win. Fully server-authoritative play would need game servers.
+- **Scores are client-reported by default.** Deterministic seeds and commit-reveal limit cheating. Apps that need more can switch to server authority (Stage 2), where only the app's own server can settle a match. Stats and achievements from client-authority apps are trusted the same way.
+- **Demo uploads live in memory.** In demo mode, `/api/demo-media` keeps files in the server process, so they're lost on restart and aren't shared across serverless instances.
 - **Crowd-judged content is user-generated.** Before a public launch, add reporting and moderation for captions and takes.
 - **Async runs aren't locked.** A player who leaves before submitting can replay the run.

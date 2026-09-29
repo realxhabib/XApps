@@ -1,0 +1,43 @@
+import { expect, test } from "@playwright/test";
+import { signIn } from "./helpers";
+
+test("a developer ships a new version through review", async ({ page }) => {
+  test.setTimeout(150_000);
+  const suffix = String(Date.now()).slice(-6);
+  const slug = `tap-race-${suffix}`;
+  await signIn(page, `dev${suffix}`);
+
+  // Register (demo mode publishes 1.0.0 right away).
+  await page.goto("/developers/new");
+  await page.getByPlaceholder("Tap Race").fill(`Tap Race ${suffix}`);
+  await page.getByPlaceholder("Ten seconds. Fastest thumbs win.").fill("Ten seconds. Fastest thumbs win.");
+  await page.getByPlaceholder("https://tap-race.dev").fill("http://localhost:3000/examples/rps/index.html");
+  await page.getByRole("button", { name: "Submit app" }).click();
+  await expect(page.getByText(/1\.0\.0/).first()).toBeVisible({ timeout: 15_000 });
+
+  // Console → new minor version → submit for review.
+  await page.goto(`/developers/apps/${slug}?tab=versions`);
+  await page.getByRole("button", { name: "New version" }).click();
+  await page.getByRole("button", { name: /minor/i }).click();
+  await page.getByLabel("Tagline").fill("Ten seconds. Fastest thumbs win. Now with streaks.");
+  await page.getByPlaceholder("New power-ups, fixed the timer on slow phones.").fill("Adds a streak stat.");
+  await page.getByRole("button", { name: /Save & submit for review/ }).click();
+  await expect(page.getByText(/in review/i).first()).toBeVisible({ timeout: 10_000 });
+
+  // Admin approves (demo lets you become an admin).
+  await page.goto("/admin/review");
+  const become = page.getByRole("button", { name: "Become admin (demo)" });
+  await expect(become.or(page.getByRole("button", { name: new RegExp(`Tap Race ${suffix}`) }).first())).toBeVisible({ timeout: 15_000 });
+  if (await become.isVisible()) await become.click();
+  await page.getByRole("button", { name: new RegExp(`Tap Race ${suffix}.*1\\.1\\.0`) }).first().click();
+  await page.getByRole("button", { name: "Approve" }).first().click();
+  await page.getByRole("dialog").getByRole("button", { name: "Approve" }).click();
+
+  // Publish; 1.1.0 becomes the live version.
+  await page.goto(`/developers/apps/${slug}?tab=versions`);
+  await page.getByRole("button", { name: "Publish", exact: true }).click();
+  await page.getByRole("button", { name: "Publish now" }).click();
+  await expect(page.getByText(/1\.1\.0/).first()).toBeVisible();
+  await page.goto(`/apps/${slug}`);
+  await expect(page.getByText("Ten seconds. Fastest thumbs win. Now with streaks.").first()).toBeVisible({ timeout: 15_000 });
+});

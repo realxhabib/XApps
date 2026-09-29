@@ -73,8 +73,8 @@ export function ChallengeSheet({
   const [setupOpen, setSetupOpen] = useState(appSetup);
 
   const picked = multi ? true : openLink || rivals.length > 0;
-  const setupReady = appSetup ? !!setup : true;
-  const ready = picked && setupReady;
+  // Setup is optional: an app that isn't set up gets empty settings and uses its defaults.
+  const ready = picked;
 
   const refuse = () => {
     play("error");
@@ -130,7 +130,7 @@ export function ChallengeSheet({
         opponentHandle: !multi && rivals[0] ? rivals[0].handle : null,
         opponentHandles: multi && handles.length > 0 ? handles : undefined,
         maxPlayers: multi ? tableSize : undefined,
-        settings: appSetup ? setup?.settings : undefined,
+        settings: appSetup ? (setup?.settings ?? {}) : undefined,
       });
       play("whoosh");
       const names = rivals.map((r) => `@${r.handle}`);
@@ -157,9 +157,7 @@ export function ChallengeSheet({
 
   const label = !picked
     ? "Pick a rival"
-    : appSetup && !setup
-      ? "Finish the setup first"
-      : multi
+    : multi
         ? rivals.length === 0
           ? `Open a ${tableLabel(app, tableSize)} table`
           : `Invite ${rivals.length}${openSeats > 0 ? ` + ${openSeats} open` : ""}`

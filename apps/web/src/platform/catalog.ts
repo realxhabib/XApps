@@ -55,7 +55,6 @@ export const OFFICIAL_APPS: AppManifest[] = [
     players: { min: 2, max: 2 },
     teams: 0,
     spectators: true,
-    // Meme Duel will render its own setup screen once it ships one (setup purpose).
     setup: false,
     turnBased: false,
     scoring: "high",
@@ -114,7 +113,6 @@ export const OFFICIAL_APPS: AppManifest[] = [
     players: { min: 2, max: 2 },
     teams: 0,
     spectators: true,
-    // Meme Duel will render its own setup screen once it ships one (setup purpose).
     setup: false,
     turnBased: false,
     scoring: "votes",
@@ -180,7 +178,6 @@ export const OFFICIAL_APPS: AppManifest[] = [
     players: { min: 2, max: 2 },
     teams: 0,
     spectators: true,
-    // Meme Duel will render its own setup screen once it ships one (setup purpose).
     setup: false,
     turnBased: true,
     scoring: "high",
@@ -246,7 +243,6 @@ export const OFFICIAL_APPS: AppManifest[] = [
     players: { min: 2, max: 2 },
     teams: 0,
     spectators: true,
-    // Meme Duel will render its own setup screen once it ships one (setup purpose).
     setup: false,
     turnBased: false,
     scoring: "high",
@@ -391,7 +387,6 @@ export const OFFICIAL_APPS: AppManifest[] = [
     players: { min: 2, max: 2 },
     teams: 0,
     spectators: true,
-    // Meme Duel will render its own setup screen once it ships one (setup purpose).
     setup: false,
     turnBased: false,
     scoring: "high",

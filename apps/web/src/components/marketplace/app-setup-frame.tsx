@@ -122,6 +122,8 @@ export function AppSetupFrame({
     throw new XAppsError("forbidden", `${method} isn't available while setting up a challenge`);
   };
 
+  const [contentHeight, setContentHeight] = useState<number | null>(null);
+
   const handlers: HostHandlers = {
     // Setup never starts a match: ready() only reveals the frame.
     ready: () => {
@@ -179,6 +181,15 @@ export function AppSetupFrame({
     "match.submit": notHere("match.submit"),
     "match.forfeit": notHere("match.forfeit"),
     "social.share": notHere("social.share"),
+    // Apps that report their content height (xapps.ui.autoResize) get a frame that fits it.
+    "ui.resize": ({ height }) => {
+      setContentHeight(height);
+      return null;
+    },
+    log: ({ level, message, data }) => {
+      void backend.logAppEvent({ appSlug: app.slug, matchId: null, level, message, data, source: "app" }).catch(() => undefined);
+      return null;
+    },
     "state.get": () => ({ state: null, version: 0 }),
     "state.set": notHere("state.set"),
     "turn.end": notHere("turn.end"),
@@ -198,11 +209,16 @@ export function AppSetupFrame({
       className={cn(
         // Tall enough for a real setup screen, short enough that the sheet around it
         // still has room to scroll on phones (touches on the frame scroll the app).
-        "relative h-[clamp(22rem,calc(100dvh-19rem),32rem)] overflow-hidden rounded-3xl bg-ink-900 ring-1 ring-white/10",
+        "relative overflow-hidden rounded-3xl bg-ink-900 ring-1 ring-white/10",
+        contentHeight === null && "h-[clamp(22rem,calc(100dvh-19rem),32rem)]",
         className,
       )}
       initial={reduced ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 8 }}
-      animate={{ opacity: 1, scale: 1, y: 0 }}
+      animate={
+        contentHeight === null
+          ? { opacity: 1, scale: 1, y: 0 }
+          : { opacity: 1, scale: 1, y: 0, height: Math.min(contentHeight, Math.max(320, window.innerHeight - 192)) }
+      }
       exit={reduced ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: -8 }}
       transition={spring.soft}
       style={{ "--accent-from": app.accent[0], "--accent-to": app.accent[1] } as React.CSSProperties}

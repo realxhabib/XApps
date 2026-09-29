@@ -20,9 +20,9 @@ export function EmbedRoot({ slug, children }: { slug: string; children: ReactNod
   const options = useMemo(
     () => ({
       hostOrigins: typeof window !== "undefined" ? [window.location.origin] : undefined,
-      mock: { scoring: app.scoring, startDelayMs: 600 },
+      mock: { scoring: app.scoring, startDelayMs: 600, stats: app.stats, achievements: app.achievements },
     }),
-    [app.scoring],
+    [app.scoring, app.stats, app.achievements],
   );
 
   return (

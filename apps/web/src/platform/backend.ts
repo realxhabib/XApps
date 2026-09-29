@@ -115,8 +115,6 @@ export interface Backend {
 
   // Matches ------------------------------------------------------------
   createChallenge(input: CreateChallengeInput): Promise<Match>;
-  /** Stores an image the viewer dropped into a challenge and returns its URL (a data URL in demo mode). */
-  uploadImage(image: Blob): Promise<string>;
   /** Join someone who's waiting, or open a new public lobby (with `versionId`: a test-build lobby for owner/testers). */
   quickMatch(appSlug: string, versionId?: string | null): Promise<Match>;
   /** Solo match against bots the app drives (`players` seats, default the app's minimum). */
