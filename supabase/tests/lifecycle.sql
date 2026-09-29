@@ -2617,6 +2617,7 @@ begin
   assert l->0->>'url' = 'https://ship.example.com/v1' and l->0->>'submittedAt' is not null
          and l->0->'reviewedAt' = 'null' and l->0->'publishedAt' = 'null', l::text;
   assert l->0->'manifest' = '{"name":"Ship Game","tagline":"Version one","description":"","category":"games","icon":"✨",
+    "iconImage":null,"coverImage":null,
     "accent":["#5b74ff","#a35cff"],"modes":["live","async","practice"],"players":{"min":2,"max":4},"teams":0,
     "spectators":true,"setup":false,"turnBased":false,"scoring":"high","votesToWin":5,"howTo":["Play"],
     "stats":[],"achievements":[]}'::jsonb, l->0->>'manifest';
@@ -2831,7 +2832,8 @@ begin
   -- Defaults: no manifest/url = the app as it is now.
   assert public.create_app_version('ship-game', '1.0.1')->'manifest' = pg_temp.ver('sv1')->'manifest', 'copied from the app';
   assert public.create_app_version('ship-game', '1.0.2', null, '{"name":"Mini","category":"games","howTo":null}')->'manifest'
-         = '{"name":"Mini","tagline":"","description":"","category":"games","icon":"✨","accent":["#5b74ff","#a35cff"],
+         = '{"name":"Mini","tagline":"","description":"","category":"games","icon":"✨","iconImage":null,"coverImage":null,
+             "accent":["#5b74ff","#a35cff"],
              "modes":["live","practice"],"players":{"min":2,"max":2},"teams":0,"spectators":true,"setup":false,
              "turnBased":false,"scoring":"high","votesToWin":5,"howTo":[],"stats":[],"achievements":[]}', 'defaults filled';
 end $$;
@@ -3340,6 +3342,57 @@ select pg_temp.expect(format('select public.review_app_version(%L, %L, null)', p
 -- Back to a clean queue for the tests below.
 select pg_temp.login('bob');
 select public.withdraw_app_version(pg_temp.mid('rv4'));
+
+-- ---------------------------------------------------------------- Listing images: uploads, keys in manifests, publishing
+set role authenticated;
+select pg_temp.login('bob');
+insert into ctx values ('img_key', pg_temp.uid('bob')::text || '/' || repeat('a', 32) || '.webp');
+insert into storage.objects (bucket_id, name) values ('app-images', pg_temp.cv('img_key'));
+-- Only into your own folder, only keys the app makes.
+select pg_temp.expect(format('insert into storage.objects (bucket_id, name) values (%L, %L)', 'app-images',
+  pg_temp.uid('carol')::text || '/' || repeat('b', 32) || '.webp'), '42501');
+select pg_temp.expect(format('insert into storage.objects (bucket_id, name) values (%L, %L)', 'app-images',
+  pg_temp.uid('bob')::text || '/evil.svg'), '42501');
+-- Manifests take keys, never URLs.
+insert into ctx values ('iv', public.create_app_version('ship-game', '3.0.0', null,
+  (pg_temp.ver('sv2')->'manifest') || jsonb_build_object('iconImage', pg_temp.cv('img_key'), 'coverImage', pg_temp.cv('img_key')))->>'id');
+do $$
+declare v jsonb := pg_temp.ver('iv');
+begin
+  assert v->'manifest'->>'iconImage' = pg_temp.cv('img_key') and v->'manifest'->>'coverImage' = pg_temp.cv('img_key'), v::text;
+end $$;
+select pg_temp.expect(format('select public.create_app_version(%L, %L, null, %L)', 'ship-game', '3.0.1',
+  (pg_temp.ver('sv2')->'manifest') || '{"iconImage":"https://evil.example.com/x.png"}'), '22023', 'Images must be uploaded%');
+select pg_temp.expect(format('select public.create_app_version(%L, %L, null, %L)', 'ship-game', '3.0.1',
+  (pg_temp.ver('sv2')->'manifest') || '{"coverImage":42}'), '22023', 'Images must be uploaded%');
+select pg_temp.expect($q$insert into public.apps (slug, name, category, url, icon_image)
+  values ('img-sneaky', 'Sneaky', 'games', 'https://sneaky.example.com/', 'https://evil.example.com/x.png')$q$, '23514');
+-- Publishing copies the images onto the app; publishing a version without them clears them.
+reset role;
+select public.publish_version(pg_temp.mid('iv'));
+do $$
+declare a public.apps;
+begin
+  select * into a from public.apps where slug = 'ship-game';
+  assert a.icon_image = pg_temp.cv('img_key') and a.cover_image = pg_temp.cv('img_key'), 'images published';
+  assert public.app_row_manifest(a)->>'iconImage' = pg_temp.cv('img_key'), 'row manifest carries them';
+end $$;
+select public.publish_version(pg_temp.mid('sv2'));
+do $$
+begin
+  assert (select icon_image is null and cover_image is null from public.apps where slug = 'ship-game'), 'cleared';
+end $$;
+-- 40 uploads per user per day.
+set role authenticated;
+select pg_temp.login('dave');
+do $$
+begin
+  for i in 1..40 loop
+    insert into storage.objects (bucket_id, name) values ('app-images', auth.uid()::text || '/' || lpad(to_hex(i), 32, '0') || '.png');
+  end loop;
+end $$;
+select pg_temp.expect(format('insert into storage.objects (bucket_id, name) values (%L, %L)', 'app-images',
+  pg_temp.uid('dave')::text || '/' || repeat('f', 32) || '.png'), '42501');
 
 -- ---------------------------------------------------------------- Deleting an app takes its versions, test builds and logs
 set role authenticated;

@@ -1,3 +1,4 @@
+import { appImageKeyError, blobToDataUrl, type AppImageKind } from "@/lib/app-images";
 import { LIMITS, createRandom, randomId } from "@xapps/sdk";
 import { byteLength } from "@xapps/sdk/protocol";
 import { isBlobLike } from "@xapps/sdk/host";
@@ -609,7 +610,7 @@ export class DemoBackend implements Backend {
 
   async registerApp(input: RegisterAppInput): Promise<AppManifest> {
     const viewer = this.requireViewer();
-    const shapeError = manifestShapeError(input);
+    const shapeError = manifestShapeError(input) ?? appImageKeyError(input.iconImage, { demo: true }) ?? appImageKeyError(input.coverImage, { demo: true });
     if (shapeError) throw new BackendError(shapeError, "invalid");
     return mutate((db) => {
       if (getOfficialApp(input.slug) || db.apps[input.slug]) {
@@ -2022,6 +2023,16 @@ export class DemoBackend implements Backend {
       db.mediaUploads = keep;
     });
     return { url, kind, mime, bytes: file.size, ...meta };
+  }
+
+  async uploadAppImage(file: Blob, kind: AppImageKind): Promise<string> {
+    this.requireViewer();
+    if (!isBlobLike(file)) throw new BackendError("Upload an image", "invalid");
+    if (!/^image\/(webp|jpeg|png)$/.test(file.type)) throw new BackendError("Images are uploaded as WebP, JPEG or PNG", "invalid");
+    // Demo images live in the demo database itself (as data URLs), so they outlast the dev server.
+    const key = await blobToDataUrl(file);
+    if (appImageKeyError(key, { demo: true })) throw new BackendError(`That ${kind} is too large for demo mode`, "invalid");
+    return key;
   }
 
   /** Mirrors `report_stats` / `apply_stats`. */

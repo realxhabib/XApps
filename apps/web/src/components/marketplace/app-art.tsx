@@ -1,6 +1,9 @@
 "use client";
 
 import { motion, useReducedMotion } from "motion/react";
+import { useState } from "react";
+import { appImageSrc } from "@/lib/app-images";
+import { cn } from "@/lib/utils";
 import type { AppManifest } from "@/platform/types";
 
 /**
@@ -8,6 +11,33 @@ import type { AppManifest } from "@/platform/types";
  * screenshot, drawn in code so it's crisp at any size and never stale.
  */
 export function AppArt({ app, className }: { app: AppManifest; className?: string }) {
+  const cover = appImageSrc(app.coverImage);
+  const [failed, setFailed] = useState<string | null>(null);
+  if (cover && failed !== cover) return <CoverArt src={cover} onError={() => setFailed(cover)} className={className} />;
+  return <DrawnArt app={app} className={className} />;
+}
+
+/** An uploaded cover: fills the art area with a slow drift, fading out at the bottom into the card. */
+function CoverArt({ src, onError, className }: { src: string; onError: () => void; className?: string }) {
+  const reduced = useReducedMotion();
+  return (
+    <div className={cn("relative overflow-hidden", className)} aria-hidden>
+      <motion.img
+        src={src}
+        alt=""
+        draggable={false}
+        onError={onError}
+        className="absolute inset-0 size-full object-cover"
+        initial={{ scale: 1.08 }}
+        animate={reduced ? { scale: 1.02 } : { scale: [1.04, 1.12, 1.04], x: ["0%", "-2%", "0%"] }}
+        transition={reduced ? { duration: 0 } : { duration: 18, repeat: Infinity, ease: "easeInOut" }}
+      />
+      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-ink-850/90" />
+    </div>
+  );
+}
+
+function DrawnArt({ app, className }: { app: AppManifest; className?: string }) {
   const reduced = useReducedMotion();
   const [a, b] = app.accent;
   const loop = (duration: number, delay = 0) =>

@@ -211,12 +211,12 @@ export function AppDetail({ slug }: { slug: string }) {
             </p>
           </div>
           <motion.div
-            className="relative hidden min-h-72 lg:block"
+            className={cn("relative", app.coverImage ? "aspect-video overflow-hidden rounded-[1.75rem] border border-white/10 shadow-2xl lg:aspect-auto lg:min-h-72" : "hidden min-h-72 lg:block")}
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.2, ...spring.soft }}
           >
-            <AppArt app={app} className="absolute inset-0 scale-125" />
+            <AppArt app={app} className={cn("absolute inset-0", !app.coverImage && "scale-125")} />
           </motion.div>
         </div>
       </section>

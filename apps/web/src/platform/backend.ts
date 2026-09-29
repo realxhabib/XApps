@@ -1,3 +1,4 @@
+import type { AppImageKind } from "@/lib/app-images";
 import type {
   AppAnalytics,
   AppLogEntry,
@@ -170,6 +171,11 @@ export interface Backend {
   // Media, stats & achievements (Stage 3) -------------------------------
   /** Validates and stores a file for the viewer under an app; returns a public URL. */
   uploadMedia(appSlug: string, file: Blob): Promise<MediaRef>;
+  /**
+   * Stores a listing image the developer picked (already processed with `processAppImage`) and
+   * returns its key for a manifest's `iconImage` / `coverImage`. Uploads are never overwritten.
+   */
+  uploadAppImage(file: Blob, kind: AppImageKind): Promise<string>;
   /** Applies each stat's aggregate; returns the new values. Refused for server-authoritative apps. */
   reportStats(appSlug: string, values: { [key: string]: number }): Promise<{ [key: string]: number }>;
   statLeaderboard(appSlug: string, key: string): Promise<StatLeaderRow[]>;

@@ -213,6 +213,34 @@ describe("demo backend: review queue", () => {
   });
 });
 
+describe("demo backend: listing images", () => {
+  const icon = "data:image/webp;base64,UklGRg==";
+  const cover = "data:image/png;base64,iVBORw0KGgo=";
+
+  it("registers with images, versions carry them, and publishing applies them", async () => {
+    await as("alice");
+    const app = await backend.registerApp(appInput("pics", { iconImage: icon, coverImage: cover }));
+    expect([app.iconImage, app.coverImage]).toEqual([icon, cover]);
+    const [v1] = await backend.listAppVersions("pics");
+    expect([v1?.manifest.iconImage, v1?.manifest.coverImage]).toEqual([icon, cover]);
+    const next = await approvedVersion("pics", "1.1.0", { ...manifestOf(app), coverImage: null });
+    await as("alice");
+    await backend.publishAppVersion(next.id);
+    const live = await backend.getApp("pics");
+    expect([live?.iconImage, live?.coverImage]).toEqual([icon, null]);
+  });
+
+  it("refuses images that weren't uploaded", async () => {
+    await as("alice");
+    await expectCode(backend.registerApp(appInput("pics", { iconImage: "https://evil.example.com/x.png" })), "invalid");
+    const app = await backend.registerApp(appInput("pics"));
+    await expectCode(
+      backend.createAppVersion("pics", { version: "1.1.0", url: "https://example.com/a", manifest: { ...manifestOf(app), coverImage: "javascript:alert(1)" } }),
+      "invalid",
+    );
+  });
+});
+
 describe("demo backend: one submission per app in review", () => {
   it("submitting a version replaces the app's other submission in the queue", async () => {
     const manifest = await registered();

@@ -17,6 +17,7 @@ from (values
                                               and exists (select 1 from public.apps where slug = 'quick-draw' and jsonb_array_length(stats) > 0)),
   (11, '20261003000000_shipping',             to_regclass('public.app_versions') is not null),
   (12, '20261004000000_wedge_wars',           exists (select 1 from public.apps where slug = 'wedge-wars' and jsonb_array_length(achievements) > 0)),
-  (13, '20261005000000_version_revisions',    exists (select 1 from pg_proc where proname = 'revise_app_version'))
+  (13, '20261005000000_version_revisions',    exists (select 1 from pg_proc where proname = 'revise_app_version')),
+  (14, '20261005000100_app_images',           exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'apps' and column_name = 'cover_image'))
 ) as m(n, file, applied)
 order by n;

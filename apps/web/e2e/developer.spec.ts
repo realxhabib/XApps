@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 import { signIn } from "./helpers";
 
@@ -12,8 +13,13 @@ test("a developer ships a new version through review", async ({ page }) => {
   await page.getByPlaceholder("Tap Race").fill(`Tap Race ${suffix}`);
   await page.getByPlaceholder("Ten seconds. Fastest thumbs win.").fill("Ten seconds. Fastest thumbs win.");
   await page.getByPlaceholder("https://tap-race.dev").fill("http://localhost:3000/examples/rps/index.html");
+  // A custom icon: cropped, re-encoded and stored, then shown instead of the emoji.
+  await page.getByLabel("Upload icon").setInputFiles(resolve("e2e/fixtures/app-icon.jpg"));
+  await expect(page.getByRole("button", { name: "Replace icon" })).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: "Submit app" }).click();
   await expect(page.getByText(/1\.0\.0/).first()).toBeVisible({ timeout: 15_000 });
+  await page.goto(`/apps/${slug}`);
+  await expect(page.getByRole("img", { name: `Tap Race ${suffix}` }).first().locator("img")).toHaveAttribute("src", /^data:image\/(webp|jpeg);base64,/);
 
   // Console → new minor version → submit for review.
   await page.goto(`/developers/apps/${slug}?tab=versions`);

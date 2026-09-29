@@ -13,6 +13,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { play } from "@/lib/sfx";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
+import { AppImagesField } from "@/components/developers/app-images-field";
 import { useBackend, useViewer } from "@/platform/client";
 import { achievementDefsError, manifestShapeError, statDefsError } from "@/platform/catalog";
 import { useRegisterApp } from "@/platform/queries";
@@ -46,6 +47,8 @@ const schema = z.object({
   description: z.string().trim().max(1200),
   category: z.enum(["games", "contests", "debates", "trivia", "creative", "social"]),
   icon: z.string().min(1, "Pick an emoji").max(16),
+  iconImage: z.string().nullable(),
+  coverImage: z.string().nullable(),
   accent: z.tuple([z.string().regex(/^#[0-9a-fA-F]{6}$/), z.string().regex(/^#[0-9a-fA-F]{6}$/)]),
   url: z.string().url("Must be a full URL").refine((u) => u.startsWith("https://") || u.startsWith("http://localhost"), "Use https (or http://localhost while testing)"),
   modes: z.array(z.enum(["live", "async", "practice"])).min(1, "Pick at least one mode"),
@@ -132,6 +135,8 @@ export function RegisterApp() {
     description: "",
     category: "games",
     icon: "🎯",
+    iconImage: null,
+    coverImage: null,
     accent: PALETTES[0]!,
     url: "https://",
     modes: ["live", "practice"],
@@ -159,6 +164,8 @@ export function RegisterApp() {
       description: form.description,
       category: form.category,
       icon: form.icon || "✨",
+      iconImage: form.iconImage,
+      coverImage: form.coverImage,
       accent: form.accent,
       url: form.url,
       modes: form.modes,
@@ -366,6 +373,13 @@ export function RegisterApp() {
               </div>
             </div>
           </div>
+
+          <AppImagesField
+            value={{ iconImage: form.iconImage, coverImage: form.coverImage }}
+            onChange={(next) => setForm((f) => ({ ...f, ...next }))}
+            app={{ name: form.name, icon: form.icon, accent: form.accent }}
+            idPrefix="register"
+          />
 
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
             <div>

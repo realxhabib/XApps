@@ -295,6 +295,8 @@ describe("Stage 4 mapping", () => {
     description: "",
     category: "games",
     icon: "🎲",
+    iconImage: null,
+    coverImage: null,
     accent: ["#000000", "#ffffff"],
     modes: ["live", "practice"],
     players: { min: 2, max: 4 },

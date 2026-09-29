@@ -20,6 +20,8 @@ export interface FieldChange {
   after: string | null;
   /** Long text renders as a block instead of inline. */
   long?: boolean;
+  /** Image fields: the keys on each side, shown as thumbnails. */
+  image?: { kind: "icon" | "cover"; before: string | null; after: string | null };
 }
 
 const SCORING_LABEL: Record<string, string> = { high: "Highest score", low: "Lowest score", votes: "The crowd" };
@@ -77,6 +79,24 @@ export function diffManifests(before: ManifestSide | null, after: ManifestSide):
     if (b === a) continue;
     if (!before && (a === "—" || a === "")) continue;
     changes.push({ key, label, kind: b === null ? "added" : "changed", before: b, after: a, long });
+  }
+
+  // Listing images: compared by key (a new upload is a new key).
+  for (const [key, label, kind] of [
+    ["iconImage", "Icon image", "icon"],
+    ["coverImage", "Cover image", "cover"],
+  ] as const) {
+    const b = before ? (before.manifest[key] ?? null) : null;
+    const a = after.manifest[key] ?? null;
+    if (b === a) continue;
+    changes.push({
+      key,
+      label,
+      kind: b === null ? "added" : a === null ? "removed" : "changed",
+      before: b === null ? null : "Previous image",
+      after: a === null ? null : "New image",
+      image: { kind, before: b, after: a },
+    });
   }
 
   // How to play: per step.

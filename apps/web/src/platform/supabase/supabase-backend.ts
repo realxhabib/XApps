@@ -1,3 +1,4 @@
+import { APP_IMAGES_BUCKET, APP_IMAGE_MAX_BYTES, APP_IMAGE_UPLOADS_PER_DAY, type AppImageKind } from "@/lib/app-images";
 import type { PostgrestError, SupabaseClient } from "@supabase/supabase-js";
 import { LIMITS } from "@xapps/sdk";
 import { isBlobLike } from "@xapps/sdk/host";
@@ -735,6 +736,30 @@ export class SupabaseBackend implements Backend {
       fail(recorded.error);
     }
     return { url: bucket.getPublicUrl(path).data.publicUrl, kind, mime, bytes: file.size, ...meta };
+  }
+
+  async uploadAppImage(file: Blob, kind: AppImageKind): Promise<string> {
+    const userId = await this.requireUserId();
+    if (!isBlobLike(file)) throw new BackendError("Upload an image", "invalid");
+    const mime = baseMime(file.type);
+    const ext = mime === "image/webp" ? "webp" : mime === "image/jpeg" ? "jpg" : mime === "image/png" ? "png" : null;
+    if (!ext) throw new BackendError("Images are uploaded as WebP, JPEG or PNG", "invalid");
+    if (file.size > APP_IMAGE_MAX_BYTES) throw new BackendError(`That ${kind} is too large`, "invalid");
+    const key = `${userId}/${crypto.randomUUID().replace(/-/g, "")}.${ext}`;
+    const { error } = await this.sb.storage
+      .from(APP_IMAGES_BUCKET)
+      .upload(key, file, { contentType: mime, cacheControl: "31536000", upsert: false });
+    if (error) {
+      if (/bucket not found/i.test(error.message)) {
+        throw new BackendError("App images need the latest database migration (supabase/migrations).", "setup_required");
+      }
+      // The insert policy refuses over-quota uploads (app_image_quota_ok).
+      if (/row-level security|violates|unauthorized|403/i.test(error.message)) {
+        throw new BackendError(`Image limit reached: ${APP_IMAGE_UPLOADS_PER_DAY} uploads per day`, "rate_limited");
+      }
+      throw new BackendError(error.message, "internal");
+    }
+    return key;
   }
 
   async reportStats(appSlug: string, values: { [key: string]: number }): Promise<{ [key: string]: number }> {

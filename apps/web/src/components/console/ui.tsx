@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { spring } from "@/lib/motion";
 import { cn, timeAgo } from "@/lib/utils";
 import type { AppVersionStatus } from "@/platform/types";
+import { appImageSrc } from "@/lib/app-images";
 import { diffManifests, type FieldChange, type ManifestSide } from "./manifest-diff";
 
 /* ---------------------------------------------------------------------- */
@@ -91,6 +92,44 @@ const KIND = {
 } as const;
 
 /** Field-level diff of a version against the published one. */
+function ImageDiffRow({ change, image }: { change: FieldChange; image: NonNullable<FieldChange["image"]> }) {
+  const k = KIND[change.kind];
+  const Icon = k.icon;
+  const thumb = (key: string | null, gone: boolean) => {
+    const src = appImageSrc(key);
+    return src ? (
+      // eslint-disable-next-line @next/next/no-img-element -- storage images and data URLs
+      <img
+        src={src}
+        alt=""
+        className={cn(
+          "rounded-xl border border-white/10 object-cover",
+          image.kind === "icon" ? "size-16" : "h-16 w-28",
+          gone && "opacity-50 grayscale",
+        )}
+      />
+    ) : (
+      <span className={cn("flex items-center justify-center rounded-xl border border-dashed border-white/15 text-[11px] text-ink-500", image.kind === "icon" ? "size-16" : "h-16 w-28")}>
+        None
+      </span>
+    );
+  };
+  return (
+    <div className="text-sm">
+      <div className="flex items-center gap-2">
+        <Icon className={cn("size-3.5 shrink-0", k.className)} aria-label={k.label} />
+        <span className="font-semibold text-ink-100">{change.label}</span>
+        <span className={cn("ml-auto text-[11px] font-semibold uppercase tracking-wider", k.className)}>{k.label}</span>
+      </div>
+      <div className="mt-2 flex items-center gap-3 pl-5.5">
+        {thumb(image.before, true)}
+        <ArrowRight className="size-3.5 shrink-0 text-ink-500" aria-hidden />
+        {thumb(image.after, false)}
+      </div>
+    </div>
+  );
+}
+
 export function ManifestDiff({
   before,
   after,
@@ -147,6 +186,7 @@ export function ManifestDiff({
 function DiffRow({ change }: { change: FieldChange }) {
   const k = KIND[change.kind];
   const Icon = k.icon;
+  if (change.image) return <ImageDiffRow change={change} image={change.image} />;
   const inline = !change.long && (change.before?.length ?? 0) + (change.after?.length ?? 0) < 70;
   return (
     <div className="text-sm">

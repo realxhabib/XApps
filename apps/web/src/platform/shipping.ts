@@ -6,6 +6,7 @@
 import { LIMITS } from "@xapps/sdk";
 import { CATEGORIES, type AppManifest, type AppVersion, type AppVersionStatus, type LogLevel, type Match, type VersionManifest } from "./types";
 import { manifestShapeError, withManifestDefaults } from "./catalog";
+import { appImageKeyError } from "@/lib/app-images";
 
 /** `1.2.3` (like `version_input_check`: three numbers, at most 32 characters). */
 export const SEMVER_PATTERN = /^(\d+)\.(\d+)\.(\d+)$/;
@@ -97,6 +98,8 @@ export function manifestOf(app: AppManifest): VersionManifest {
     description: full.description,
     category: full.category,
     icon: full.icon,
+    iconImage: full.iconImage ?? null,
+    coverImage: full.coverImage ?? null,
     accent: [full.accent[0], full.accent[1]],
     modes: [...full.modes],
     players: { min: full.players.min, max: full.players.max },
@@ -124,6 +127,8 @@ export function versionManifestError(manifest: unknown): string | null {
   }
   if (!CATEGORIES.some((c) => c.id === m.category)) return "Pick a category";
   if (typeof m.icon !== "string" || !m.icon || m.icon.length > 16) return "Pick an emoji icon";
+  const imageError = appImageKeyError(m.iconImage, { demo: true }) ?? appImageKeyError(m.coverImage, { demo: true });
+  if (imageError) return imageError;
   if (!Array.isArray(m.accent) || m.accent.length !== 2 || !m.accent.every((c) => typeof c === "string" && /^#[0-9a-fA-F]{3,8}$/.test(c))) {
     return "Accent is two hex colors";
   }
@@ -145,6 +150,8 @@ export function cleanManifest(manifest: VersionManifest): VersionManifest {
   const out: VersionManifest = {
     ...manifest,
     description: manifest.description ?? "",
+    iconImage: manifest.iconImage ?? null,
+    coverImage: manifest.coverImage ?? null,
     accent: [manifest.accent[0], manifest.accent[1]],
     players: manifest.players ? { min: manifest.players.min, max: manifest.players.max } : { min: 2, max: 2 },
     teams: manifest.teams ?? 0,

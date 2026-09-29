@@ -7,6 +7,7 @@ import { AchievementsEditor, StatsEditor, stripAchievementRows, stripStatRows, t
 import { Segmented } from "@/components/ui/segmented";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
+import { AppImagesField } from "@/components/developers/app-images-field";
 import { achievementDefsError, manifestShapeError, statDefsError, MANIFEST_DEFAULTS } from "@/platform/catalog";
 import { versionUrlError } from "@/platform/shipping";
 import { CATEGORIES, type AppCategory, type PlayableMode, type Scoring, type VersionManifest } from "@/platform/types";
@@ -24,6 +25,8 @@ export interface ManifestForm {
   description: string;
   category: AppCategory;
   icon: string;
+  iconImage: string | null;
+  coverImage: string | null;
   accent: [string, string];
   modes: PlayableMode[];
   scoring: Scoring;
@@ -62,6 +65,8 @@ export function formFromSide(side: ManifestSide): ManifestForm {
     description: m.description ?? "",
     category: m.category,
     icon: m.icon,
+    iconImage: m.iconImage ?? null,
+    coverImage: m.coverImage ?? null,
     accent: [m.accent[0], m.accent[1]],
     modes: [...m.modes],
     scoring: m.scoring,
@@ -85,6 +90,8 @@ export function sideFromForm(form: ManifestForm): ManifestSide {
     description: form.description.trim(),
     category: form.category,
     icon: form.icon,
+    iconImage: form.iconImage,
+    coverImage: form.coverImage,
     accent: form.accent,
     modes: form.modes,
     players: form.players,
@@ -300,6 +307,13 @@ export function ManifestFields({
           </div>
         </Field>
       </div>
+
+      <AppImagesField
+        value={{ iconImage: value.iconImage, coverImage: value.coverImage }}
+        onChange={onChange}
+        app={{ name: value.name, icon: value.icon, accent: value.accent }}
+        idPrefix={`${idPrefix}-images`}
+      />
 
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
         <Field as="div" label="Modes" error={errors.modes}>

@@ -40,6 +40,9 @@ export interface AppRow {
   description: string;
   category: AppCategory;
   icon: string;
+  /** Listing images (absent before the app images migration). */
+  icon_image?: string | null;
+  cover_image?: string | null;
   accent_from: string;
   accent_to: string;
   url: string;
@@ -90,6 +93,8 @@ export function toApp(row: AppRow): AppManifest {
     description: row.description,
     category: row.category,
     icon: row.icon,
+    iconImage: row.icon_image ?? null,
+    coverImage: row.cover_image ?? null,
     accent: [row.accent_from, row.accent_to],
     url: row.url,
     modes: row.modes,
@@ -147,6 +152,8 @@ export function appInsert(input: RegisterAppInput): Record<string, unknown> {
   if (input.turnBased) row.turn_based = true;
   if (input.stats?.length) row.stats = input.stats;
   if (input.achievements?.length) row.achievements = input.achievements;
+  if (input.iconImage) row.icon_image = input.iconImage;
+  if (input.coverImage) row.cover_image = input.coverImage;
   return row;
 }
 
@@ -502,6 +509,8 @@ export function toVersionManifest(raw: unknown): VersionManifest {
     description: typeof m.description === "string" ? m.description : "",
     category: category && CATEGORIES.some((c) => c.id === category) ? category : "games",
     icon: str(m.icon) ?? "✨",
+    iconImage: str(m.iconImage ?? m.icon_image),
+    coverImage: str(m.coverImage ?? m.cover_image),
     accent: [str(accent[0]) ?? "#5b74ff", str(accent[1]) ?? "#a35cff"],
     modes: modes.length ? modes : ["live", "practice"],
     players: { min: num(players.min) ?? 2, max: num(players.max) ?? 2 },

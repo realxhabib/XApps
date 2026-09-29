@@ -120,7 +120,7 @@ npx create-xapp my-game            # templates: react (default), turn-based, van
 cd my-game && npm install && npm run dev   # runs standalone against the SDK's mock host
 ```
 
-1. **Register** it at `/developers/new`. That creates version 1.0.0, which goes to review.
+1. **Register** it at `/developers/new`. That creates version 1.0.0, which goes to review. Add a square **icon** and a 16:9 **cover** there or in any later version. They're cropped and shrunk in the browser, stored in the `app-images` bucket (insert-only, so an approved image can't be swapped), and reviewed with the rest of the listing.
 2. **Test** it in the Sandbox (both seats), then invite **testers**. Test builds are never ranked.
 3. **Ship updates** as new versions from the app's console (`/developers/apps/<slug>`): Versions, Analytics, Logs, Server.
 4. **Review.** Admins approve or request changes at `/admin/review`. Approved versions are published from the console.

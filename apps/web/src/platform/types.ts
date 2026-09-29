@@ -57,8 +57,12 @@ export interface AppManifest {
   tagline: string;
   description: string;
   category: AppCategory;
-  /** A single emoji used as the app's glyph. */
+  /** A single emoji used as the app's glyph (and the fallback when `iconImage` is set). */
   icon: string;
+  /** Uploaded square icon shown instead of the emoji: an image key (see `lib/app-images.ts`). */
+  iconImage?: string | null;
+  /** Uploaded 16:9 cover art for cards and the app page: an image key. */
+  coverImage?: string | null;
   /** Two-stop accent gradient. */
   accent: [string, string];
   /** Where the app is served. Relative URLs are same-origin (first-party). */
@@ -233,6 +237,9 @@ export interface RegisterAppInput {
   stats?: StatDef[];
   /** Achievements the app can unlock (≤ 30, ≤ 500 XP in total). */
   achievements?: AchievementDef[];
+  /** Uploaded images (keys from `uploadAppImage`). */
+  iconImage?: string | null;
+  coverImage?: string | null;
 }
 
 export interface SubmitInput {
@@ -274,6 +281,8 @@ export type VersionManifest = Pick<
   | "description"
   | "category"
   | "icon"
+  | "iconImage"
+  | "coverImage"
   | "accent"
   | "modes"
   | "players"
