@@ -365,14 +365,83 @@ Meme Duel declares `setup: true` and renders its own challenge setup in
 setup purpose (template/trending/drop/topic), uploading drops with
 `media.upload`. The platform's hard-coded Meme Duel setup is removed.
 
-## Stage 4: Shipping (outline)
+## Stage 4: Shipping
 
-- App **versions** (draft → review → published) with a staging channel only
-  the developer and invited testers can play.
-- **Review queue** for admins; review notes to developers.
-- **Analytics** per app (matches, players, completion, duration), **logs**
-  (SDK errors + `debug.log`).
-- `npx create-xapp` templates (vanilla, React + Vite) and a publishable
-  `@xapps/sdk` package (types, ESM + global bundles, changelog).
-- Real-money payments/creator payouts are out of scope until there's a Stripe
-  account and terms; the data model leaves room for them.
+Goal: developers can iterate safely (versions, staging, testers), get
+reviewed in a real queue, see how their app is doing (analytics, logs), and
+start in seconds (`npx create-xapp`, a publishable SDK).
+
+### Versions & staging
+
+- `app_versions(id uuid, app_slug, version text (semver), url, manifest jsonb,
+  status draft|in_review|approved|rejected|published|retired, notes,
+  review_notes, created_at, submitted_at, reviewed_at, reviewed_by,
+  published_at)`. `manifest` holds the listing + capability fields
+  (name, tagline, description, category, icon, accent, modes, players,
+  teams, spectators, setup, turnBased, scoring, votesToWin, howTo, stats,
+  achievements) validated like `apps`.
+- `apps.published_version_id`. Publishing copies the version's url +
+  manifest onto the `apps` row (what players see) and retires the previous
+  published version. Registering a new app creates version `1.0.0` in review.
+- **Testers**: `app_testers(app_slug, user_id)`; owner + testers can play a
+  non-published version: `create_challenge`/`start_practice`/`quick_match`
+  take `p_version uuid default null`; `matches.version_id` records it; the
+  play room loads that version's url. Test matches never touch rank/XP
+  (like practice) and are labelled "Test build" everywhere.
+- RPCs (owner): `create_app_version(p_app, p_version, p_url, p_manifest, p_notes)`,
+  `update_app_version(p_version_id, p_url, p_manifest, p_notes)` (draft/rejected only),
+  `submit_app_version(p_version_id)`, `withdraw_app_version(p_version_id)`,
+  `publish_app_version(p_version_id)` (approved only), `list_app_versions(p_app)`,
+  `add_app_tester(p_app, p_handle)`, `remove_app_tester(p_app, p_user)`, `list_app_testers(p_app)`.
+  Official apps are managed in code and are out of scope.
+
+### Review queue
+
+- `profiles.is_admin boolean default false` (set by hand in SQL).
+- `list_review_queue()` (admins): versions `in_review`, oldest first, with
+  the app, developer, the manifest and a diff against the published one.
+- `review_app_version(p_version_id, p_decision approve|reject, p_notes)`;
+  approving the first version of a new app also flips `apps.status` to
+  published. Developers get an inbox notice with the notes.
+- UI `/admin/review`: queue, manifest diff, live preview (sandbox iframe of
+  the version url, both seats), approve/reject with notes. Non-admins get 404.
+
+### Analytics
+
+- `app_analytics(p_app, p_days default 30)` (owner/admin): per-day series
+  (matches created/completed/abandoned, unique players, new players),
+  totals, completion rate, median duration, mode and table-size split,
+  d1/d7 retention of new players, top players, and per-version breakdown.
+- UI: an Analytics tab on the owner's app page (SVG charts, 390px-first).
+
+### Logs
+
+- `app_logs(id, app_slug, version_id, match_id, user_id, level
+  debug|info|warn|error, message ≤ 500, data jsonb ≤ 4 KB, source app|host,
+  created_at)`, kept 7 days.
+- SDK `xapps.log.debug/info/warn/error(message, data?)` (request `log`,
+  ≤ 60/min per client, dropped silently past the limit) and automatic
+  capture of uncaught errors/unhandled rejections in the app (opt-out
+  `connect({ captureErrors: false })`). The host logs protocol problems it
+  refuses (invalid params, forbidden, rate limited) with `source: host`.
+- `log_app_event(p_app, p_match, p_level, p_message, p_data, p_source)`
+  (players of a match of that app, or its owner/testers),
+  `list_app_logs(p_app, p_level, p_match, p_before, p_limit)` (owner).
+- UI: a Logs tab with level filter, match filter and live tail.
+
+### create-xapp & publishable SDK
+
+- `packages/create-xapp`: `npx create-xapp my-game [--template react|vanilla|turn-based]`
+  scaffolds a ready project (Vite + React + TS with `@xapps/sdk`, or one
+  HTML file using the hosted bundle), a manifest file, README with the
+  register → sandbox → version → review path, and `npm run dev` that opens
+  the app standalone with the mock host. No network needed to scaffold.
+- `@xapps/sdk` becomes publishable: version = `SDK_VERSION`, `exports`
+  with types (declaration build), `files`, `sideEffects: false`, MIT
+  license, CHANGELOG. `npm pack --dry-run` is part of the checks.
+
+### Developer UI
+
+- `/developers/apps/[slug]` becomes the app's console: Overview, Versions
+  (create/edit/submit/publish, testers), Analytics, Logs, Server (Stage 2).
+- The registration form creates the app + version 1.0.0 in one go.
