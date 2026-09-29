@@ -1885,4 +1885,633 @@ begin
   assert (select authority from public.matches where id = pg_temp.mid('sa')) = 'server', 'real matches keep server authority';
 end $$;
 
+-- ================================================================ v2 stage 3: media & data
+reset role;
+
+-- An object path in the app-media bucket: <app>/<uid of handle>/<file>.
+create function pg_temp.mpath(p_app text, p_handle text, p_file text) returns text language sql as $$
+  select p_app || '/' || pg_temp.uid(p_handle)::text || '/' || p_file;
+$$;
+-- Inserts an app-media object as the signed-in user (goes through the insert policy).
+create function pg_temp.upload(p_app text, p_handle text, p_file text, p_meta jsonb) returns void language sql as $$
+  insert into storage.objects (bucket_id, name, metadata) values ('app-media', pg_temp.mpath(p_app, p_handle, p_file), p_meta);
+$$;
+-- Owner edit of stat-game's manifest data that must fail with 22023.
+create function pg_temp.bad_manifest(p_stats jsonb, p_achievements jsonb, p_like text) returns void language sql as $$
+  select pg_temp.expect(format('update public.apps set stats = %L, achievements = %L where slug = %L',
+                               p_stats, p_achievements, 'stat-game'), '22023', p_like);
+$$;
+create function pg_temp.xp(p_handle text) returns integer language sql as $$
+  select xp from public.profiles where handle = p_handle;
+$$;
+
+do $$
+begin
+  assert (select public and file_size_limit = 26214400 and allowed_mime_types = array[
+            'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'audio/mpeg', 'audio/mp4', 'audio/ogg',
+            'audio/webm', 'audio/wav', 'video/mp4', 'video/webm', 'video/quicktime']
+            from storage.buckets where id = 'app-media'), 'app-media bucket';
+  assert (select bool_and(stats = '[]'::jsonb and achievements = '[]'::jsonb) from public.apps), 'existing apps declare nothing';
+  assert not exists (select 1 from public.app_storage where scope <> 'user' or user_id is null), 'v1 storage rows are user scope';
+end $$;
+
+-- ---------------------------------------------------------------- Manifest: owners register stats + achievements
+set role authenticated;
+select pg_temp.login('bob');
+insert into public.apps (slug, name, category, url, stats, achievements) values
+  ('stat-game', 'Stat Game', 'games', 'https://stat-game.example.com/play',
+   '[{"key":"best","label":"Best score","aggregate":"max"},
+     {"key":"fastest","label":"Fastest","aggregate":"min","format":"ms"},
+     {"key":"total","label":"Total","aggregate":"sum","format":"number"},
+     {"key":"level","label":"Level","aggregate":"last","format":null}]',
+   '[{"id":"first_win","name":"First win","description":"Win once","icon":"🏆","xp":50},
+     {"id":"secret_move","name":"???","description":"","icon":"🤫","xp":100,"secret":true},
+     {"id":"zero","name":"Zero","icon":"🥚","xp":0,"secret":false}]');
+update public.apps set stats = stats || '[{"key":"streak","label":"Streak","aggregate":"max","format":"percent"}]'
+ where slug = 'stat-game';
+update public.apps set stats = null, achievements = null where slug = 'stat-game';
+do $$
+begin
+  assert (select stats = '[]'::jsonb and achievements = '[]'::jsonb from public.apps where slug = 'stat-game'), 'null means none';
+end $$;
+update public.apps set
+  stats = '[{"key":"best","label":"Best score","aggregate":"max"},
+            {"key":"fastest","label":"Fastest","aggregate":"min","format":"ms"},
+            {"key":"total","label":"Total","aggregate":"sum","format":"number"},
+            {"key":"level","label":"Level","aggregate":"last","format":null},
+            {"key":"streak","label":"Streak","aggregate":"max","format":"percent"}]',
+  achievements = '[{"id":"first_win","name":"First win","description":"Win once","icon":"🏆","xp":50},
+                   {"id":"secret_move","name":"???","description":"","icon":"🤫","xp":100,"secret":true},
+                   {"id":"zero","name":"Zero","icon":"🥚","xp":0,"secret":false}]'
+ where slug = 'stat-game';
+do $$
+begin
+  assert (select status = 'pending' and developer_id = pg_temp.uid('bob') and jsonb_array_length(stats) = 5
+                 and jsonb_array_length(achievements) = 3 from public.apps where slug = 'stat-game'), 'owner set both';
+end $$;
+
+-- Validation (readable 22023 from the trigger; check constraints back it up)
+select pg_temp.bad_manifest('{}', '[]', 'Stats must be a list');
+select pg_temp.bad_manifest((select jsonb_agg(jsonb_build_object('key', 's' || i, 'label', 'S', 'aggregate', 'max'))
+                               from generate_series(1, 9) i), '[]', 'At most 8 stats');
+select pg_temp.bad_manifest('[1]', '[]', '%must be an object');
+select pg_temp.bad_manifest('[{"key":"Best","label":"B","aggregate":"max"}]', '[]', '%key must be%');
+select pg_temp.bad_manifest('[{"key":"1best","label":"B","aggregate":"max"}]', '[]', '%key must be%');
+select pg_temp.bad_manifest(jsonb_build_array(jsonb_build_object('key', repeat('a', 33), 'label', 'B', 'aggregate', 'max')), '[]', '%key must be%');
+select pg_temp.bad_manifest('[{"key":"best-score","label":"B","aggregate":"max"}]', '[]', '%key must be%');
+select pg_temp.bad_manifest('[{"label":"B","aggregate":"max"}]', '[]', '%key must be%');
+select pg_temp.bad_manifest('[{"key":"a","label":"A","aggregate":"max"},{"key":"a","label":"B","aggregate":"min"}]', '[]', 'Duplicate stat key a');
+select pg_temp.bad_manifest('[{"key":"a","label":"","aggregate":"max"}]', '[]', '%label%');
+select pg_temp.bad_manifest('[{"key":"a","label":"   ","aggregate":"max"}]', '[]', '%label%');
+select pg_temp.bad_manifest(jsonb_build_array(jsonb_build_object('key', 'a', 'label', repeat('l', 41), 'aggregate', 'max')), '[]', '%label%');
+select pg_temp.bad_manifest('[{"key":"a","label":"A"}]', '[]', '%aggregate%');
+select pg_temp.bad_manifest('[{"key":"a","label":"A","aggregate":"avg"}]', '[]', '%aggregate%');
+select pg_temp.bad_manifest('[{"key":"a","label":"A","aggregate":"max","format":"seconds"}]', '[]', '%format%');
+select pg_temp.bad_manifest('[{"key":"a","label":"A","aggregate":"max","format":1}]', '[]', '%format%');
+select pg_temp.bad_manifest('[]', '"x"', 'Achievements must be a list');
+select pg_temp.bad_manifest('[]', (select jsonb_agg(jsonb_build_object('id', 'a' || i, 'name', 'A', 'icon', '⭐', 'xp', 1))
+                                     from generate_series(1, 31) i), 'At most 30 achievements');
+select pg_temp.bad_manifest('[]', '[{"id":"A1","name":"A","icon":"⭐","xp":1}]', '%id must be%');
+select pg_temp.bad_manifest('[]', '[{"id":"a","name":"A","icon":"⭐","xp":1},{"id":"a","name":"B","icon":"⭐","xp":1}]', 'Duplicate achievement id a');
+select pg_temp.bad_manifest('[]', '[{"id":"a","name":"","icon":"⭐","xp":1}]', '%name%');
+select pg_temp.bad_manifest('[]', jsonb_build_array(jsonb_build_object('id', 'a', 'name', repeat('n', 41), 'icon', '⭐', 'xp', 1)), '%name%');
+select pg_temp.bad_manifest('[]', jsonb_build_array(jsonb_build_object('id', 'a', 'name', 'A', 'description', repeat('d', 141), 'icon', '⭐', 'xp', 1)), '%description%');
+select pg_temp.bad_manifest('[]', '[{"id":"a","name":"A","description":7,"icon":"⭐","xp":1}]', '%description%');
+select pg_temp.bad_manifest('[]', '[{"id":"a","name":"A","icon":"","xp":1}]', '%icon%');
+select pg_temp.bad_manifest('[]', jsonb_build_array(jsonb_build_object('id', 'a', 'name', 'A', 'icon', repeat('⭐', 17), 'xp', 1)), '%icon%');
+select pg_temp.bad_manifest('[]', '[{"id":"a","name":"A","icon":"⭐"}]', '%xp%');
+select pg_temp.bad_manifest('[]', '[{"id":"a","name":"A","icon":"⭐","xp":101}]', '%xp%');
+select pg_temp.bad_manifest('[]', '[{"id":"a","name":"A","icon":"⭐","xp":-1}]', '%xp%');
+select pg_temp.bad_manifest('[]', '[{"id":"a","name":"A","icon":"⭐","xp":1.5}]', '%xp%');
+select pg_temp.bad_manifest('[]', '[{"id":"a","name":"A","icon":"⭐","xp":"10"}]', '%xp%');
+select pg_temp.bad_manifest('[]', '[{"id":"a","name":"A","icon":"⭐","xp":1,"secret":"yes"}]', '%secret%');
+select pg_temp.bad_manifest('[]', (select jsonb_agg(jsonb_build_object('id', 'a' || i, 'name', 'A', 'icon', '⭐', 'xp', 100))
+                                     from generate_series(1, 6) i), '%500 XP%');
+do $$
+begin
+  -- The limits themselves are fine: 8 stats, 30 achievements, 500 XP.
+  assert public.app_stats_error((select jsonb_agg(jsonb_build_object('key', 's' || i, 'label', repeat('l', 40), 'aggregate', 'sum'))
+                                   from generate_series(1, 8) i)) is null, '8 stats';
+  assert public.app_achievements_error((select jsonb_agg(jsonb_build_object('id', 'a' || i, 'name', repeat('n', 40),
+                                          'description', repeat('d', 140), 'icon', '⭐', 'xp', case when i <= 5 then 100 else 0 end))
+                                        from generate_series(1, 30) i)) is null, '30 achievements, 500 XP';
+  assert (select jsonb_array_length(stats) from public.apps where slug = 'stat-game') = 5, 'failed edits changed nothing';
+end $$;
+reset role;
+-- The check constraints hold even without the trigger.
+alter table public.apps disable trigger apps_validate_manifest_data;
+select pg_temp.expect($q$update public.apps set stats = '[{"key":"x"}]' where slug = 'stat-game'$q$, '23514');
+select pg_temp.expect($q$update public.apps set achievements = '[{"id":"x"}]' where slug = 'stat-game'$q$, '23514');
+alter table public.apps enable trigger apps_validate_manifest_data;
+
+-- A server-authoritative app (carol) with its own stats/achievements.
+set role authenticated;
+select pg_temp.login('carol');
+insert into public.apps (slug, name, category, url, stats, achievements) values
+  ('stat-server', 'Stat Server', 'games', 'https://stat-server.example.com/play',
+   '[{"key":"wins","label":"Wins","aggregate":"sum"}]',
+   '[{"id":"boss","name":"Boss","description":"Beat the boss","icon":"👑","xp":100}]');
+insert into ctx values ('sec_srv', public.rotate_app_secret('stat-server'));
+select public.set_app_authority('stat-server', 'server');
+select pg_temp.login('bob');
+insert into ctx values ('sec_stat', public.rotate_app_secret('stat-game'));
+reset role;
+update public.apps set status = 'published' where slug in ('stat-game', 'stat-server');
+
+-- ---------------------------------------------------------------- Storage: user scope
+set role authenticated;
+select pg_temp.login('alice_x');
+select public.storage_set('stat-game', 'save', '{"level":1}');
+select public.storage_set('stat-game', 'save', '{"level":2}');
+select public.storage_set('stat-game', 'daily/2026-09-29', '"mine"');
+select public.storage_set('stat-game', 'daily/2026-09-30', '[1,2]');
+select public.storage_set('stat-game', 'daily_x', 'null');
+do $$
+begin
+  assert public.storage_get('stat-game', 'save') = '{"level":2}'::jsonb, 'overwritten';
+  assert public.storage_get('stat-game', 'save', 'user') = '{"level":2}'::jsonb, 'explicit user scope';
+  assert public.storage_get('stat-game', 'daily_x') = 'null'::jsonb, 'json null is a value';
+  assert public.storage_get('stat-game', 'nope') is null, 'unset key';
+  assert public.storage_list('stat-game') = array['daily/2026-09-29', 'daily/2026-09-30', 'daily_x', 'save'], 'sorted keys';
+  assert public.storage_list('stat-game', 'daily/') = array['daily/2026-09-29', 'daily/2026-09-30'], 'prefix (no LIKE wildcards)';
+  assert public.storage_list('stat-game', 'zzz') = '{}'::text[], 'no match';
+  assert public.storage_list('stat-game', null, 'app') = '{}'::text[], 'user keys are not app keys';
+  assert public.storage_get('stat-game', 'save', 'app') is null, 'scopes are separate';
+  assert public.storage_delete('stat-game', 'daily_x'), 'deleted';
+  assert not public.storage_delete('stat-game', 'daily_x'), 'already gone';
+  assert public.storage_get('stat-game', 'daily_x') is null, 'gone';
+  -- 64 KB values (jsonb text size)
+  perform public.storage_set('stat-game', 'big', jsonb_build_object('s', repeat('x', 65520)));
+  assert octet_length(public.storage_get('stat-game', 'big')::text) = 65529, '64 KB fits';
+end $$;
+select pg_temp.expect($q$select public.storage_set('stat-game', 'big', jsonb_build_object('s', repeat('x', 65600)))$q$, '22023', '%64 KB%');
+select pg_temp.expect($q$select public.storage_set('stat-game', '', '1')$q$, '22023');
+select pg_temp.expect(format('select public.storage_set(%L, %L, %L)', 'stat-game', repeat('k', 65), '1'), '22023');
+select pg_temp.expect($q$select public.storage_set('stat-game', null, '1')$q$, '22023');
+select pg_temp.expect($q$select public.storage_set('stat-game', 'k', null)$q$, '22023', '%delete%');
+select pg_temp.expect($q$select public.storage_get('stat-game', 'save', 'global')$q$, '22023');
+select pg_temp.expect($q$select public.storage_list('stat-game', null, null)$q$, '22023');
+select pg_temp.expect($q$select public.storage_set('no-such-app', 'k', '1')$q$, 'P0002');
+-- Pending apps are only visible to their developer (my-game belongs to alice).
+select public.storage_set('my-game', 'k', '1');
+select pg_temp.login('carol');
+select pg_temp.expect($q$select public.storage_get('my-game', 'k')$q$, 'P0002');
+select pg_temp.expect($q$select public.storage_set('my-game', 'k', '1')$q$, 'P0002');
+do $$
+begin
+  assert public.storage_get('stat-game', 'save') is null, 'user scope is private';
+  assert public.storage_list('stat-game') = '{}'::text[], 'carol has no keys';
+  assert not public.storage_delete('stat-game', 'save'), 'can''t delete alice''s key';
+end $$;
+select set_config('request.jwt.claim.sub', '', false);
+select pg_temp.expect($q$select public.storage_get('stat-game', 'save')$q$, '28000');
+select pg_temp.expect($q$select public.storage_set('stat-game', 'save', '1')$q$, '28000');
+set role anon;
+select pg_temp.expect($q$select public.storage_get('stat-game', 'save')$q$, '28000');
+select pg_temp.expect($q$select public.storage_list('stat-game')$q$, '28000');
+select pg_temp.expect($q$select public.storage_set('stat-game', 'save', '1')$q$, '42501');
+select pg_temp.expect($q$select public.storage_delete('stat-game', 'save')$q$, '42501');
+
+-- 200 keys per user per app (overwrites still work when full)
+set role authenticated;
+select pg_temp.login('dave');
+do $$
+begin
+  for i in 1..200 loop
+    perform public.storage_set('quick-draw', 'k' || lpad(i::text, 3, '0'), to_jsonb(i));
+  end loop;
+  perform public.storage_set('quick-draw', 'k001', '"again"');
+  assert cardinality(public.storage_list('quick-draw')) = 200, '200 keys';
+end $$;
+select pg_temp.expect($q$select public.storage_set('quick-draw', 'k201', '1')$q$, '54000', '%200 keys%');
+select public.storage_set('four-in-a-row', 'k201', '1');
+
+-- v1 clients write the table directly (PostgREST upsert on the primary key)
+select pg_temp.login('alice_x');
+insert into public.app_storage (app_slug, user_id, key, value, updated_at)
+values ('stat-game', pg_temp.uid('alice_x'), 'v1', '{"n":1}', now())
+on conflict (id) do update set value = excluded.value, updated_at = excluded.updated_at;
+insert into public.app_storage (app_slug, user_id, key, value, updated_at)
+values ('stat-game', pg_temp.uid('alice_x'), 'v1', '{"n":2}', now())
+on conflict (id) do update set value = excluded.value, updated_at = excluded.updated_at;
+do $$
+begin
+  assert (select value from public.app_storage where app_slug = 'stat-game' and user_id = auth.uid() and key = 'v1') = '{"n":2}'::jsonb,
+    'v1 read path sees the upserted value';
+  assert (select count(*) from public.app_storage where app_slug = 'stat-game' and key = 'v1') = 1, 'one row';
+  assert public.storage_get('stat-game', 'v1') = '{"n":2}'::jsonb, 'same row through the RPC';
+end $$;
+select pg_temp.expect(format('insert into public.app_storage (app_slug, user_id, key, value) values (%L, %L, %L, %L)',
+                             'stat-game', pg_temp.uid('bob'), 'x', '1'), '42501');
+select pg_temp.expect($q$insert into public.app_storage (app_slug, scope, user_id, key, value) values ('stat-game', 'app', null, 'x', '1')$q$, '42501');
+select pg_temp.expect(format('insert into public.app_storage (app_slug, user_id, key, value) values (%L, %L, %L, %L)',
+                             'stat-game', pg_temp.uid('alice_x'), 'huge', jsonb_build_object('s', repeat('x', 70000))), '23514');
+select pg_temp.expect(format('update public.app_storage set scope = %L, user_id = null where user_id = %L', 'app', pg_temp.uid('alice_x')), '42501');
+select pg_temp.login('dave');
+select pg_temp.expect(format('insert into public.app_storage (app_slug, user_id, key, value) values (%L, %L, %L, %L)',
+                             'quick-draw', pg_temp.uid('dave'), 'k999', '1'), '54000');
+insert into public.app_storage (app_slug, user_id, key, value) values ('quick-draw', pg_temp.uid('dave'), 'k002', '"direct"');
+do $$
+begin
+  assert public.storage_get('quick-draw', 'k002') = '"direct"'::jsonb, 'direct overwrite when full';
+end $$;
+
+-- ---------------------------------------------------------------- Storage: app scope (server writes, anyone reads)
+set role anon;
+select set_config('request.jwt.claim.sub', '', false);
+select public.app_api_storage_set(pg_temp.cv('sec_stat'), 'daily/2026-09-29', '{"puzzle":42}');
+select public.app_api_storage_set(pg_temp.cv('sec_stat'), 'daily/2026-09-29', '{"puzzle":43}');
+select public.app_api_storage_set(pg_temp.cv('sec_stat'), 'config', '{"season":3}');
+select public.app_api_storage_set(pg_temp.cv('sec_stat'), 'tmp', '1');
+do $$
+begin
+  assert public.storage_get('stat-game', 'daily/2026-09-29', 'app') = '{"puzzle":43}'::jsonb, 'anon reads the app scope';
+  assert public.storage_list('stat-game', null, 'app') = array['config', 'daily/2026-09-29', 'tmp'], 'app keys';
+  assert public.storage_list('stat-game', 'daily/', 'app') = array['daily/2026-09-29'], 'app prefix';
+  assert public.app_api_storage_get(pg_temp.cv('sec_stat'), 'config') = '{"season":3}'::jsonb, 'server reads';
+  assert public.app_api_storage_get(pg_temp.cv('sec_stat'), 'nope') is null, 'server reads unset';
+  assert public.app_api_storage_list(pg_temp.cv('sec_stat')) = array['config', 'daily/2026-09-29', 'tmp'], 'server lists';
+  assert public.app_api_storage_list(pg_temp.cv('sec_stat'), 'co') = array['config'], 'server prefix';
+  assert public.app_api_storage_delete(pg_temp.cv('sec_stat'), 'tmp'), 'server deletes';
+  assert not public.app_api_storage_delete(pg_temp.cv('sec_stat'), 'tmp'), 'already gone';
+  assert public.app_api_storage_list(pg_temp.cv('sec_srv')) = '{}'::text[], 'other app''s space is separate';
+end $$;
+select pg_temp.expect($q$select public.app_api_storage_set('xas_nope', 'k', '1')$q$, '28000', 'invalid_secret');
+select pg_temp.expect($q$select public.app_api_storage_delete(null, 'k')$q$, '28000', 'invalid_secret');
+select pg_temp.expect($q$select public.app_api_storage_get('nope', 'k')$q$, '28000');
+select pg_temp.expect($q$select public.app_api_storage_list('nope')$q$, '28000');
+select pg_temp.expect(format('select public.app_api_storage_set(%L, %L, %L)', pg_temp.cv('sec_stat'), '', '1'), '22023');
+select pg_temp.expect(format('select public.app_api_storage_set(%L, %L, %L)', pg_temp.cv('sec_stat'), 'big',
+                             jsonb_build_object('s', repeat('x', 65600))), '22023');
+-- Pending apps' app scope isn't public.
+select pg_temp.expect($q$select public.storage_get('my-game', 'k', 'app')$q$, 'P0002');
+set role authenticated;
+select pg_temp.login('alice_x');
+do $$
+begin
+  assert public.storage_get('stat-game', 'daily/2026-09-29') = '"mine"'::jsonb, 'user scope unaffected by the app key';
+  assert public.storage_get('stat-game', 'daily/2026-09-29', 'app') = '{"puzzle":43}'::jsonb, 'players read the app scope';
+  assert (select count(*) from public.app_storage where scope = 'app' and app_slug = 'stat-game') = 2, 'app rows readable directly';
+end $$;
+reset role;
+do $$
+begin
+  assert (select user_id is null from public.app_storage where scope = 'app' and key = 'config'), 'app rows have no user';
+  for i in 1..198 loop
+    perform public.storage_write('stat-game', null, 'fill' || i, '1');
+  end loop;
+end $$;
+set role anon;
+select pg_temp.expect(format('select public.app_api_storage_set(%L, %L, %L)', pg_temp.cv('sec_stat'), 'one-more', '1'), '54000');
+select public.app_api_storage_set(pg_temp.cv('sec_stat'), 'config', '{"season":4}');
+reset role;
+delete from public.app_storage where scope = 'app' and key like 'fill%';
+
+-- ---------------------------------------------------------------- Media: the storage insert policy
+set role authenticated;
+select pg_temp.login('alice_x');
+select pg_temp.upload('stat-game', 'alice_x', 'a.png', '{"size":1000,"mimetype":"image/png"}');
+select pg_temp.upload('stat-game', 'alice_x', 'b.png', '{"size":2000,"mimetype":"image/png"}');
+select pg_temp.upload('stat-game', 'alice_x', 'c.webm', null);
+select pg_temp.upload('stat-game', 'alice_x', 'clip.mp4', '{"size":20971520,"mimetype":"video/mp4"}');
+select pg_temp.upload('my-game', 'alice_x', 'own-pending.png', '{"size":10,"mimetype":"image/png"}');
+select pg_temp.expect($q$select pg_temp.upload('stat-game', 'bob', 'x.png', null)$q$, '42501');
+select pg_temp.expect($q$select pg_temp.upload('stat-game', 'alice_x', 'dir/x.png', null)$q$, '42501');
+select pg_temp.expect($q$select pg_temp.upload('stat-game', 'alice_x', '.hidden', null)$q$, '42501');
+select pg_temp.expect($q$select pg_temp.upload('no-such-app', 'alice_x', 'x.png', null)$q$, '42501');
+select pg_temp.expect($q$select pg_temp.upload('stat-game', 'alice_x', 'big.png', '{"size":8388609,"mimetype":"image/png"}')$q$, '42501');
+select pg_temp.expect($q$select pg_temp.upload('stat-game', 'alice_x', 'big.wav', '{"size":10485761,"mimetype":"audio/wav"}')$q$, '42501');
+select pg_temp.expect($q$select pg_temp.upload('stat-game', 'alice_x', 'x.html', '{"size":10,"mimetype":"text/html"}')$q$, '42501');
+select pg_temp.expect(format('insert into storage.objects (bucket_id, name) values (%L, %L)', 'app-media', 'stat-game/' || pg_temp.uid('alice_x')), '42501');
+select pg_temp.login('carol');
+select pg_temp.expect($q$select pg_temp.upload('my-game', 'carol', 'x.png', null)$q$, '42501');
+-- Only the caller's own quota can be asked about.
+do $$
+begin
+  assert public.media_quota_ok(pg_temp.uid('carol'), 'stat-game'), 'own quota';
+  assert not public.media_quota_ok(pg_temp.uid('alice_x'), 'stat-game'), 'not someone else''s';
+end $$;
+set role anon;
+select pg_temp.expect(format('select public.media_quota_ok(%L, %L)', pg_temp.uid('carol'), 'stat-game'), '42501');
+
+-- Quota: 60 uploads per rolling 24 h per user per app (older ones don't count).
+reset role;
+insert into storage.objects (bucket_id, name, owner, owner_id, metadata, created_at)
+select 'app-media', pg_temp.mpath('stat-game', 'alice_x', 'old' || i || '.png'), pg_temp.uid('alice_x'), pg_temp.uid('alice_x')::text,
+       '{"size":100000000,"mimetype":"image/png"}', now() - interval '25 hours'
+  from generate_series(1, 5) i;
+set role authenticated;
+select pg_temp.login('alice_x');
+do $$
+declare n integer := 0;
+begin
+  loop
+    begin
+      perform pg_temp.upload('stat-game', 'alice_x', 'q' || n || '.png', '{"size":10,"mimetype":"image/png"}');
+      n := n + 1;
+    exception when insufficient_privilege then
+      exit;
+    end;
+    exit when n > 100;
+  end loop;
+  insert into ctx values ('quota_n', n::text);
+  -- Other apps have their own quota.
+  perform pg_temp.upload('four-in-a-row', 'alice_x', 'q.png', '{"size":10,"mimetype":"image/png"}');
+end $$;
+reset role;
+do $$
+begin
+  assert pg_temp.cv('quota_n')::int = 56, 'uploads until 60 in 24 h (4 earlier): ' || pg_temp.cv('quota_n');
+  assert (select count(*) from storage.objects where name like 'stat-game/' || pg_temp.uid('alice_x') || '/%'
+           and created_at > now() - interval '24 hours') = 60, '60 recent';
+end $$;
+
+-- Quota: 200 MB per rolling 24 h (8 × 25 MB videos fill it exactly).
+set role authenticated;
+select pg_temp.login('bob');
+do $$
+begin
+  for i in 1..8 loop
+    perform pg_temp.upload('stat-game', 'bob', 'v' || i || '.mp4', '{"size":26214400,"mimetype":"video/mp4"}');
+  end loop;
+end $$;
+select pg_temp.expect($q$select pg_temp.upload('stat-game', 'bob', 'one-byte.png', '{"size":1,"mimetype":"image/png"}')$q$, '42501');
+-- Recorded uploads count even when the bucket shows fewer objects.
+reset role;
+insert into public.media_uploads (app_slug, user_id, path, bytes, mime)
+select 'stat-game', pg_temp.uid('dave'), pg_temp.mpath('stat-game', 'dave', 'gone' || i || '.mp4'), 26214400, 'video/mp4'
+  from generate_series(1, 8) i;
+set role authenticated;
+select pg_temp.login('dave');
+select pg_temp.expect($q$select pg_temp.upload('stat-game', 'dave', 'one-byte.png', '{"size":1,"mimetype":"image/png"}')$q$, '42501');
+select pg_temp.upload('quick-draw', 'dave', 'ok.png', '{"size":1,"mimetype":"image/png"}');
+
+-- ---------------------------------------------------------------- Media: record_media_upload
+select pg_temp.login('alice_x');
+insert into ctx values ('rec_a', public.record_media_upload('stat-game', pg_temp.mpath('stat-game', 'alice_x', 'a.png'), 1000, 'image/png')::text);
+do $$
+declare
+  r jsonb := pg_temp.cv('rec_a')::jsonb;
+  again jsonb := public.record_media_upload('stat-game', pg_temp.mpath('stat-game', 'alice_x', 'a.png'), 1000, 'image/png');
+  b jsonb := public.record_media_upload('stat-game', pg_temp.mpath('stat-game', 'alice_x', 'b.png'), 5, 'image/gif');
+  c jsonb := public.record_media_upload('stat-game', pg_temp.mpath('stat-game', 'alice_x', 'c.webm'), 2000, 'audio/webm; codecs=opus');
+begin
+  assert r - 'createdAt' = jsonb_build_object('path', pg_temp.mpath('stat-game', 'alice_x', 'a.png'), 'bytes', 1000, 'mime', 'image/png'), r::text;
+  assert r ? 'createdAt', 'createdAt';
+  assert again = r, 'idempotent';
+  assert (b->>'bytes')::int = 2000 and b->>'mime' = 'image/png', 'stored metadata wins: ' || b::text;
+  assert (c->>'bytes')::int = 2000 and c->>'mime' = 'audio/webm', 'claimed size/type when metadata is missing';
+  assert (select count(*) from public.media_uploads where user_id = auth.uid()) = 3, 'own uploads readable';
+end $$;
+-- Claims are checked on objects without metadata; a planted object in alice's folder isn't hers.
+reset role;
+insert into storage.objects (bucket_id, name, owner, owner_id)
+select 'app-media', pg_temp.mpath('stat-game', 'alice_x', f), pg_temp.uid('alice_x'), pg_temp.uid('alice_x')::text
+  from unnest(array['n1.bin', 'n2.wav', 'n3.png']) f;
+insert into storage.objects (bucket_id, name, owner, owner_id, metadata)
+values ('app-media', pg_temp.mpath('stat-game', 'alice_x', 'planted.png'), pg_temp.uid('carol'), pg_temp.uid('carol')::text,
+        '{"size":10,"mimetype":"image/png"}');
+set role authenticated;
+select pg_temp.login('alice_x');
+select pg_temp.expect(format('select public.record_media_upload(%L, %L, %L, %L)', 'stat-game',
+  pg_temp.mpath('stat-game', 'alice_x', 'n1.bin'), 10, 'application/octet-stream'), '22023', 'Unsupported media type');
+select pg_temp.expect(format('select public.record_media_upload(%L, %L, %L, %L)', 'stat-game',
+  pg_temp.mpath('stat-game', 'alice_x', 'n2.wav'), 10485761, 'audio/wav'), '22023', '%too large%');
+select pg_temp.expect(format('select public.record_media_upload(%L, %L, %L, %L)', 'stat-game',
+  pg_temp.mpath('stat-game', 'alice_x', 'n3.png'), 0, 'image/png'), '22023', '%size%');
+select pg_temp.expect(format('select public.record_media_upload(%L, %L, %L, %L)', 'stat-game',
+  pg_temp.mpath('stat-game', 'alice_x', 'n3.png'), null, 'image/png'), '22023', '%size%');
+select pg_temp.expect(format('select public.record_media_upload(%L, %L, %L, %L)', 'stat-game',
+  pg_temp.mpath('stat-game', 'alice_x', 'missing.png'), 10, 'image/png'), 'P0002');
+select pg_temp.expect(format('select public.record_media_upload(%L, %L, %L, %L)', 'stat-game',
+  pg_temp.mpath('stat-game', 'alice_x', 'planted.png'), 10, 'image/png'), '42501');
+select pg_temp.expect(format('select public.record_media_upload(%L, %L, %L, %L)', 'stat-game',
+  pg_temp.mpath('stat-game', 'bob', 'v1.mp4'), 26214400, 'video/mp4'), '42501');
+select pg_temp.expect(format('select public.record_media_upload(%L, %L, %L, %L)', 'stat-game',
+  pg_temp.mpath('four-in-a-row', 'alice_x', 'q.png'), 10, 'image/png'), '42501');
+select pg_temp.expect(format('select public.record_media_upload(%L, %L, %L, %L)', 'stat-game',
+  'stat-game/../x.png', 10, 'image/png'), '22023', 'Invalid media path');
+select pg_temp.expect(format('select public.record_media_upload(%L, %L, %L, %L)', 'no-such-app',
+  pg_temp.mpath('no-such-app', 'alice_x', 'x.png'), 10, 'image/png'), 'P0002');
+select public.record_media_upload('stat-game', pg_temp.mpath('stat-game', 'alice_x', 'n3.png'), 300, 'image/png');
+select pg_temp.login('bob');
+do $$
+begin
+  assert not exists (select 1 from public.media_uploads where user_id = pg_temp.uid('alice_x')), 'others'' uploads are private';
+end $$;
+select pg_temp.expect($q$insert into public.media_uploads (app_slug, user_id, path, bytes, mime) values ('stat-game', auth.uid(), 'p', 1, 'image/png')$q$, '42501');
+select set_config('request.jwt.claim.sub', '', false);
+select pg_temp.expect($q$select public.record_media_upload('stat-game', 'x', 1, 'image/png')$q$, '28000');
+set role anon;
+select pg_temp.expect($q$select public.record_media_upload('stat-game', 'x', 1, 'image/png')$q$, '42501');
+reset role;
+do $$
+begin
+  assert (select count(*) from public.media_uploads where user_id = pg_temp.uid('alice_x')) = 4, 'a, b, c, n3';
+end $$;
+
+-- ---------------------------------------------------------------- Stats: aggregates
+set role authenticated;
+select pg_temp.login('alice_x');
+do $$
+declare r jsonb;
+begin
+  r := public.report_stats('stat-game', '{"best":10,"fastest":900,"total":5,"level":3}');
+  assert r = '{"best":10,"fastest":900,"total":5,"level":3}'::jsonb, r::text;
+  r := public.report_stats('stat-game', '{"best":7,"fastest":1200,"total":2.5,"level":1}');
+  assert r = '{"best":10,"fastest":900,"total":7.5,"level":1}'::jsonb, 'max keeps, min keeps, sum adds, last replaces: ' || r::text;
+  r := public.report_stats('stat-game', '{"fastest":850.5}');
+  assert r = '{"fastest":850.5}'::jsonb, 'only reported keys come back';
+  assert public.report_stats('stat-game', '{}') = '{}'::jsonb, 'nothing reported';
+  r := public.report_stats('stat-game', '{"total":-2.5}');
+  assert r = '{"total":5}'::jsonb, 'sum accepts negatives';
+end $$;
+select pg_temp.expect($q$select public.report_stats('stat-game', '{"nope":1}')$q$, '22023', 'Unknown stat nope');
+select pg_temp.expect($q$select public.report_stats('stat-game', '{"best":"12"}')$q$, '22023', '%finite number%');
+select pg_temp.expect($q$select public.report_stats('stat-game', '{"best":"NaN"}')$q$, '22023');
+select pg_temp.expect($q$select public.report_stats('stat-game', '{"best":null}')$q$, '22023');
+select pg_temp.expect($q$select public.report_stats('stat-game', '{"best":1e400}')$q$, '22023', '%out of range%');
+select pg_temp.expect($q$select public.report_stats('stat-game', '[1]')$q$, '22023');
+select pg_temp.expect($q$select public.report_stats('stat-game', null)$q$, '22023');
+select pg_temp.expect($q$select public.report_stats('stat-game', '{"best":99,"nope":1}')$q$, '22023');
+select pg_temp.expect($q$select public.report_stats('no-such-app', '{"best":1}')$q$, 'P0002');
+select pg_temp.expect($q$select public.report_stats('stat-server', '{"wins":1}')$q$, '42501', '%from its server%');
+select pg_temp.expect($q$select public.report_stats('quick-draw', '{"best":1}')$q$, '22023', 'Unknown stat best');
+do $$
+begin
+  assert (select value from public.app_user_stats where user_id = auth.uid() and key = 'best') = 10, 'failed report wrote nothing';
+end $$;
+-- Leaderboards: bob 20, alice 10, carol 10, dave 5 (best); fastest: bob 500, alice 850.5, carol 850.5
+select pg_temp.login('bob');
+select public.report_stats('stat-game', '{"best":20,"fastest":500}');
+select pg_temp.login('carol');
+select public.report_stats('stat-game', '{"best":10,"fastest":850.5}');
+select pg_temp.login('dave');
+select public.report_stats('stat-game', '{"best":5}');
+select public.report_stats('stat-game', '{"best":3}');
+reset role;
+-- Bots never appear on boards.
+insert into public.app_user_stats (app_slug, user_id, key, value)
+values ('stat-game', '00000000-0000-4000-8000-00000000b075', 'best', 1000);
+set role anon;
+select set_config('request.jwt.claim.sub', '', false);
+do $$
+declare b jsonb := public.app_stat_leaderboard('stat-game', 'best');
+declare f jsonb := public.app_stat_leaderboard('stat-game', 'fastest', 10);
+begin
+  assert jsonb_array_length(b) = 4, b::text;
+  assert (select jsonb_agg(jsonb_build_array(e->'rank', e->'profile'->>'handle', e->'value')) from jsonb_array_elements(b) e)
+       = '[[1,"bob",20],[2,"alice_x",10],[2,"carol",10],[4,"dave",5]]'::jsonb, 'max: descending, ties share a rank, first to reach it first';
+  assert b->0->'profile' ?& array['id', 'handle', 'name', 'avatarUrl', 'xp', 'isBot'], 'profile_json shape';
+  assert (select jsonb_agg(jsonb_build_array(e->'rank', e->'profile'->>'handle', e->'value')) from jsonb_array_elements(f) e)
+       = '[[1,"bob",500],[2,"alice_x",850.5],[2,"carol",850.5]]'::jsonb, 'min: ascending ' || f::text;
+  assert jsonb_array_length(public.app_stat_leaderboard('stat-game', 'best', 1)) = 1, 'limit';
+  assert public.app_stat_leaderboard('stat-game', 'streak') = '[]'::jsonb, 'nobody yet';
+end $$;
+select pg_temp.expect($q$select public.app_stat_leaderboard('stat-game', 'nope')$q$, '22023');
+select pg_temp.expect($q$select public.app_stat_leaderboard('my-game', 'best')$q$, 'P0002');
+do $$
+declare s jsonb := public.user_stats(pg_temp.uid('alice_x'));
+begin
+  assert (select jsonb_agg(jsonb_build_array(e->>'appSlug', e->>'key', e->'value')) from jsonb_array_elements(s) e)
+       = '[["stat-game","best",10],["stat-game","fastest",850.5],["stat-game","total",5],["stat-game","level",1]]'::jsonb,
+    'manifest order: ' || s::text;
+  assert s->0 ?& array['appSlug', 'key', 'value', 'updatedAt'], 'shape';
+  assert public.user_stats(gen_random_uuid()) = '[]'::jsonb, 'unknown user';
+end $$;
+
+-- Server API: reports for any player, for client and server apps alike.
+select pg_temp.expect(format('select public.report_stats(%L, %L)', 'stat-game', '{"best":1}'), '42501');
+do $$
+begin
+  assert public.app_api_report_stats(pg_temp.cv('sec_srv'), pg_temp.uid('alice_x'), '{"wins":1}') = '{"wins":1}'::jsonb, 'server app';
+  assert public.app_api_report_stats(pg_temp.cv('sec_srv'), pg_temp.uid('alice_x'), '{"wins":2}') = '{"wins":3}'::jsonb, 'sum';
+  assert public.app_api_report_stats(pg_temp.cv('sec_stat'), pg_temp.uid('dave'), '{"best":6}') = '{"best":6}'::jsonb, 'client app too';
+  assert (public.app_stat_leaderboard('stat-server', 'wins')->0->>'value')::int = 3, 'server app board';
+end $$;
+select pg_temp.expect(format('select public.app_api_report_stats(%L, %L, %L)', 'xas_nope', pg_temp.uid('alice_x'), '{"wins":1}'), '28000', 'invalid_secret');
+select pg_temp.expect(format('select public.app_api_report_stats(%L, %L, %L)', pg_temp.cv('sec_srv'), gen_random_uuid(), '{"wins":1}'), 'P0002');
+select pg_temp.expect(format('select public.app_api_report_stats(%L, %L, %L)', pg_temp.cv('sec_srv'), '00000000-0000-4000-8000-00000000b075', '{"wins":1}'), 'P0002');
+select pg_temp.expect(format('select public.app_api_report_stats(%L, %L, %L)', pg_temp.cv('sec_srv'), pg_temp.uid('alice_x'), '{"best":1}'), '22023');
+select pg_temp.expect(format('select public.app_api_report_stats(%L, %L, %L)', pg_temp.cv('sec_srv'), pg_temp.uid('alice_x'), '{"wins":"x"}'), '22023');
+set role authenticated;
+select pg_temp.login('alice_x');
+select pg_temp.expect($q$insert into public.app_user_stats (app_slug, user_id, key, value) values ('stat-game', auth.uid(), 'best', 1e9)$q$, '42501');
+select pg_temp.expect($q$update public.app_user_stats set value = 1e9$q$, '42501');
+do $$
+begin
+  assert (select count(*) from public.app_user_stats where app_slug = 'stat-game' and key = 'best') = 5, 'stats are public to read';
+end $$;
+
+-- Rate limit: 120 client reports a minute per user per app.
+reset role;
+delete from public.rate_limit_hits;
+set role authenticated;
+select pg_temp.login('erin');
+do $$
+begin
+  for i in 1..120 loop
+    perform public.report_stats('stat-game', '{"total":1}');
+  end loop;
+  begin
+    perform public.report_stats('stat-game', '{"total":1}');
+    raise exception 'expected 54000';
+  exception when sqlstate '54000' then
+    null;
+  end;
+  assert (select value from public.app_user_stats where user_id = auth.uid() and key = 'total') = 120, 'the refused report changed nothing';
+end $$;
+reset role;
+do $$
+begin
+  assert (select hits from public.rate_limit_hits where user_id = pg_temp.uid('erin')) = 120, 'refusals don''t count';
+end $$;
+update public.rate_limit_hits set window_start = window_start - interval '1 minute';
+set role authenticated;
+select pg_temp.login('erin');
+select public.report_stats('stat-game', '{"total":1}');
+reset role;
+do $$
+begin
+  assert (select count(*) from public.rate_limit_hits where user_id = pg_temp.uid('erin')) = 1, 'old windows cleaned up';
+end $$;
+
+-- ---------------------------------------------------------------- Achievements
+set role authenticated;
+select pg_temp.login('bob');
+insert into ctx values ('wh_stat', public.set_app_webhook('stat-game', 'https://stat-game.example.com/hooks'));
+select pg_temp.login('alice_x');
+insert into ctx values ('xp0', pg_temp.xp('alice_x')::text);
+do $$
+begin
+  assert public.unlock_achievement('stat-game', 'first_win') = '{"unlocked":true}'::jsonb, 'unlocked';
+  assert pg_temp.xp('alice_x') = pg_temp.cv('xp0')::int + 50, 'xp awarded';
+  assert public.unlock_achievement('stat-game', 'first_win') = '{"unlocked":false}'::jsonb, 'already had it';
+  assert pg_temp.xp('alice_x') = pg_temp.cv('xp0')::int + 50, 'xp only once';
+  assert public.unlock_achievement('stat-game', 'zero') = '{"unlocked":true}'::jsonb, '0 xp achievement';
+  assert pg_temp.xp('alice_x') = pg_temp.cv('xp0')::int + 50, 'no xp';
+  assert (select count(*) from public.user_achievements where user_id = auth.uid()) = 2, 'public rows';
+end $$;
+select pg_temp.expect($q$select public.unlock_achievement('stat-game', 'nope')$q$, '22023', 'Unknown achievement nope');
+select pg_temp.expect($q$select public.unlock_achievement('stat-game', null)$q$, '22023');
+select pg_temp.expect($q$select public.unlock_achievement('stat-game', 'best')$q$, '22023');
+select pg_temp.expect($q$select public.unlock_achievement('stat-server', 'boss')$q$, '42501', '%from its server%');
+select pg_temp.expect($q$select public.unlock_achievement('no-such-app', 'boss')$q$, 'P0002');
+select pg_temp.expect($q$insert into public.user_achievements (app_slug, user_id, achievement_id) values ('stat-game', auth.uid(), 'secret_move')$q$, '42501');
+set role anon;
+select set_config('request.jwt.claim.sub', '', false);
+do $$
+declare l jsonb := public.list_user_achievements(pg_temp.uid('alice_x'));
+begin
+  assert jsonb_array_length(l) = 2, l::text;
+  assert not (l @> '[{"achievementId":"secret_move"}]'), 'secret not unlocked yet';
+  assert l->0 ?& array['appSlug', 'achievementId', 'unlockedAt'] and l->0->>'appSlug' = 'stat-game', 'shape';
+  assert (l->0->>'unlockedAt')::timestamptz >= (l->1->>'unlockedAt')::timestamptz, 'newest first';
+end $$;
+select pg_temp.expect(format('select public.unlock_achievement(%L, %L)', 'stat-game', 'secret_move'), '42501');
+-- Server API
+insert into ctx values ('xp1', pg_temp.xp('alice_x')::text);
+do $$
+begin
+  assert public.app_api_unlock_achievement(pg_temp.cv('sec_srv'), pg_temp.uid('alice_x'), 'boss') = '{"unlocked":true}'::jsonb, 'server unlock';
+  assert public.app_api_unlock_achievement(pg_temp.cv('sec_srv'), pg_temp.uid('alice_x'), 'boss') = '{"unlocked":false}'::jsonb, 'once';
+  assert public.app_api_unlock_achievement(pg_temp.cv('sec_stat'), pg_temp.uid('alice_x'), 'secret_move') = '{"unlocked":true}'::jsonb,
+    'client apps too';
+  assert pg_temp.xp('alice_x') = pg_temp.cv('xp1')::int + 200, 'boss 100 + secret 100';
+  assert public.list_user_achievements(pg_temp.uid('alice_x')) @> '[{"achievementId":"secret_move"},{"achievementId":"boss","appSlug":"stat-server"}]',
+    'unlocked secrets are listed';
+end $$;
+select pg_temp.expect(format('select public.app_api_unlock_achievement(%L, %L, %L)', 'xas_nope', pg_temp.uid('alice_x'), 'boss'), '28000', 'invalid_secret');
+select pg_temp.expect(format('select public.app_api_unlock_achievement(%L, %L, %L)', pg_temp.cv('sec_srv'), gen_random_uuid(), 'boss'), 'P0002');
+select pg_temp.expect(format('select public.app_api_unlock_achievement(%L, %L, %L)', pg_temp.cv('sec_srv'), pg_temp.uid('alice_x'), 'first_win'), '22023');
+reset role;
+do $$
+declare d public.webhook_deliveries;
+begin
+  assert (select count(*) from public.webhook_deliveries where event = 'achievement.unlocked') = 3,
+    'stat-game: first_win, zero, secret_move (stat-server has no webhook)';
+  select * into d from public.webhook_deliveries where event = 'achievement.unlocked' and payload->>'achievementId' = 'first_win';
+  assert d.app_slug = 'stat-game' and d.match_id is null and d.next_attempt_at is not null, 'queued';
+  assert d.payload - 'createdAt' = jsonb_build_object('id', d.id, 'type', 'achievement.unlocked', 'app', '{"slug":"stat-game"}'::jsonb,
+                                                      'match', null, 'userId', pg_temp.uid('alice_x'), 'achievementId', 'first_win'), d.payload::text;
+end $$;
+-- Achievements/stats dropped from the manifest disappear from profiles.
+update public.apps set achievements = achievements - 1, stats = stats - 3 where slug = 'stat-game';
+do $$
+begin
+  assert not (public.list_user_achievements(pg_temp.uid('alice_x')) @> '[{"achievementId":"secret_move"}]'), 'undeclared hidden';
+  assert not (public.user_stats(pg_temp.uid('alice_x')) @> '[{"key":"level"}]'), 'undeclared stat hidden';
+end $$;
+
+-- Internal stage 3 helpers are not callable by clients
+set role authenticated;
+select pg_temp.login('alice_x');
+select pg_temp.expect($q$select public.rate_limit_hit('x', auth.uid(), 1)$q$, '42501');
+select pg_temp.expect($q$select public.storage_write('stat-game', null, 'k', '1')$q$, '42501');
+select pg_temp.expect($q$select public.apply_stats((select a from public.apps a where slug = 'stat-game'), auth.uid(), '{}')$q$, '42501');
+select pg_temp.expect($q$select public.grant_achievement((select a from public.apps a where slug = 'stat-game'), auth.uid(), 'zero')$q$, '42501');
+select pg_temp.expect($q$select public.app_api_player(auth.uid())$q$, '42501');
+select pg_temp.expect($q$select * from public.rate_limit_hits$q$, '42501');
+reset role;
+
 \echo 'All database lifecycle checks passed ✔'
