@@ -15,7 +15,8 @@ export type Sound =
   | "notify"
   | "draw"
   | "thump"
-  | "slam";
+  | "slam"
+  | "achievement";
 
 const STORAGE_KEY = "xapps:sound";
 let ctx: AudioContext | null = null;
@@ -154,6 +155,13 @@ export function play(sound: Sound): void {
       break;
     case "thump":
       tone(a, { freq: 90, to: 45, duration: 0.18, gain: 0.8, attack: 0.004 });
+      break;
+    case "achievement":
+      // A bright chime: a rising fifth, then a sparkle on top.
+      tone(a, { freq: 783.99, duration: 0.16, type: "triangle", gain: 0.4 });
+      tone(a, { freq: 1174.66, duration: 0.22, type: "triangle", gain: 0.38, start: 0.08 });
+      tone(a, { freq: 1567.98, duration: 0.45, type: "sine", gain: 0.28, start: 0.18 });
+      tone(a, { freq: 2349.32, duration: 0.3, type: "sine", gain: 0.12, start: 0.26 });
       break;
     case "slam":
       tone(a, { freq: 70, to: 35, duration: 0.45, gain: 0.9, attack: 0.003 });

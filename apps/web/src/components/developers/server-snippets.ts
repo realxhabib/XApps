@@ -51,12 +51,17 @@ export async function referee(matchId: string) {
 }`;
 }
 
-export const SERVER_ROUTES: { method: "GET" | "PUT" | "POST"; path: string; body: string; note: string }[] = [
+export const SERVER_ROUTES: { method: "GET" | "PUT" | "POST" | "DELETE"; path: string; body: string; note: string }[] = [
   { method: "GET", path: "/api/v1/matches/:id", body: "—", note: "The match, with every player's submission" },
   { method: "PUT", path: "/api/v1/matches/:id/state", body: "{ state, expectedVersion }", note: "→ { version } · 409 if the version moved" },
   { method: "POST", path: "/api/v1/matches/:id/turn", body: "{ next? }", note: "Pass the turn (default: next seated player)" },
   { method: "POST", path: "/api/v1/matches/:id/round", body: "{ round }", note: "Set the round counter (never backwards)" },
   { method: "POST", path: "/api/v1/matches/:id/result", body: "{ scores } or { ranks }, leavers?", note: "Settle the match. The only way with server authority" },
+  { method: "GET", path: "/api/v1/storage/:key", body: "—", note: "→ { value } from your app-scope storage (GET /api/v1/storage?prefix= lists keys)" },
+  { method: "PUT", path: "/api/v1/storage/:key", body: "{ value }", note: "Write app-scope storage (≤ 64 KB, public to players)" },
+  { method: "DELETE", path: "/api/v1/storage/:key", body: "—", note: "Remove an app-scope key" },
+  { method: "POST", path: "/api/v1/stats", body: "{ userId, values }", note: "→ { values } after each stat's aggregate" },
+  { method: "POST", path: "/api/v1/achievements", body: "{ userId, id }", note: "→ { unlocked }; XP is awarded once" },
 ];
 
 export const WEBHOOK_EVENTS: [string, string][] = [
@@ -66,9 +71,10 @@ export const WEBHOOK_EVENTS: [string, string][] = [
   ["match.turn", "The turn passed to someone else"],
   ["match.submitted", "A player submitted. With server authority, your cue to referee"],
   ["match.ended", "Settled. reason: \"server_timeout\" when the 24 h safety valve fired"],
+  ["achievement.unlocked", "A player unlocked an achievement: { userId, achievementId }, match: null"],
   ["ping", "Sent by “Send test event” on your app's Server panel"],
 ];
 
-export const API_ERRORS = "401 bad or missing secret · 403 another app's match · 404 no match · 409 conflict or already settled · 422 invalid body · 501 demo mode";
+export const API_ERRORS = "401 bad or missing secret · 403 another app's match · 404 no match or player · 409 conflict or already settled · 422 invalid body · 429 a limit reached (200 storage keys) · 501 demo mode";
 
 export const SIGNATURE_FORMAT = "X-XApps-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(secret, t + \".\" + body)>";

@@ -3,7 +3,7 @@
  * client and env so it can be unit tested, and tolerant of the v1 schema: every
  * v2 field has a default until the stage-1 migration is applied.
  */
-import { getOfficialApp, withManifestDefaults } from "../catalog";
+import { getOfficialApp, toAchievementDefs, toStatDefs, withManifestDefaults } from "../catalog";
 import type {
   AppAuthority,
   AppCategory,
@@ -14,8 +14,12 @@ import type {
   Match,
   MatchPlayer,
   PlayableMode,
+  Profile,
   RegisterAppInput,
   Scoring,
+  StatLeaderRow,
+  UserAchievement,
+  UserStat,
   WebhookDelivery,
 } from "../types";
 import { BackendError } from "../backend";
@@ -40,6 +44,9 @@ export interface AppRow {
   turn_based?: boolean | null;
   /** Stage 2 column (absent before the trust migration). */
   authority?: AppAuthority | null;
+  /** Stage 3 columns (absent before the media & data migration). */
+  stats?: unknown;
+  achievements?: unknown;
   scoring: Scoring;
   votes_to_win: number;
   duration_label: string;
@@ -55,7 +62,18 @@ export interface AppRow {
 
 export function toApp(row: AppRow): AppManifest {
   const official = row.official ? getOfficialApp(row.slug) : undefined;
-  if (official) return withManifestDefaults({ ...official, playCount: row.play_count, authority: toAuthority(row.authority) });
+  if (official) {
+    const stats = toStatDefs(row.stats);
+    const achievements = toAchievementDefs(row.achievements);
+    return withManifestDefaults({
+      ...official,
+      playCount: row.play_count,
+      authority: toAuthority(row.authority),
+      // The catalog wins; the row fills in what the catalog doesn't declare.
+      stats: official.stats?.length ? official.stats : stats,
+      achievements: official.achievements?.length ? official.achievements : achievements,
+    });
+  }
   return withManifestDefaults({
     slug: row.slug,
     name: row.name,
@@ -72,6 +90,8 @@ export function toApp(row: AppRow): AppManifest {
     setup: row.has_setup ?? false,
     turnBased: row.turn_based ?? false,
     authority: toAuthority(row.authority),
+    stats: toStatDefs(row.stats),
+    achievements: toAchievementDefs(row.achievements),
     scoring: row.scoring,
     votesToWin: row.votes_to_win,
     durationLabel: row.duration_label || "Community",
@@ -116,6 +136,8 @@ export function appInsert(input: RegisterAppInput): Record<string, unknown> {
   if (input.spectators === false) row.allow_spectators = false;
   if (input.setup) row.has_setup = true;
   if (input.turnBased) row.turn_based = true;
+  if (input.stats?.length) row.stats = input.stats;
+  if (input.achievements?.length) row.achievements = input.achievements;
   return row;
 }
 
@@ -184,8 +206,10 @@ export function errorKind(code: string | undefined, message = ""): BackendError[
       return "invalid";
     case "55000":
     case "23505":
-    case "54000":
       return "conflict";
+    case "54000":
+      // Limits: storage keys, stat reports / unlocks per minute (the SDK sees `rate_limited`).
+      return "rate_limited";
     default:
       return "internal";
   }
@@ -314,4 +338,101 @@ export function toSecret(data: unknown): string | null {
   }
   const values = Object.values(row).filter((v): v is string => typeof v === "string" && v.length > 0);
   return values.length === 1 ? values[0]! : null;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Stage 3: storage, stats & achievements                                 */
+/* ---------------------------------------------------------------------- */
+
+/** `profile_json` (camelCase), tolerating snake_case. */
+export function toProfile(raw: unknown): Profile | null {
+  if (!raw || typeof raw !== "object") return null;
+  const p = raw as Loose;
+  const id = str(pick(p, "id"));
+  const handle = str(pick(p, "handle"));
+  if (!id || !handle) return null;
+  return {
+    id,
+    handle,
+    name: str(pick(p, "name")) ?? handle,
+    avatarUrl: str(pick(p, "avatarUrl")),
+    bio: typeof p.bio === "string" ? p.bio : "",
+    xp: num(pick(p, "xp")) ?? 0,
+    wins: num(pick(p, "wins")) ?? 0,
+    losses: num(pick(p, "losses")) ?? 0,
+    draws: num(pick(p, "draws")) ?? 0,
+    streak: num(pick(p, "streak")) ?? 0,
+    bestStreak: num(pick(p, "bestStreak")) ?? 0,
+    createdAt: str(pick(p, "createdAt")) ?? new Date(0).toISOString(),
+    isBot: pick(p, "isBot") === true,
+  };
+}
+
+function rows(data: unknown): Loose[] {
+  return (Array.isArray(data) ? data : []).filter((r): r is Loose => !!r && typeof r === "object");
+}
+
+/** `app_stat_leaderboard` → `[{ rank, profile, value }]`. */
+export function toStatLeaderRows(data: unknown): StatLeaderRow[] {
+  const out: StatLeaderRow[] = [];
+  for (const r of rows(data)) {
+    const profile = toProfile(r.profile);
+    const value = num(r.value);
+    if (!profile || value === null) continue;
+    out.push({ rank: num(r.rank) ?? out.length + 1, profile, value });
+  }
+  return out;
+}
+
+/** `user_stats` → `[{ appSlug, key, value, updatedAt }]`. */
+export function toUserStats(data: unknown): UserStat[] {
+  const out: UserStat[] = [];
+  for (const r of rows(data)) {
+    const appSlug = str(pick(r, "appSlug"));
+    const key = str(r.key);
+    const value = num(r.value);
+    if (!appSlug || !key || value === null) continue;
+    out.push({ appSlug, key, value, updatedAt: str(pick(r, "updatedAt")) ?? new Date(0).toISOString() });
+  }
+  return out;
+}
+
+/** `list_user_achievements` → `[{ appSlug, achievementId, unlockedAt }]`. */
+export function toUserAchievements(data: unknown): UserAchievement[] {
+  const out: UserAchievement[] = [];
+  for (const r of rows(data)) {
+    const appSlug = str(pick(r, "appSlug"));
+    const achievementId = str(pick(r, "achievementId"));
+    if (!appSlug || !achievementId) continue;
+    out.push({ appSlug, achievementId, unlockedAt: str(pick(r, "unlockedAt")) ?? new Date(0).toISOString() });
+  }
+  return out;
+}
+
+/** `report_stats` → `{ [key]: number }`. */
+export function toStatValues(data: unknown): { [key: string]: number } {
+  const raw = firstRow(data);
+  const out: { [key: string]: number } = {};
+  if (!raw) return out;
+  for (const [key, value] of Object.entries(raw)) {
+    const n = num(value);
+    if (n !== null) out[key] = n;
+  }
+  return out;
+}
+
+/** `unlock_achievement` → `{ unlocked }` (tolerating a bare boolean). */
+export function toUnlocked(data: unknown): { unlocked: boolean } {
+  if (typeof data === "boolean") return { unlocked: data };
+  const raw = firstRow(data);
+  return { unlocked: raw?.unlocked === true };
+}
+
+/** `storage_list` (text[] or rows) → sorted keys. */
+export function toStorageKeys(data: unknown): string[] {
+  if (!Array.isArray(data)) return [];
+  const keys = data
+    .map((k) => (typeof k === "string" ? k : k && typeof k === "object" ? str((k as Loose).key) : null))
+    .filter((k): k is string => !!k);
+  return [...new Set(keys)].sort();
 }

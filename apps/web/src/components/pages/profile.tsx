@@ -20,6 +20,7 @@ import { useBackend, useViewer } from "@/platform/client";
 import { levelInfo, levelTitle } from "@/platform/scoring";
 import { useApps, useProfile, useUserMatches } from "@/platform/queries";
 import type { AppManifest } from "@/platform/types";
+import { ProfileProgress } from "./app-progress";
 
 export function ProfileView({ handle }: { handle: string }) {
   const router = useRouter();
@@ -129,6 +130,8 @@ export function ProfileView({ handle }: { handle: string }) {
           </RevealItem>
         ))}
       </Reveal>
+
+      <ProfileProgress userId={profile.id} apps={apps} isMe={isMe} />
 
       <section className="mt-10">
         <h2 className="mb-4 font-display text-2xl font-extrabold">Recent matches</h2>

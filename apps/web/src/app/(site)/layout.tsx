@@ -7,6 +7,7 @@ import { SetupNotice } from "@/components/chrome/setup-notice";
 import { Toaster } from "@/components/chrome/toasts";
 import { TopBar } from "@/components/chrome/top-bar";
 import { ConfettiLayer } from "@/components/motion/confetti";
+import { AchievementLayer } from "@/components/play/achievement-moment";
 import { PlatformProvider } from "@/platform/client";
 
 export default function SiteLayout({ children }: LayoutProps<"/">) {
@@ -24,6 +25,7 @@ export default function SiteLayout({ children }: LayoutProps<"/">) {
       <DemoBanner />
       <Toaster />
       <ConfettiLayer />
+      <AchievementLayer />
     </PlatformProvider>
   );
 }

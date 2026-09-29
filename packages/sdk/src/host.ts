@@ -21,9 +21,34 @@ import {
   type RequestParams,
   type RequestResult,
 } from "./protocol";
-import { accessProblem, isPlainObject, jsonProblem } from "./rules";
+import {
+  accessProblem,
+  achievementProblem,
+  displayProblem,
+  isPlainObject,
+  jsonProblem,
+  mediaProblem,
+  statsProblem,
+  storageKeyProblem,
+  storagePrefixProblem,
+  storageScopeProblem,
+} from "./rules";
 
-export { accessProblem } from "./rules";
+export {
+  accessProblem,
+  aggregateStat,
+  baseMime,
+  displayProblem,
+  isBlobLike,
+  mediaKindOf,
+  mediaProblem,
+  mediaUrlProblem,
+  statsProblem,
+  achievementProblem,
+  type MediaKind,
+  ALT_TEXT_LENGTH,
+  MANIFEST_ID_PATTERN,
+} from "./rules";
 
 export type HostHandler<M extends RequestMethod> = (
   params: RequestParams<M>,
@@ -31,9 +56,11 @@ export type HostHandler<M extends RequestMethod> = (
 
 /**
  * Request handlers, keyed by protocol method. Missing handlers answer
- * `unknown_method`. The v2 methods can also be given by their friendly
+ * `unknown_method`. The v2/v3 methods can also be given by their friendly
  * names (`getState`, `setState`, `endTurn`, `setRound`, `submitSetup`,
- * `cancelSetup`); the method-name key wins when both are present.
+ * `cancelSetup`, `uploadMedia`, `reportStats`, `unlockAchievement`,
+ * `storageDelete`, `storageList`); the method-name key wins when both are
+ * present.
  */
 export type HostHandlers = {
   [M in RequestMethod]?: HostHandler<M>;
@@ -50,9 +77,23 @@ export type HostHandlers = {
   submitSetup?: HostHandler<"setup.submit">;
   /** `setup.cancel` → `null` (setup purpose only). */
   cancelSetup?: HostHandler<"setup.cancel">;
+  /**
+   * `media.upload` → `MediaRef`. `params.file` is a Blob from the app's realm
+   * (already checked: accepted type, size within `LIMITS.media[kind]`); enforce
+   * the per-day quotas and store it for the signed-in user.
+   */
+  uploadMedia?: HostHandler<"media.upload">;
+  /** `stats.report` → the new aggregated value of each reported stat. */
+  reportStats?: HostHandler<"stats.report">;
+  /** `achievements.unlock` → `{ unlocked }`. Call `bridge.emitAchievement(id, userId)` when it's new. */
+  unlockAchievement?: HostHandler<"achievements.unlock">;
+  /** `storage.delete` → `null` (user scope). */
+  storageDelete?: HostHandler<"storage.delete">;
+  /** `storage.list` → keys (`scope` defaults to `user`). */
+  storageList?: HostHandler<"storage.list">;
 };
 
-/** Friendly handler names for the v2 methods. */
+/** Friendly handler names for the v2/v3 methods. */
 export const HANDLER_ALIASES = {
   "state.get": "getState",
   "state.set": "setState",
@@ -60,6 +101,11 @@ export const HANDLER_ALIASES = {
   "round.set": "setRound",
   "setup.submit": "submitSetup",
   "setup.cancel": "cancelSetup",
+  "media.upload": "uploadMedia",
+  "stats.report": "reportStats",
+  "achievements.unlock": "unlockAchievement",
+  "storage.delete": "storageDelete",
+  "storage.list": "storageList",
 } as const satisfies Partial<Record<RequestMethod, keyof HostHandlers>>;
 
 /** The handler for `method`, by protocol name or friendly alias. */
@@ -90,8 +136,9 @@ export interface HostCoreOptions {
   onRequest?: (method: RequestMethod, params: unknown) => void;
   /**
    * Purpose/role used to refuse requests (`forbidden`): spectators can't
-   * submit, send, write state, end turns or set rounds; setup-purpose apps
-   * can only use `setup.*` (plus ready/ui/storage/social), and match apps
+   * submit, send, write state, end turns, set rounds, upload media, report
+   * stats, unlock achievements or write storage; setup-purpose apps can only
+   * use `setup.*` (plus ready/ui/storage/social/media.upload), and match apps
    * can't use `setup.*`. Defaults to reading `context()` on each request.
    */
   access?: () => { purpose?: LaunchContext["purpose"]; role?: LaunchContext["match"]["role"] };
@@ -106,6 +153,8 @@ export interface HostBridge {
   emitTurn(turn: string | null, deadline?: string | null): void;
   /** Emit `round.change`. */
   emitRound(round: number): void;
+  /** Emit `achievement.unlock` (someone in the match unlocked `id`). */
+  emitAchievement(id: string, userId: string): void;
   readonly connected: boolean;
   destroy(): void;
 }
@@ -181,7 +230,20 @@ export function createHostCore(transport: HostTransport, options: HostCoreOption
       respondError(id, method, new XAppsError("forbidden", denied));
       return;
     }
-    const problem = validateRequest(method, params);
+    let problem = validateRequest(method, params);
+    if (!problem && (method === "stats.report" || method === "achievements.unlock")) {
+      // Declared in the manifest? (Only when the context carries the defs.)
+      try {
+        const app = options.context().app;
+        const p = params as { values?: unknown; id?: unknown };
+        problem =
+          method === "stats.report"
+            ? statsProblem(p.values, Array.isArray(app?.stats) ? app.stats : null)
+            : achievementProblem(p.id, Array.isArray(app?.achievements) ? app.achievements : null);
+      } catch {
+        // No context to check against: leave it to the handler.
+      }
+    }
     if (problem) {
       respondError(id, method, new XAppsError("invalid_params", `${method}: ${problem}`));
       return;
@@ -246,6 +308,9 @@ export function createHostCore(transport: HostTransport, options: HostCoreOption
     },
     emitRound(round) {
       emit("round.change", { round });
+    },
+    emitAchievement(id, userId) {
+      emit("achievement.unlock", { id, userId });
     },
     get connected() {
       return session !== null && !destroyed;
@@ -324,17 +389,8 @@ export function validateRequest(method: RequestMethod, params: unknown): string 
       }
       if (params.playerId !== undefined && typeof params.playerId !== "string") return "playerId must be a string";
       if (params.display !== undefined) {
-        const d = params.display;
-        if (!isObject(d)) return "display must be an object";
-        if (d.kind === "text") {
-          if (typeof d.body !== "string" || d.body.length > 1000) return "display.body must be ≤ 1000 chars";
-        } else if (d.kind === "svg") {
-          if (typeof d.svg !== "string" || !d.svg.trim().startsWith("<svg")) return "display.svg must be SVG markup";
-        } else if (d.kind === "image") {
-          if (typeof d.url !== "string" || !/^https:\/\//.test(d.url)) return "display.url must be https";
-        } else {
-          return "unknown display kind";
-        }
+        const problem = displayProblem(params.display);
+        if (problem) return problem;
       }
       if (byteLength(params) > LIMITS.submissionBytes) return "submission too large";
       return null;
@@ -366,14 +422,23 @@ export function validateRequest(method: RequestMethod, params: unknown): string 
       }
       return null;
     case "storage.get":
-      return typeof params.key === "string" && params.key.length > 0 && params.key.length <= LIMITS.storageKeyLength
-        ? null
-        : "key must be a short string";
+      return storageKeyProblem(params.key) ?? storageScopeProblem(params.scope);
     case "storage.set":
-      if (typeof params.key !== "string" || !params.key || params.key.length > LIMITS.storageKeyLength) {
-        return "key must be a short string";
-      }
-      return byteLength(params.value) > LIMITS.storageValueBytes ? "value too large" : null;
+      if (storageKeyProblem(params.key)) return storageKeyProblem(params.key);
+      if (params.scope !== undefined && params.scope !== "user") return "only your server can write app storage";
+      if (!("value" in params)) return "value is required";
+      return jsonProblem(params.value, "value") ?? (byteLength(params.value) > LIMITS.storageValueBytes ? "value too large" : null);
+    case "storage.delete":
+      if (params.scope !== undefined && params.scope !== "user") return "only your server can write app storage";
+      return storageKeyProblem(params.key);
+    case "storage.list":
+      return storagePrefixProblem(params.prefix) ?? storageScopeProblem(params.scope);
+    case "media.upload":
+      return mediaProblem(params.file, params.alt);
+    case "stats.report":
+      return statsProblem(params.values);
+    case "achievements.unlock":
+      return achievementProblem(params.id);
     case "state.get":
     case "setup.cancel":
       return null;

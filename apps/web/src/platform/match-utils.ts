@@ -274,10 +274,15 @@ function localeOf(): string {
   return typeof navigator !== "undefined" ? navigator.language : "en";
 }
 
+/** `LaunchContext.app`: identity plus the stats and achievements the app declared. */
+export function launchApp(app: AppManifest): LaunchContext["app"] {
+  return { id: app.slug, slug: app.slug, name: app.name, stats: app.stats ?? [], achievements: app.achievements ?? [] };
+}
+
 export function buildLaunchContext(app: AppManifest, match: Match, viewer: Profile, origin: string): LaunchContext {
   return {
     purpose: "match",
-    app: { id: app.slug, slug: app.slug, name: app.name },
+    app: launchApp(app),
     user: { id: viewer.id, handle: viewer.handle, name: viewer.name, avatarUrl: viewer.avatarUrl },
     match: toLaunchMatch(match, viewer.id),
     host: { ...HOST, origin },
@@ -299,7 +304,7 @@ export function buildSetupContext(
   const mode = options.mode ?? app.modes.find((m) => m !== "practice") ?? "async";
   return {
     purpose: "setup",
-    app: { id: app.slug, slug: app.slug, name: app.name },
+    app: launchApp(app),
     user: { id: viewer.id, handle: viewer.handle, name: viewer.name, avatarUrl: viewer.avatarUrl },
     match: {
       id: `setup-${app.slug}`,

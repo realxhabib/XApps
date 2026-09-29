@@ -10,6 +10,10 @@ import {
   type HostEventData,
   type HostToApp,
   type Json,
+  type AchievementDef,
+  type MediaRef,
+  type StatDef,
+  type StorageScope,
   type LaunchContext,
   type LaunchPurpose,
   type MatchResult,
@@ -26,7 +30,22 @@ import {
 import { createRandom, randomId, type Random } from "./random";
 import { createWindowTransport, type AppTransport } from "./transport";
 import { createMockHost, type MockHostOptions } from "./mock-host";
-import { accessProblem, cloneJson, isPlainObject, jsonProblem } from "./rules";
+import {
+  accessProblem,
+  achievementProblem,
+  cloneJson,
+  displayProblem,
+  isPlainObject,
+  jsonProblem,
+  mediaKindOf,
+  mediaProblem,
+  statsProblem,
+  storageKeyProblem,
+  storagePrefixProblem,
+  storageScopeProblem,
+  storageValueProblem,
+  type MediaKind,
+} from "./rules";
 
 export interface ConnectOptions {
   /** How long to wait for the host to answer. Default: 8 s. */
@@ -127,6 +146,70 @@ export interface SetupApi {
   cancel(): Promise<null>;
 }
 
+export interface MediaUploadOptions {
+  /** Describes the file for people using screen readers (≤ 1000 chars). */
+  alt?: string;
+  /** Upload timeout. Default 120 s. */
+  timeoutMs?: number;
+}
+
+export interface MediaApi {
+  /**
+   * Uploads an image, audio or video file for this app and returns where it
+   * lives. Checked locally first: accepted type (`LIMITS.media`) and size.
+   * Spectators can't upload.
+   */
+  upload(file: Blob, options?: MediaUploadOptions): Promise<MediaRef>;
+  /** `"image" | "audio" | "video"` for an accepted mime type (codec parameters ignored), else `null`. */
+  kindOf(mime: string): MediaKind | null;
+}
+
+export interface StorageOptions {
+  /** `user` (default): private to the player. `app`: one public space per app, read-only here (your server writes it). */
+  scope?: StorageScope;
+}
+
+export interface StorageListOptions extends StorageOptions {
+  /** Only keys starting with this. */
+  prefix?: string;
+}
+
+export interface StorageApi {
+  get<T extends Json = Json>(key: string, options?: StorageOptions): Promise<T | null>;
+  /** User scope only. Values ≤ 64 KB of JSON; at most 200 keys per player. */
+  set(key: string, value: Json): Promise<null>;
+  /** User scope only. */
+  delete(key: string): Promise<null>;
+  list(options?: StorageListOptions): Promise<string[]>;
+}
+
+export interface StatsApi {
+  /** Stats declared in your manifest (empty when the host sends none). */
+  readonly defs: StatDef[];
+  /**
+   * Reports values for your stats; each is folded into the player's value by
+   * the stat's aggregate (`max`, `min`, `sum`, `last`). Resolves with the new
+   * aggregated value of each reported stat.
+   */
+  report(values: { [key: string]: number }): Promise<{ [key: string]: number }>;
+}
+
+export interface AchievementUnlock {
+  id: string;
+  userId: string;
+}
+
+export interface AchievementsApi {
+  /** Achievements declared in your manifest (empty when the host sends none). */
+  readonly defs: AchievementDef[];
+  /** Ids this player unlocked (or was confirmed to already have) during this session. */
+  readonly unlocked: ReadonlySet<string>;
+  /** Unlocks `id`. `unlocked` is false when the player already had it (XP is awarded once). */
+  unlock(id: string): Promise<{ unlocked: boolean }>;
+  /** Called whenever `unlocked` changes. */
+  onChange(handler: (unlocked: ReadonlySet<string>) => void): Unsubscribe;
+}
+
 interface Pending {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -134,6 +217,7 @@ interface Pending {
 }
 
 const REQUEST_TIMEOUT_MS = 15_000;
+const UPLOAD_TIMEOUT_MS = 120_000;
 
 /**
  * A connected app. Everything you need is on this object:
@@ -163,6 +247,8 @@ export class XAppsClient {
   private sendBudget: number = LIMITS.roomMessagesPerSecond;
   private budgetRefilledAt = Date.now();
   private roster: Roster;
+  private unlockedAchievements: ReadonlySet<string> = new Set();
+  private readonly achievementWatchers = new Set<(unlocked: ReadonlySet<string>) => void>();
 
   /** @internal use `connect()` */
   constructor(transport: AppTransport, context: LaunchContext) {
@@ -297,6 +383,16 @@ export class XAppsClient {
     return this.on("turn.change", ({ turn, deadline }) => handler({ turn, deadline }));
   }
 
+  /**
+   * Someone in the match (you included) unlocked an achievement. `def` is the
+   * manifest entry when the host sent your achievement defs.
+   */
+  onAchievement(handler: (unlock: AchievementUnlock, def: AchievementDef | undefined) => void): Unsubscribe {
+    return this.on("achievement.unlock", (data) =>
+      handler({ id: data.id, userId: data.userId }, this.achievements.defs.find((d) => d.id === data.id)),
+    );
+  }
+
   /** Called when the round counter changes (see `round`). */
   onRound(handler: (round: number) => void): Unsubscribe {
     return this.on("round.change", ({ round }) => handler(round));
@@ -408,16 +504,21 @@ export class XAppsClient {
       this.request("social.share", { text: text.slice(0, LIMITS.shareTextLength), url }),
   };
 
-  readonly storage = {
-    get: <T extends Json = Json>(key: string): Promise<T | null> =>
-      this.request("storage.get", { key }) as Promise<T | null>,
-    set: (key: string, value: Json): Promise<null> => {
-      if (byteLength(value) > LIMITS.storageValueBytes) {
-        return Promise.reject(new XAppsError("invalid_params", "storage.set: value too large"));
-      }
-      return this.request("storage.set", { key, value });
-    },
-  };
+  /**
+   * Key/value storage. `user` scope (default) is private to the player;
+   * `app` scope is one public space per app that everyone can read and only
+   * your server writes (`PUT /api/v1/storage/:key`).
+   */
+  readonly storage: StorageApi = this.createStorageApi();
+
+  /** Image, audio and video uploads. */
+  readonly media: MediaApi = this.createMediaApi();
+
+  /** Per-player stats from your manifest (they feed the app's leaderboards). */
+  readonly stats: StatsApi = this.createStatsApi();
+
+  /** Achievements from your manifest. */
+  readonly achievements: AchievementsApi = this.createAchievementsApi();
 
   /* ---------------------------------------------------------------- */
   /* Plumbing                                                         */
@@ -462,6 +563,7 @@ export class XAppsClient {
     }
     this.pending.clear();
     this.listeners.clear();
+    this.achievementWatchers.clear();
     if (singleton?.client === this) singleton = null;
   }
 
@@ -602,6 +704,111 @@ export class XAppsClient {
     };
   }
 
+  private createStorageApi(): StorageApi {
+    const invalid = (method: string, problem: string) =>
+      Promise.reject(new XAppsError("invalid_params", `${method}: ${problem}`));
+    return {
+      get: <T extends Json = Json>(key: string, options: StorageOptions = {}): Promise<T | null> => {
+        const problem = storageKeyProblem(key) ?? storageScopeProblem(options.scope);
+        if (problem) return invalid("storage.get", problem);
+        const params = options.scope ? { key, scope: options.scope } : { key };
+        return this.request("storage.get", params) as Promise<T | null>;
+      },
+      set: (key: string, value: Json): Promise<null> => {
+        const denied = this.deny("storage.set");
+        if (denied) return denied;
+        const problem = storageKeyProblem(key) ?? storageValueProblem(value);
+        if (problem) return invalid("storage.set", problem);
+        return this.request("storage.set", { key, value });
+      },
+      delete: (key: string): Promise<null> => {
+        const denied = this.deny("storage.delete");
+        if (denied) return denied;
+        const problem = storageKeyProblem(key);
+        if (problem) return invalid("storage.delete", problem);
+        return this.request("storage.delete", { key });
+      },
+      list: (options: StorageListOptions = {}): Promise<string[]> => {
+        const problem = storagePrefixProblem(options.prefix) ?? storageScopeProblem(options.scope);
+        if (problem) return invalid("storage.list", problem);
+        const params: RequestParams<"storage.list"> = {};
+        if (options.prefix) params.prefix = options.prefix;
+        if (options.scope) params.scope = options.scope;
+        return this.request("storage.list", params);
+      },
+    };
+  }
+
+  private createMediaApi(): MediaApi {
+    return {
+      upload: (file: Blob, options: MediaUploadOptions = {}): Promise<MediaRef> => {
+        const denied = this.deny("media.upload");
+        if (denied) return denied;
+        const problem = mediaProblem(file, options.alt);
+        if (problem) return Promise.reject(new XAppsError("invalid_params", `media.upload: ${problem}`));
+        const params: RequestParams<"media.upload"> = options.alt === undefined ? { file } : { file, alt: options.alt };
+        return this.request("media.upload", params, { timeoutMs: options.timeoutMs ?? UPLOAD_TIMEOUT_MS });
+      },
+      kindOf: (mime: string) => mediaKindOf(mime),
+    };
+  }
+
+  private createStatsApi(): StatsApi {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const client = this;
+    return {
+      get defs() {
+        return client.context.app.stats ?? [];
+      },
+      report(values: { [key: string]: number }): Promise<{ [key: string]: number }> {
+        const denied = client.deny("stats.report");
+        if (denied) return denied;
+        const problem = statsProblem(values, client.context.app.stats ?? null);
+        if (problem) return Promise.reject(new XAppsError("invalid_params", `stats.report: ${problem}`));
+        return client.request("stats.report", { values: { ...values } });
+      },
+    };
+  }
+
+  private createAchievementsApi(): AchievementsApi {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const client = this;
+    return {
+      get defs() {
+        return client.context.app.achievements ?? [];
+      },
+      get unlocked() {
+        return client.unlockedAchievements;
+      },
+      async unlock(id: string): Promise<{ unlocked: boolean }> {
+        const denied = client.deny("achievements.unlock");
+        if (denied) return denied;
+        const problem = achievementProblem(id, client.context.app.achievements ?? null);
+        if (problem) throw new XAppsError("invalid_params", `achievements.unlock: ${problem}`);
+        const result = await client.request("achievements.unlock", { id });
+        client.markUnlocked(id);
+        return { unlocked: result?.unlocked === true };
+      },
+      onChange(handler: (unlocked: ReadonlySet<string>) => void): Unsubscribe {
+        client.achievementWatchers.add(handler);
+        return () => client.achievementWatchers.delete(handler);
+      },
+    };
+  }
+
+  private markUnlocked(id: string): void {
+    if (this.unlockedAchievements.has(id)) return;
+    // A new Set per change, so `unlocked` works as an external-store snapshot.
+    this.unlockedAchievements = new Set(this.unlockedAchievements).add(id);
+    for (const handler of Array.from(this.achievementWatchers)) {
+      try {
+        handler(this.unlockedAchievements);
+      } catch (error) {
+        console.error("[xapps] achievements.onChange handler threw", error);
+      }
+    }
+  }
+
   /** A rejected promise when the launch purpose / role doesn't allow `method` (mirrors the host). */
   private deny(method: RequestMethod): Promise<never> | null {
     const problem = accessProblem(method, this.context);
@@ -691,6 +898,12 @@ export class XAppsClient {
         this.online = (message.data as HostEventData<"room.presence">).online.slice();
         break;
       }
+      case "achievement.unlock": {
+        const data = message.data as HostEventData<"achievement.unlock">;
+        if (!data || typeof data.id !== "string" || typeof data.userId !== "string") return;
+        if (data.userId === this.context.user.id) this.markUnlocked(data.id);
+        break;
+      }
     }
     this.dispatch(message.event, message.data);
   }
@@ -766,7 +979,11 @@ function sanitizeSubmission(submission: Submission): Submission {
     out.score = submission.score;
   }
   if (submission.data !== undefined) out.data = submission.data;
-  if (submission.display !== undefined) out.display = submission.display;
+  if (submission.display !== undefined) {
+    const problem = displayProblem(submission.display);
+    if (problem) throw new XAppsError("invalid_params", `submit: ${problem}`);
+    out.display = submission.display;
+  }
   if (byteLength(out) > LIMITS.submissionBytes) {
     throw new XAppsError("invalid_params", "submit: submission too large");
   }

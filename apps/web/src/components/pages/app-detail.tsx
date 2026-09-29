@@ -9,6 +9,7 @@ import { toast } from "@/components/chrome/toasts";
 import { AppArt } from "@/components/marketplace/app-art";
 import { AppGlyph } from "@/components/marketplace/app-glyph";
 import { ServerPanel, useIsAppOwner } from "@/components/developers/server-panel";
+import { AppProgress } from "./app-progress";
 import { ChallengeSheet } from "@/components/marketplace/challenge-sheet";
 import { ActivityPill } from "@/components/marketplace/match-card";
 import { Reveal, RevealItem } from "@/components/motion/reveal";
@@ -353,6 +354,8 @@ export function AppDetail({ slug }: { slug: string }) {
           )}
         </section>
       </div>
+
+      <AppProgress app={app} className="mt-6" />
 
       {isOwner && <ServerPanel app={app} className="mt-16" />}
 

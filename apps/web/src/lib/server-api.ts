@@ -18,6 +18,7 @@ export type ServerApiErrorCode =
   | "conflict"
   | "invalid_state"
   | "invalid_params"
+  | "rate_limited"
   | "internal"
   | "not_configured";
 
@@ -166,6 +167,76 @@ export function parseResultBody(body: unknown): ResultBody {
 }
 
 /* ------------------------------------------------------------------ */
+/* Stage 3: storage, stats & achievements                             */
+/* ------------------------------------------------------------------ */
+
+/** Stat keys and achievement ids: `^[a-z][a-z0-9_]{0,31}$`. */
+export const DEF_ID_RE = /^[a-z][a-z0-9_]{0,31}$/;
+
+/** A storage key from the URL: 1–64 characters, no control characters. */
+export function parseStorageKey(raw: string): string {
+  let key = raw;
+  // Route params arrive decoded; tolerate a client that double-encoded the key.
+  if (/%[0-9a-f]{2}/i.test(key)) {
+    try {
+      key = decodeURIComponent(key);
+    } catch {
+      // keep it as is
+    }
+  }
+  if (!key || key.length > LIMITS.storageKeyLength || /[\u0000-\u001f\u007f]/.test(key)) {
+    invalid(`The storage key must be 1–${LIMITS.storageKeyLength} characters`);
+  }
+  return key;
+}
+
+export interface StorageValueBody {
+  value: Json;
+}
+
+/** `PUT /api/v1/storage/:key` → `{ value }` (any JSON, ≤ 64 KB serialized). */
+export function parseStorageValueBody(body: unknown): StorageValueBody {
+  const b = objectBody(body);
+  if (!("value" in b) || b.value === undefined) invalid("`value` is required (DELETE the key to remove it)");
+  const bytes = new TextEncoder().encode(JSON.stringify(b.value)).length;
+  if (bytes > LIMITS.storageValueBytes) invalid(`\`value\` is ${bytes} bytes; the limit is ${LIMITS.storageValueBytes}`);
+  return { value: b.value as Json };
+}
+
+export interface StatsBody {
+  userId: string;
+  values: { [key: string]: number };
+}
+
+/** `POST /api/v1/stats` → `{ userId, values: { [statKey]: number } }` (1–8 stats). */
+export function parseStatsBody(body: unknown): StatsBody {
+  const b = objectBody(body);
+  if (!isUuid(b.userId)) invalid("`userId` must be a player id");
+  if (!isPlainObject(b.values)) invalid("`values` must be an object of stat key → number");
+  const entries = Object.entries(b.values);
+  if (!entries.length) invalid("`values` is empty");
+  if (entries.length > LIMITS.maxStats) invalid(`\`values\` can hold at most ${LIMITS.maxStats} stats`);
+  for (const [key, value] of entries) {
+    if (!DEF_ID_RE.test(key)) invalid(`\`values\`: "${key.slice(0, 64)}" is not a stat key`);
+    if (!isFiniteNumber(value)) invalid(`\`values.${key}\` must be a finite number`);
+  }
+  return { userId: b.userId, values: b.values as { [key: string]: number } };
+}
+
+export interface AchievementBody {
+  userId: string;
+  id: string;
+}
+
+/** `POST /api/v1/achievements` → `{ userId, id }`. */
+export function parseAchievementBody(body: unknown): AchievementBody {
+  const b = objectBody(body);
+  if (!isUuid(b.userId)) invalid("`userId` must be a player id");
+  if (typeof b.id !== "string" || !DEF_ID_RE.test(b.id)) invalid("`id` must be an achievement id from your manifest");
+  return { userId: b.userId, id: b.id };
+}
+
+/* ------------------------------------------------------------------ */
 /* Postgres → HTTP                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -212,6 +283,8 @@ export const PG_ERROR_RULES: readonly PgErrorRule[] = [
   },
   { sqlstates: ["55000"], status: 409, code: "invalid_state", message: "The match doesn't allow that right now" },
   { sqlstates: ["22023", "22P02", "23514"], status: 422, code: "invalid_params", message: "Invalid parameters" },
+  // Stage 3 limits: 200 app-scope storage keys.
+  { sqlstates: ["54000"], status: 429, code: "rate_limited", message: "Limit reached" },
 ];
 
 export function mapPgError(error: PgLikeError): ServerApiError {
@@ -261,7 +334,7 @@ export interface ServerApiRoute<B> {
   /** Validates the JSON body; omit for bodyless requests (GET). */
   parse?: (body: unknown) => B;
   rpc: string;
-  /** RPC params besides `p_secret` and `p_match`. */
+  /** RPC params besides `p_secret` (and `p_match` / the route's target). */
   args?: (body: B) => Record<string, unknown>;
   /** Success body from the RPC's return value. */
   respond: (data: unknown) => unknown;
@@ -280,11 +353,39 @@ async function readJson(request: Request): Promise<unknown> {
   }
 }
 
+/** Match routes (`/api/v1/matches/:id/…`): the RPC gets `p_secret` and `p_match`. */
 export async function runServerApi<B>(
   request: Request,
   params: Promise<{ id: string }>,
   route: ServerApiRoute<B>,
   deps: ServerApiDeps = defaultDeps(),
+): Promise<Response> {
+  return execute(request, route, deps, async () => {
+    const { id } = await params;
+    if (!isUuid(id)) throw new ServerApiError(404, "not_found", "Match not found");
+    return { p_match: id };
+  });
+}
+
+export interface AppServerApiRoute<B> extends ServerApiRoute<B> {
+  /** RPC params taken from the URL (validated; throw a ServerApiError to refuse). */
+  target?: () => Promise<Record<string, unknown>> | Record<string, unknown>;
+}
+
+/** App-level routes (`/api/v1/storage`, `/stats`, `/achievements`): the RPC gets `p_secret` plus the route's args. */
+export async function runAppServerApi<B>(
+  request: Request,
+  route: AppServerApiRoute<B>,
+  deps: ServerApiDeps = defaultDeps(),
+): Promise<Response> {
+  return execute(request, route, deps, async () => (route.target ? route.target() : {}));
+}
+
+async function execute<B>(
+  request: Request,
+  route: ServerApiRoute<B>,
+  deps: ServerApiDeps,
+  target: () => Promise<Record<string, unknown>>,
 ): Promise<Response> {
   try {
     if (!deps.configured) {
@@ -298,13 +399,12 @@ export async function runServerApi<B>(
     if (!secret) {
       throw new ServerApiError(401, "unauthorized", "Missing or malformed `Authorization: Bearer xas_…` header");
     }
-    const { id } = await params;
-    if (!isUuid(id)) throw new ServerApiError(404, "not_found", "Match not found");
+    const targetArgs = await target();
 
     const body = route.parse ? route.parse(await readJson(request)) : (undefined as B);
     const { data, error } = await deps.rpc(route.rpc, {
       p_secret: secret,
-      p_match: id,
+      ...targetArgs,
       ...(route.args ? route.args(body) : {}),
     });
     if (error) {
@@ -339,4 +439,24 @@ export function respondVersion(data: unknown): { version: number } {
 
 export function respondOk(): { ok: true } {
   return { ok: true };
+}
+
+/** `report_stats`-style jsonb `{ [key]: number }` → `{ values }`. */
+export function respondStatValues(data: unknown): { values: { [key: string]: number } } {
+  const raw = Array.isArray(data) ? data[0] : data;
+  if (!isPlainObject(raw)) return { values: {} };
+  const values: { [key: string]: number } = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const n = typeof value === "string" ? Number(value) : value;
+    if (typeof n === "number" && Number.isFinite(n)) values[key] = n;
+  }
+  return { values };
+}
+
+/** `{ unlocked }` (or a bare boolean) → `{ unlocked }`. */
+export function respondUnlocked(data: unknown): { unlocked: boolean } {
+  const raw = Array.isArray(data) ? data[0] : data;
+  if (typeof raw === "boolean") return { unlocked: raw };
+  if (isPlainObject(raw) && typeof raw.unlocked === "boolean") return { unlocked: raw.unlocked };
+  throw new ServerApiError(500, "internal", "Unexpected response from the database");
 }

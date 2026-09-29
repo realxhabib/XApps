@@ -3,7 +3,18 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { connect, resetConnection } from "../src/client";
 import { createMockHost } from "../src/mock-host";
-import { XAppsProvider, useMatchState, usePlayers, useRound, useSetup, useTurn } from "../src/react";
+import {
+  XAppsProvider,
+  useAchievementEvents,
+  useAchievements,
+  useMatchState,
+  useMediaUpload,
+  usePlayers,
+  useRound,
+  useSetup,
+  useStats,
+  useTurn,
+} from "../src/react";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -79,6 +90,65 @@ describe("react hooks", () => {
       await setup!.submit({ rounds: 9 }, "Nine rounds");
     });
     expect(mock.setup).toMatchObject({ status: "submitted", settings: { rounds: 9 } });
+    act(() => root.unmount());
+  });
+
+  it("useMediaUpload tracks uploading and error", async () => {
+    let hook: ReturnType<typeof useMediaUpload> | null = null;
+    const seen: Array<{ uploading: boolean; error: string | null }> = [];
+    function Probe() {
+      hook = useMediaUpload();
+      seen.push({ uploading: hook.uploading, error: hook.error?.message ?? null });
+      return null;
+    }
+    const { root } = await render(createElement(Probe), { probeMedia: false });
+    let pending: Promise<unknown> | null = null;
+    act(() => {
+      pending = hook!.upload(new Blob(["x"], { type: "image/png" }));
+    });
+    expect(hook!.uploading).toBe(true);
+    let ref: unknown = null;
+    await act(async () => {
+      ref = await pending;
+    });
+    expect(ref).toMatchObject({ kind: "image", bytes: 1 });
+    expect(seen.some((s) => s.uploading)).toBe(true);
+    expect(hook!.uploading).toBe(false);
+    await act(async () => {
+      await hook!.upload(new Blob(["x"], { type: "text/plain" })).catch(() => null);
+    });
+    expect(hook!.error?.message).toMatch(/unsupported/);
+    expect(hook!.uploading).toBe(false);
+    act(() => root.unmount());
+  });
+
+  it("useStats, useAchievements and useAchievementEvents", async () => {
+    let stats: ReturnType<typeof useStats> | null = null;
+    let achievements: ReturnType<typeof useAchievements> | null = null;
+    const events: string[] = [];
+    function Probe() {
+      stats = useStats();
+      achievements = useAchievements();
+      useAchievementEvents(({ id }, def) => events.push(`${id}:${def?.name}`));
+      return null;
+    }
+    const { root } = await render(createElement(Probe), {
+      banner: false,
+      stats: [{ key: "best", label: "Best", aggregate: "max" }],
+      achievements: [{ id: "gg", name: "Good game", description: "", icon: "🤝", xp: 5 }],
+    });
+    expect(stats!.defs.map((d) => d.key)).toEqual(["best"]);
+    await act(async () => {
+      await expect(stats!.report({ best: 4 })).resolves.toEqual({ best: 4 });
+    });
+    expect(achievements!.unlocked.size).toBe(0);
+    await act(async () => {
+      await achievements!.unlock("gg");
+    });
+    await flush();
+    expect(achievements!.defs[0]!.name).toBe("Good game");
+    expect([...achievements!.unlocked]).toEqual(["gg"]);
+    expect(events).toEqual(["gg:Good game"]);
     act(() => root.unmount());
   });
 });

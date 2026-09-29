@@ -38,7 +38,7 @@ export function Arena() {
   const [index, setIndex] = useState(0);
   const [picked, setPicked] = useState<{ matchId: string; userId: string; result: Match } | null>(null);
   const [judged, setJudged] = useState(0);
-  const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const optionRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   // Freeze the queue for the session so contests don't reshuffle mid-vote.
   if (data && queue === null) setQueue(data.filter((m) => m.players.length >= 2));
@@ -223,7 +223,7 @@ export function Arena() {
                 <div
                   className={cn(
                     "mt-5 grid",
-                    !many ? "gap-4 sm:grid-cols-2" : players.length === 3 ? "grid-cols-2 gap-3 sm:grid-cols-3" : players.length === 4 ? "grid-cols-2 gap-3" : "grid-cols-2 gap-3 sm:grid-cols-3",
+                    !many ? "grid-cols-1 gap-4 sm:grid-cols-2" : players.length === 3 ? "grid-cols-2 gap-3 sm:grid-cols-3" : players.length === 4 ? "grid-cols-2 gap-3" : "grid-cols-2 gap-3 sm:grid-cols-3",
                   )}
                 >
                   {players.map((p, seat) => {
@@ -231,15 +231,28 @@ export function Arena() {
                     const count = shown?.votes[p.userId] ?? 0;
                     const total = Math.max(1, players.reduce((s, x) => s + (shown?.votes[x.userId] ?? 0), 0));
                     return (
-                      <motion.button
+                      // A div with button semantics: entries may hold their own controls (video, audio, gallery).
+                      <motion.div
                         key={p.userId}
                         ref={(node) => {
                           optionRefs.current[seat] = node;
                         }}
-                        onClick={() => void cast(seat)}
-                        disabled={!!picked}
+                        role="button"
+                        tabIndex={picked ? -1 : 0}
+                        aria-disabled={!!picked}
+                        onClick={() => {
+                          if (!picked) void cast(seat);
+                        }}
+                        onKeyDown={(event) => {
+                          if (picked || event.target !== event.currentTarget) return;
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            void cast(seat);
+                          }
+                        }}
                         className={cn(
-                          "group relative rounded-[2rem] p-2 text-left transition-shadow",
+                          "group relative cursor-pointer rounded-[2rem] p-2 text-left outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-white/70",
+                          picked && "cursor-default",
                           many && "rounded-3xl p-1.5",
                           isPick ? "ring-2 ring-volt shadow-[0_0_60px_-10px_rgb(198_255_61/0.6)]" : "ring-1 ring-white/10",
                         )}
@@ -297,7 +310,7 @@ export function Arena() {
                             </motion.span>
                           )}
                         </AnimatePresence>
-                      </motion.button>
+                      </motion.div>
                     );
                   })}
                 </div>

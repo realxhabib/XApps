@@ -9,7 +9,7 @@
  */
 
 export const PROTOCOL_VERSION = 1 as const;
-export const SDK_VERSION = "0.2.0";
+export const SDK_VERSION = "0.3.0";
 
 export type Json =
   | string
@@ -73,7 +73,14 @@ export type LaunchPurpose = "match" | "setup";
 export interface LaunchContext {
   /** `setup`: render your challenge setup screen and call `setup.submit`. The match is a stub. */
   purpose: LaunchPurpose;
-  app: { id: string; slug: string; name: string };
+  app: {
+    id: string;
+    slug: string;
+    name: string;
+    /** Stats and achievements declared in your manifest. */
+    stats?: StatDef[];
+    achievements?: AchievementDef[];
+  };
   /** The person using this copy of your app. */
   user: { id: string; handle: string; name: string; avatarUrl: string | null };
   match: {
@@ -120,7 +127,48 @@ export type SubmissionDisplay =
   | { kind: "text"; title?: string; body: string; tone?: string }
   /** Self-contained SVG markup. Rendered by the host through <img>, so scripts never run. */
   | { kind: "svg"; svg: string; alt: string }
-  | { kind: "image"; url: string; alt: string };
+  | { kind: "image"; url: string; alt: string }
+  /** A clip uploaded with `media.upload`. Plays muted when in view; tap for sound. */
+  | { kind: "video"; url: string; alt: string; poster?: string }
+  /** A sound uploaded with `media.upload`. */
+  | { kind: "audio"; url: string; alt: string; cover?: string }
+  /** 2–6 images uploaded with `media.upload`. */
+  | { kind: "gallery"; items: { url: string; alt: string }[] };
+
+/** A file stored by the host for your app (`media.upload`). */
+export interface MediaRef {
+  url: string;
+  kind: "image" | "video" | "audio";
+  mime: string;
+  bytes: number;
+  width?: number;
+  height?: number;
+  /** Seconds, for audio/video. */
+  duration?: number;
+}
+
+/** A per-player stat your app tracks (manifest `stats`). */
+export interface StatDef {
+  key: string;
+  label: string;
+  aggregate: "max" | "min" | "sum" | "last";
+  format?: "number" | "ms" | "percent";
+}
+
+/** An achievement your app can unlock (manifest `achievements`). */
+export interface AchievementDef {
+  id: string;
+  name: string;
+  description: string;
+  /** One emoji. */
+  icon: string;
+  /** 0–100 XP, awarded once. */
+  xp: number;
+  /** Hidden on profiles until unlocked. */
+  secret?: boolean;
+}
+
+export type StorageScope = "user" | "app";
 
 export interface MatchResult {
   matchId: string;
@@ -169,9 +217,18 @@ export interface RequestMap {
   "ui.turn": { params: { playerId: string | null }; result: null };
   /** Opens a pre-filled post composer on X. */
   "social.share": { params: { text: string; url?: string }; result: null };
-  /** Tiny per-user, per-app key/value store (≤ 16 KB per value). */
-  "storage.get": { params: { key: string }; result: Json | null };
+  /** Key/value store: `user` scope is private to the player (default); `app` scope is public, written by your server. */
+  "storage.get": { params: { key: string; scope?: StorageScope }; result: Json | null };
+  /** User scope only (app scope is written by your server via the server API). */
   "storage.set": { params: { key: string; value: Json }; result: null };
+  "storage.delete": { params: { key: string }; result: null };
+  "storage.list": { params: { prefix?: string; scope?: StorageScope }; result: string[] };
+  /** Upload a file for this app (images, audio, video). */
+  "media.upload": { params: { file: Blob; alt?: string }; result: MediaRef };
+  /** Report values for the stats in your manifest; returns each stat's new aggregated value. */
+  "stats.report": { params: { values: { [key: string]: number } }; result: { [key: string]: number } };
+  /** Unlock an achievement from your manifest. `unlocked` is false if the player already had it. */
+  "achievements.unlock": { params: { id: string }; result: { unlocked: boolean } };
   /** Shared, persistent match state. */
   "state.get": { params: Record<string, never>; result: { state: Json | null; version: number } };
   /** Compare-and-set: fails with code `conflict` if someone else wrote since `expectedVersion`. */
@@ -209,6 +266,11 @@ export const REQUEST_METHODS: readonly RequestMethod[] = [
   "round.set",
   "setup.submit",
   "setup.cancel",
+  "storage.delete",
+  "storage.list",
+  "media.upload",
+  "stats.report",
+  "achievements.unlock",
 ] as const;
 
 /* ------------------------------------------------------------------------ */
@@ -237,6 +299,8 @@ export interface EventMap {
   "state.change": { state: Json | null; version: number; by: string | null };
   "turn.change": { turn: string | null; deadline: string | null };
   "round.change": { round: number };
+  /** Someone in the match unlocked an achievement. */
+  "achievement.unlock": { id: string; userId: string };
 }
 
 export type HostEvent = keyof EventMap;
@@ -328,7 +392,20 @@ export const LIMITS = {
   /** Max serialized size of a room payload. */
   roomPayloadBytes: 8 * 1024,
   /** Max serialized size of a storage value. */
-  storageValueBytes: 16 * 1024,
+  storageValueBytes: 64 * 1024,
+  storageKeysPerUser: 200,
+  /** Upload limits per kind, and per user per app per rolling 24 h. */
+  media: {
+    image: { maxBytes: 8 * 1024 * 1024, mimes: ["image/jpeg", "image/png", "image/webp", "image/gif"] },
+    audio: { maxBytes: 10 * 1024 * 1024, mimes: ["audio/mpeg", "audio/mp4", "audio/ogg", "audio/webm", "audio/wav"] },
+    video: { maxBytes: 25 * 1024 * 1024, mimes: ["video/mp4", "video/webm", "video/quicktime"] },
+    uploadsPerDay: 60,
+    bytesPerDay: 200 * 1024 * 1024,
+  },
+  galleryItems: { min: 2, max: 6 },
+  maxStats: 8,
+  maxAchievements: 30,
+  maxAchievementXpPerApp: 500,
   /** Max serialized size of submission data + display. */
   submissionBytes: 64 * 1024,
   /** Max serialized size of the shared match state. */

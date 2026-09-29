@@ -23,8 +23,9 @@ import type { RoomPeer, RoomTransport } from "@/platform/backend";
 import { BackendError } from "@/platform/backend";
 import { useBackend, useViewer } from "@/platform/client";
 import { buildLaunchContext, opponentOf, playerOf, toLaunchMatch, toMatchResult } from "@/platform/match-utils";
-import { useApp, useMatch, useMatchAction } from "@/platform/queries";
+import { invalidateProgress, useApp, useMatch, useMatchAction } from "@/platform/queries";
 import type { AppManifest, Match, Profile } from "@/platform/types";
+import { showAchievement } from "./achievement-moment";
 import { FloatingReactions, Hud, type HudState, useFloatingReactions } from "./hud";
 import { InviteCard, Lobby } from "./lobby";
 import { isMultiplayer, ordinal, seatedPlayers, viewerIsSpectator, viewerOutcome } from "./match-view";
@@ -349,7 +350,16 @@ function readIntroSeen(matchId: string): boolean {
 function toSdkError(error: unknown): XAppsError {
   if (error instanceof XAppsError) return error;
   if (error instanceof BackendError) {
-    const code = error.code === "conflict" ? "conflict" : error.code === "forbidden" || error.code === "unauthenticated" ? "forbidden" : error.code === "invalid" ? "invalid_params" : "internal";
+    const code =
+      error.code === "conflict"
+        ? "conflict"
+        : error.code === "forbidden" || error.code === "unauthenticated"
+          ? "forbidden"
+          : error.code === "invalid" || error.code === "not_found"
+            ? "invalid_params"
+            : error.code === "rate_limited"
+              ? "rate_limited"
+              : "internal";
     return new XAppsError(code, error.message);
   }
   return new XAppsError("internal", errorMessage(error));
@@ -487,10 +497,77 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
       openXIntent(text, url);
       return null;
     },
-    "storage.get": ({ key }) => backend.storageGet(app.slug, key),
+    "storage.get": async ({ key, scope }) => {
+      try {
+        return await backend.storageGet(app.slug, key, scope ?? "user");
+      } catch (error) {
+        throw toSdkError(error);
+      }
+    },
     "storage.set": async ({ key, value }) => {
-      await backend.storageSet(app.slug, key, value);
-      return null;
+      seatedOnly("storage.set");
+      try {
+        await backend.storageSet(app.slug, key, value);
+        return null;
+      } catch (error) {
+        throw toSdkError(error);
+      }
+    },
+    "storage.delete": async ({ key }) => {
+      seatedOnly("storage.delete");
+      try {
+        await backend.storageDelete(app.slug, key);
+        return null;
+      } catch (error) {
+        throw toSdkError(error);
+      }
+    },
+    "storage.list": async ({ prefix, scope }) => {
+      try {
+        return await backend.storageList(app.slug, prefix, scope ?? "user");
+      } catch (error) {
+        throw toSdkError(error);
+      }
+    },
+    "media.upload": async ({ file }) => {
+      seatedOnly("media.upload");
+      try {
+        return await backend.uploadMedia(app.slug, file);
+      } catch (error) {
+        const sdkError = toSdkError(error);
+        toast(errorMessage(error), { tone: "danger" });
+        throw sdkError;
+      }
+    },
+    "stats.report": async ({ values }) => {
+      seatedOnly("stats.report");
+      try {
+        const result = await backend.reportStats(app.slug, values);
+        invalidateProgress(queryClient, app.slug);
+        return result;
+      } catch (error) {
+        throw toSdkError(error);
+      }
+    },
+    "achievements.unlock": async ({ id }) => {
+      seatedOnly("achievements.unlock");
+      let result: { unlocked: boolean };
+      try {
+        result = await backend.unlockAchievement(app.slug, id);
+      } catch (error) {
+        throw toSdkError(error);
+      }
+      if (result.unlocked) {
+        const def = app.achievements?.find((a) => a.id === id);
+        if (def) {
+          showAchievement({ icon: def.icon, name: def.name, description: def.description, xp: def.xp, appName: app.name, accent: app.accent });
+        }
+        // Our app hears it first, then everyone else in a live room.
+        emitRef.current?.("achievement.unlock", { id, userId: viewer.id });
+        roomRef.current?.send({ kind: "achievement", id });
+        invalidateProgress(queryClient, app.slug);
+      }
+      return result;
     },
     "state.get": () => {
       const current = latest();
@@ -587,6 +664,21 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
     startIntroRef.current = startIntro;
   }, [startIntro]);
 
+  /** Another player's host says they unlocked an achievement: a quiet banner, and tell our app. */
+  const onPeerAchievement = (id: string, from: string) => {
+    const def = app.achievements?.find((a) => a.id === id);
+    const player = match.players.find((p) => p.userId === from);
+    if (!def || !player || from === viewer.id) return;
+    emit("achievement.unlock", { id, userId: from });
+    if (!def.secret) {
+      showAchievement({ icon: def.icon, name: def.name, xp: def.xp, appName: app.name, accent: app.accent, by: player.profile.handle });
+    }
+  };
+  const onPeerAchievementRef = useRef(onPeerAchievement);
+  useLayoutEffect(() => {
+    onPeerAchievementRef.current = onPeerAchievement;
+  });
+
   useEffect(() => {
     if (!live) return;
     const room = backend.openRoom(match.id, viewer.id);
@@ -602,6 +694,8 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
         play("pop");
       } else if (event.kind === "start") {
         startIntroRef.current();
+      } else if (event.kind === "achievement") {
+        onPeerAchievementRef.current(event.id, from);
       }
     });
     return () => {

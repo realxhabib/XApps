@@ -50,7 +50,7 @@ export function VotingOverlay({
           </p>
         </motion.div>
 
-        <div className={cn("mt-8 grid gap-4", !many ? "sm:grid-cols-2" : players.length === 4 ? "mx-auto max-w-2xl grid-cols-2 gap-3" : "grid-cols-2 gap-3 lg:grid-cols-3")}>
+        <div className={cn("mt-8 grid gap-4", !many ? "grid-cols-1 sm:grid-cols-2" : players.length === 4 ? "mx-auto max-w-2xl grid-cols-2 gap-3" : "grid-cols-2 gap-3 lg:grid-cols-3")}>
           {players.map((p, i) => {
             const count = match.votes[p.userId] ?? 0;
             const leading = count > 0 && count === best;

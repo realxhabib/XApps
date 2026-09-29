@@ -315,4 +315,75 @@ describe("createServerClient", () => {
     await expectCode(api.updateState(ID, () => 1), "invalid_state");
     expect(calls).toHaveLength(2);
   });
+
+  it("writes app storage, reports stats and unlocks achievements", async () => {
+    const { fetch, calls } = fakeFetch((call) => {
+      if (call.url.endsWith("/stats")) return Response.json({ values: { best: 12 } });
+      if (call.url.endsWith("/achievements")) return Response.json({ unlocked: true });
+      if (call.method === "DELETE") return new Response(null, { status: 204 });
+      return Response.json({ ok: true });
+    });
+    const api = createServerClient({ secret: SECRET_KEY, baseUrl: "https://xapps.test", fetch });
+    await api.storageSet("puzzle:2026-09-29", { grid: [1, 2, 3] });
+    await api.storageDelete("puzzle/old key");
+    await expect(api.reportStats("alice", { best: 12 })).resolves.toEqual({ best: 12 });
+    await expect(api.unlockAchievement("alice", "first_win")).resolves.toEqual({ unlocked: true });
+    expect(calls.map((c) => [c.method, c.url, c.body])).toEqual([
+      ["PUT", "https://xapps.test/api/v1/storage/puzzle%3A2026-09-29", { value: { grid: [1, 2, 3] } }],
+      ["DELETE", "https://xapps.test/api/v1/storage/puzzle%2Fold%20key", undefined],
+      ["POST", "https://xapps.test/api/v1/stats", { userId: "alice", values: { best: 12 } }],
+      ["POST", "https://xapps.test/api/v1/achievements", { userId: "alice", id: "first_win" }],
+    ]);
+    for (const c of calls) expect(c.headers.Authorization).toBe(`Bearer ${SECRET_KEY}`);
+    expect(calls[1]!.headers["Content-Type"]).toBeUndefined();
+  });
+
+  it("maps errors and validates the new methods locally", async () => {
+    const { fetch } = fakeFetch(() => Response.json({ error: { code: "forbidden", message: "Not your app" } }, { status: 403 }));
+    const api = createServerClient({ secret: SECRET_KEY, baseUrl: "https://xapps.test", fetch });
+    await expectCode(api.storageSet("k", 1), "forbidden");
+    await expectCode(api.unlockAchievement("alice", "gg"), "forbidden");
+
+    const local = fakeFetch(() => Response.json({}));
+    const checked = createServerClient({ secret: SECRET_KEY, baseUrl: "https://xapps.test", fetch: local.fetch });
+    await expectCode(checked.storageSet("", 1), "invalid_params");
+    await expectCode(checked.storageSet("k", "x".repeat(64 * 1024)), "invalid_params");
+    await expectCode(checked.storageSet("k", undefined as never), "invalid_params");
+    await expectCode(checked.storageDelete("x".repeat(65)), "invalid_params");
+    await expectCode(checked.reportStats("", { best: 1 }), "invalid_params");
+    await expectCode(checked.reportStats("alice", { best: Number.NaN }), "invalid_params");
+    await expectCode(checked.reportStats("alice", {}), "invalid_params");
+    await expectCode(checked.unlockAchievement("alice", "Not An Id"), "invalid_params");
+    expect(local.calls).toHaveLength(0);
+  });
+
+  it("tolerates a bare values object from POST /stats and non-boolean unlocked", async () => {
+    const { fetch } = fakeFetch((call) =>
+      call.url.endsWith("/stats") ? Response.json({ best: 3 }) : Response.json({ unlocked: "yes" }),
+    );
+    const api = createServerClient({ secret: SECRET_KEY, baseUrl: "https://xapps.test", fetch });
+    await expect(api.reportStats("alice", { best: 3 })).resolves.toEqual({ best: 3 });
+    await expect(api.unlockAchievement("alice", "gg")).resolves.toEqual({ unlocked: false });
+  });
+});
+
+describe("player webhook events", () => {
+  it("verifies achievement.unlocked events", async () => {
+    const unlocked = JSON.stringify({
+      id: "evt_a",
+      type: "achievement.unlocked",
+      createdAt: "2026-09-29T00:00:00Z",
+      app: { slug: "demo" },
+      match: null,
+      userId: "alice",
+      achievementId: "first_win",
+    });
+    const event = await verifyWebhook(unlocked, await signWebhook(unlocked, SECRET, NOW), SECRET, { now: NOW });
+    expect(event.type).toBe("achievement.unlocked");
+    if (event.type === "achievement.unlocked") {
+      expect(event.achievementId).toBe("first_win");
+      expect(event.userId).toBe("alice");
+      expect(event.match).toBeNull();
+    }
+  });
 });

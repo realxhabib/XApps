@@ -14,9 +14,17 @@ import { play } from "@/lib/sfx";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { useBackend, useViewer } from "@/platform/client";
-import { manifestShapeError } from "@/platform/catalog";
+import { achievementDefsError, manifestShapeError, statDefsError } from "@/platform/catalog";
 import { useRegisterApp } from "@/platform/queries";
 import { CATEGORIES, type AppCategory, type AppManifest, type PlayableMode, type Scoring } from "@/platform/types";
+import {
+  AchievementsEditor,
+  StatsEditor,
+  stripAchievementRows,
+  stripStatRows,
+  type AchievementRow,
+  type StatRow,
+} from "./progress-editors";
 import { SignInPrompt } from "./sign-in-prompt";
 
 const ICONS = ["🎯", "🧠", "🎨", "🎲", "🏁", "🪩", "🧩", "🎤", "🗳️", "🃏", "🏀", "👾"];
@@ -48,6 +56,9 @@ const schema = z.object({
   spectators: z.boolean(),
   turnBased: z.boolean(),
   setup: z.boolean(),
+  // Checked with the same rules as the database (statDefsError / achievementDefsError).
+  stats: z.array(z.custom<StatRow>()),
+  achievements: z.array(z.custom<AchievementRow>()),
 });
 
 type Form = z.infer<typeof schema>;
@@ -108,6 +119,8 @@ export function RegisterApp() {
     spectators: true,
     turnBased: false,
     setup: false,
+    stats: [],
+    achievements: [],
   });
 
   const set = <K extends keyof Form>(key: K, value: Form[K]) => {
@@ -149,9 +162,16 @@ export function RegisterApp() {
 
   const submit = async () => {
     const parsed = schema.safeParse(form);
-    const shape = parsed.success ? manifestShapeError(parsed.data) : null;
-    if (shape) {
-      setErrors({ players: shape });
+    const stats = stripStatRows(form.stats);
+    const achievements = stripAchievementRows(form.achievements);
+    const progressErrors: Errors = {};
+    const statsError = statDefsError(stats);
+    const achievementsError = achievementDefsError(achievements);
+    if (statsError) progressErrors.stats = statsError;
+    if (achievementsError) progressErrors.achievements = achievementsError;
+    const shape = parsed.success ? manifestShapeError({ ...parsed.data, stats: [], achievements: [] }) : null;
+    if (shape || statsError || achievementsError) {
+      setErrors({ ...(shape ? { players: shape } : {}), ...progressErrors });
       play("error");
       return;
     }
@@ -166,7 +186,7 @@ export function RegisterApp() {
       return;
     }
     try {
-      const app = await register.mutateAsync({ ...parsed.data, howTo: parsed.data.howTo.filter(Boolean) });
+      const app = await register.mutateAsync({ ...parsed.data, howTo: parsed.data.howTo.filter(Boolean), stats, achievements });
       setDone(app);
       play("win");
       celebrate({ pattern: "cannons", colors: [app.accent[0], app.accent[1], "#ffffff"] });
@@ -389,6 +409,9 @@ export function RegisterApp() {
               setErrors((e) => ({ ...e, players: undefined }));
             }}
           />
+
+          <StatsEditor value={form.stats} error={errors.stats} onChange={(rows) => set("stats", rows)} />
+          <AchievementsEditor value={form.achievements} error={errors.achievements} onChange={(rows) => set("achievements", rows)} />
 
           <div>
             <span className="text-sm font-semibold">How to play (up to 3 steps)</span>

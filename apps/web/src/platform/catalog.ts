@@ -1,4 +1,5 @@
-import type { AppManifest } from "./types";
+import { LIMITS } from "@xapps/sdk";
+import type { AchievementDef, AppManifest, StatDef } from "./types";
 
 const OFFICIAL_DEV = { id: null, handle: "xapps", name: "XApps Studio" };
 const LAUNCH = "2026-09-01T00:00:00.000Z";
@@ -249,6 +250,8 @@ export function withManifestDefaults(app: AppManifest): AppManifest {
     setup: app.setup ?? MANIFEST_DEFAULTS.setup,
     turnBased: app.turnBased ?? MANIFEST_DEFAULTS.turnBased,
     authority: app.authority ?? MANIFEST_DEFAULTS.authority,
+    stats: app.stats ?? [],
+    achievements: app.achievements ?? [],
   };
 }
 
@@ -258,6 +261,8 @@ export interface ManifestShape {
   spectators?: boolean;
   setup?: boolean;
   turnBased?: boolean;
+  stats?: StatDef[];
+  achievements?: AchievementDef[];
 }
 
 /**
@@ -273,7 +278,139 @@ export function manifestShapeError(shape: ManifestShape): string | null {
   const teams = shape.teams ?? 0;
   if (teams !== 0 && (!Number.isInteger(teams) || teams < 2 || teams > 4)) return "Teams must be 0 or 2–4";
   if (teams && max % teams !== 0) return "Max players must be a multiple of the team count";
+  return statDefsError(shape.stats) ?? achievementDefsError(shape.achievements);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Stats & achievements (Stage 3)                                         */
+/* ---------------------------------------------------------------------- */
+
+/** Stat keys and achievement ids. */
+export const DEF_ID_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
+export const STAT_AGGREGATES = ["max", "min", "sum", "last"] as const;
+export const STAT_FORMATS = ["number", "ms", "percent"] as const;
+export const DEF_LABEL_MAX = 40;
+export const ACHIEVEMENT_DESCRIPTION_MAX = 140;
+export const ACHIEVEMENT_XP_MAX = 100;
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** One emoji (a single grapheme with an emoji in it), e.g. "🏆", "👍🏽", "🇫🇷", "1️⃣". */
+export function isSingleEmoji(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const text = value.trim();
+  if (!text || text !== value || text.length > 16) return false;
+  if (!/\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3/u.test(text)) return false;
+  if (typeof Intl !== "undefined" && "Segmenter" in Intl) {
+    const graphemes = [...new Intl.Segmenter("en", { granularity: "grapheme" }).segment(text)];
+    return graphemes.length === 1;
+  }
+  return true;
+}
+
+/** Validates manifest `stats` (≤ 8; unique keys like `best_time`). Returns an error message, or null. */
+export function statDefsError(stats: unknown): string | null {
+  if (stats === undefined || stats === null) return null;
+  if (!Array.isArray(stats)) return "Stats must be a list";
+  if (stats.length > LIMITS.maxStats) return `Up to ${LIMITS.maxStats} stats`;
+  const keys = new Set<string>();
+  for (const [i, stat] of stats.entries()) {
+    const name = `Stat ${i + 1}`;
+    if (!isPlainObject(stat)) return `${name} is malformed`;
+    if (typeof stat.key !== "string" || !DEF_ID_PATTERN.test(stat.key)) {
+      return `${name}: the key must start with a letter and use a–z, 0–9 or _ (max 32)`;
+    }
+    if (keys.has(stat.key)) return `${name}: the key "${stat.key}" is used twice`;
+    keys.add(stat.key);
+    if (typeof stat.label !== "string" || !stat.label.trim() || stat.label.length > DEF_LABEL_MAX) {
+      return `${name}: the label must be 1–${DEF_LABEL_MAX} characters`;
+    }
+    if (!STAT_AGGREGATES.includes(stat.aggregate as never)) return `${name}: aggregate is max, min, sum or last`;
+    if (stat.format !== undefined && !STAT_FORMATS.includes(stat.format as never)) {
+      return `${name}: format is number, ms or percent`;
+    }
+  }
   return null;
+}
+
+/**
+ * Validates manifest `achievements` (≤ 30, unique ids, one emoji, 0–100 XP,
+ * ≤ 500 XP in total). `strictIcon: false` only checks the icon's length like
+ * the database does (1–16 characters).
+ */
+export function achievementDefsError(achievements: unknown, { strictIcon = true } = {}): string | null {
+  if (achievements === undefined || achievements === null) return null;
+  if (!Array.isArray(achievements)) return "Achievements must be a list";
+  if (achievements.length > LIMITS.maxAchievements) return `Up to ${LIMITS.maxAchievements} achievements`;
+  const ids = new Set<string>();
+  let total = 0;
+  for (const [i, a] of achievements.entries()) {
+    const name = `Achievement ${i + 1}`;
+    if (!isPlainObject(a)) return `${name} is malformed`;
+    if (typeof a.id !== "string" || !DEF_ID_PATTERN.test(a.id)) {
+      return `${name}: the id must start with a letter and use a–z, 0–9 or _ (max 32)`;
+    }
+    if (ids.has(a.id)) return `${name}: the id "${a.id}" is used twice`;
+    ids.add(a.id);
+    if (typeof a.name !== "string" || !a.name.trim() || a.name.length > DEF_LABEL_MAX) {
+      return `${name}: the name must be 1–${DEF_LABEL_MAX} characters`;
+    }
+    if (
+      a.description !== undefined &&
+      a.description !== null &&
+      (typeof a.description !== "string" || a.description.length > ACHIEVEMENT_DESCRIPTION_MAX)
+    ) {
+      return `${name}: the description must be at most ${ACHIEVEMENT_DESCRIPTION_MAX} characters`;
+    }
+    const iconOk = strictIcon
+      ? isSingleEmoji(a.icon)
+      : typeof a.icon === "string" && a.icon.trim().length > 0 && a.icon.length <= 16;
+    if (!iconOk) return `${name}: the icon must be one emoji`;
+    if (!Number.isInteger(a.xp) || (a.xp as number) < 0 || (a.xp as number) > ACHIEVEMENT_XP_MAX) {
+      return `${name}: XP must be a whole number from 0 to ${ACHIEVEMENT_XP_MAX}`;
+    }
+    if (a.secret !== undefined && typeof a.secret !== "boolean") return `${name}: secret must be true or false`;
+    total += a.xp as number;
+  }
+  if (total > LIMITS.maxAchievementXpPerApp) {
+    return `Achievements can award at most ${LIMITS.maxAchievementXpPerApp} XP in total (these add up to ${total})`;
+  }
+  return null;
+}
+
+/** Keeps the well-formed stat definitions of an untrusted list (e.g. an `apps.stats` row). */
+export function toStatDefs(raw: unknown): StatDef[] {
+  if (!Array.isArray(raw)) return [];
+  const out: StatDef[] = [];
+  for (const item of raw) {
+    if (!isPlainObject(item) || statDefsError([item])) continue;
+    if (out.some((s) => s.key === item.key)) continue;
+    const def: StatDef = { key: item.key as string, label: item.label as string, aggregate: item.aggregate as StatDef["aggregate"] };
+    if (item.format !== undefined) def.format = item.format as StatDef["format"];
+    out.push(def);
+  }
+  return out.slice(0, LIMITS.maxStats);
+}
+
+/** Keeps the well-formed achievement definitions of an untrusted list (e.g. an `apps.achievements` row). */
+export function toAchievementDefs(raw: unknown): AchievementDef[] {
+  if (!Array.isArray(raw)) return [];
+  const out: AchievementDef[] = [];
+  for (const item of raw) {
+    if (!isPlainObject(item) || achievementDefsError([item], { strictIcon: false })) continue;
+    if (out.some((a) => a.id === item.id)) continue;
+    const def: AchievementDef = {
+      id: item.id as string,
+      name: item.name as string,
+      description: typeof item.description === "string" ? item.description : "",
+      icon: item.icon as string,
+      xp: item.xp as number,
+    };
+    if (item.secret === true) def.secret = true;
+    out.push(def);
+  }
+  return out.slice(0, LIMITS.maxAchievements);
 }
 
 export function getOfficialApp(slug: string): AppManifest | undefined {

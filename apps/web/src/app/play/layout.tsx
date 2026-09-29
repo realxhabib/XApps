@@ -1,5 +1,6 @@
 import { Toaster } from "@/components/chrome/toasts";
 import { ConfettiLayer } from "@/components/motion/confetti";
+import { AchievementLayer } from "@/components/play/achievement-moment";
 import { PlatformProvider } from "@/platform/client";
 
 export default function PlayLayout({ children }: LayoutProps<"/play">) {
@@ -8,6 +9,7 @@ export default function PlayLayout({ children }: LayoutProps<"/play">) {
       {children}
       <Toaster />
       <ConfettiLayer />
+      <AchievementLayer />
     </PlatformProvider>
   );
 }

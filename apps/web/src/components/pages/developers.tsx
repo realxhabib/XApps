@@ -11,6 +11,8 @@ import {
   FlaskConical,
   Fingerprint,
   Gavel,
+  Film,
+  Medal,
   MonitorPlay,
   Plus,
   Layers,
@@ -46,6 +48,8 @@ const FEATURES = [
   { icon: Gavel, title: "Crowd judging", body: "Contest apps submit an entry and the Arena crowd votes. Ideal for creative formats." },
   { icon: MonitorPlay, title: "Host-rendered drama", body: "VS intro, countdown, HUD, emoji reactions, confetti and results screens come free." },
   { icon: ServerCog, title: "Your server as referee", body: "An app secret, a server API and signed webhooks. Declare server authority and only your backend can settle a match." },
+  { icon: Film, title: "Media entries", body: "Upload images, audio and video from your app. Entries can be clips, sounds or swipeable galleries — the Arena plays them all." },
+  { icon: Medal, title: "Stats & achievements", body: "Declare stats and get leaderboards on your listing. Unlock achievements with a host-rendered moment and XP on profiles." },
 ];
 
 const REACT_SNIPPET = `import { XAppsProvider, useXApps, useRoomEvent, useMatchStarted } from "@xapps/sdk/react";
@@ -97,11 +101,30 @@ const CONTEST_SNIPPET = `// Scoring "votes": no score — describe the entry the
 await xapps.submit({
   data: { caption, templateId },            // anything you want to keep
   display: {
-    kind: "svg",                            // or "text" / "image" (https)
+    kind: "svg",                            // or "text" / "image" / "video" / "audio" / "gallery"
     svg: renderMySvg(caption),              // self-contained SVG, shown via <img>
     alt: caption,
   },
 });`;
+
+const MEDIA_SNIPPET = `// A clip recorded in your app becomes the entry the Arena plays.
+const clip = await xapps.media.upload(recordedBlob, { alt: "My 10-second trick shot" });
+// → { url, kind: "video", mime, bytes, width, height, duration }
+
+await xapps.submit({
+  display: { kind: "video", url: clip.url, alt: "My 10-second trick shot" },
+  // audio:   { kind: "audio", url, alt, cover? }
+  // gallery: { kind: "gallery", items: [{ url, alt }, …] }   (2–6 uploaded images)
+});
+
+// Progression from your manifest's stats + achievements.
+await xapps.stats.report({ best_time: 8120, runs: 1 });   // max/min/sum/last per stat
+const { unlocked } = await xapps.achievements.unlock("first_clip");
+xapps.onAchievement(({ id, userId }) => cheer(userId, id)); // anyone in the match
+
+// Storage: private per player, or the app's public space your server writes.
+await xapps.storage.set("settings", { sfx: false });
+const puzzle = await xapps.storage.get("daily", { scope: "app" });`;
 
 const TURNS_SNIPPET = `import { connect } from "@xapps/sdk";
 
@@ -186,7 +209,36 @@ const API: { group: string; rows: [string, string][] }[] = [
       ["xapps.ui.setStatus(text) · setScores(map) · setTurn(id)", "Drive the host HUD above your app."],
       ["xapps.ui.toast(msg) · celebrate() · haptic(style)", "Host-rendered toasts, confetti and vibration."],
       ["xapps.social.share(text, url?)", "Opens the X composer, pre-filled. The user always confirms."],
-      ["xapps.storage.get(key) · set(key, value)", `Per-user, per-app key/value (≤ ${LIMITS.storageValueBytes / 1024} KB per value).`],
+    ],
+  },
+  {
+    group: "Media & entries",
+    rows: [
+      ["xapps.media.upload(blob, { alt? })", `→ MediaRef { url, kind, mime, bytes, width?, height?, duration? }. Images (JPEG/PNG/WebP/GIF) ≤ ${LIMITS.media.image.maxBytes / 1048576} MB, audio (MP3/M4A/Ogg/WebM/WAV) ≤ ${LIMITS.media.audio.maxBytes / 1048576} MB, video (MP4/WebM/MOV) ≤ ${LIMITS.media.video.maxBytes / 1048576} MB.`],
+      ["Quota", `${LIMITS.media.uploadsPerDay} uploads and ${LIMITS.media.bytesPerDay / 1048576} MB per player per app per rolling 24 h (error code rate_limited). Match and setup purposes; spectators can't upload.`],
+      ["display: { kind: \"video\", url, alt, poster? }", "Plays muted when in view and loops; tap for sound."],
+      ["display: { kind: \"audio\", url, alt, cover? }", "A compact waveform player with play/pause and seeking."],
+      ["display: { kind: \"gallery\", items: [{ url, alt }] }", `${LIMITS.galleryItems.min}–${LIMITS.galleryItems.max} images, swipeable with dots and arrow keys.`],
+      ["Allowed media URLs", "Only files from media.upload (our app-media storage). Other URLs, blob: and data: are refused in video/audio/gallery entries and meme drops."],
+    ],
+  },
+  {
+    group: "Storage",
+    rows: [
+      ["xapps.storage.get(key, { scope? }) · set(key, value)", `scope "user" (default) is private to the player: ≤ ${LIMITS.storageValueBytes / 1024} KB per value, ≤ ${LIMITS.storageKeysPerUser} keys per app.`],
+      ["xapps.storage.delete(key) · list({ prefix?, scope? })", "Remove a key; list keys (sorted), optionally by prefix."],
+      ["scope: \"app\"", "One public key/value space per app: every player reads it, only your server writes it (PUT /api/v1/storage/:key). Daily puzzles, config, seasons."],
+    ],
+  },
+  {
+    group: "Stats & achievements",
+    rows: [
+      ["xapps.stats.report({ [key]: number })", "Applies each stat's aggregate (max · min · sum · last) and resolves with the new values. Keys must be in your manifest."],
+      ["xapps.stats.defs · xapps.achievements.defs", "What your manifest declares, from the launch context."],
+      ["xapps.achievements.unlock(id)", "→ { unlocked } (false if the player already had it). XP is added to their profile once; the host shows the unlock moment."],
+      ["xapps.onAchievement(fn)", "achievement.unlock { id, userId } — the player, or someone else in a live match."],
+      ["Server authority", "Server-authoritative apps report stats and unlock achievements only from their server: POST /api/v1/stats · /api/v1/achievements."],
+      ["useStats() · useAchievements() · useMediaUpload()", "React hooks (@xapps/sdk/react)."],
     ],
   },
   {
@@ -227,6 +279,8 @@ const MANIFEST: [string, string][] = [
   ["setup", "You render your own challenge setup screen"],
   ["scoring", "high (bigger wins) · low (smaller wins) · votes (crowd decides)"],
   ["authority", "client (default) · server — set on your app's Server panel once it has a secret; not for votes apps"],
+  ["stats", `Up to ${LIMITS.maxStats}: { key, label, aggregate: max | min | sum | last, format?: number | ms | percent (0–100) }. Key like best_time`],
+  ["achievements", `Up to ${LIMITS.maxAchievements}: { id, name, description, icon (one emoji), xp (0–100), secret? }; at most ${LIMITS.maxAchievementXpPerApp} XP in total`],
   ["howTo", "Up to 3 short steps shown on your listing"],
 ];
 
@@ -339,8 +393,8 @@ function TrustSection() {
         >
           <h3 className="font-display text-lg font-extrabold">Server API</h3>
           <p className="mt-1 text-sm text-ink-300">
-            Send <code className="font-mono text-[13px] text-ink-100">Authorization: Bearer xas_…</code>. Every route returns the
-            match JSON with all submissions visible to your server.
+            Send <code className="font-mono text-[13px] text-ink-100">Authorization: Bearer xas_…</code>. Match routes return the
+            match JSON with all submissions visible to your server; storage, stats and achievements act for your app.
           </p>
           <div className="mt-4 space-y-2">
             {SERVER_ROUTES.map((route) => (
@@ -349,7 +403,13 @@ function TrustSection() {
                   <span
                     className={cn(
                       "rounded-md px-1.5 py-0.5 font-mono text-[11px] font-bold",
-                      route.method === "GET" ? "bg-success/15 text-success" : route.method === "PUT" ? "bg-gold/15 text-gold" : "bg-nova-500/20 text-nova-300",
+                      route.method === "GET"
+                        ? "bg-success/15 text-success"
+                        : route.method === "PUT"
+                          ? "bg-gold/15 text-gold"
+                          : route.method === "DELETE"
+                            ? "bg-danger/15 text-danger"
+                            : "bg-nova-500/20 text-nova-300",
                     )}
                   >
                     {route.method}
@@ -425,7 +485,7 @@ function TrustSection() {
 }
 
 export function Developers() {
-  const [tab, setTab] = useState<"react" | "vanilla" | "contest" | "turns">("react");
+  const [tab, setTab] = useState<"react" | "vanilla" | "contest" | "turns" | "media">("react");
   return (
     <div>
       <section className="grid grid-cols-1 items-center gap-10 lg:grid-cols-[1.1fr_1fr]">
@@ -484,12 +544,23 @@ export function Developers() {
             { id: "vanilla", label: "No build" },
             { id: "contest", label: "Contest entry" },
             { id: "turns", label: "Turn-based" },
+            { id: "media", label: "Media & stats" },
           ]}
         />
         <motion.div key={tab} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={spring.snappy} className="mt-4">
           <CodeBlock
-            filename={tab === "react" ? "App.tsx" : tab === "vanilla" ? "index.html" : tab === "turns" ? "game.ts" : "submit.ts"}
-            code={tab === "react" ? REACT_SNIPPET : tab === "vanilla" ? VANILLA_SNIPPET : tab === "turns" ? TURNS_SNIPPET : CONTEST_SNIPPET}
+            filename={tab === "react" ? "App.tsx" : tab === "vanilla" ? "index.html" : tab === "turns" ? "game.ts" : tab === "media" ? "clip.ts" : "submit.ts"}
+            code={
+              tab === "react"
+                ? REACT_SNIPPET
+                : tab === "vanilla"
+                  ? VANILLA_SNIPPET
+                  : tab === "turns"
+                    ? TURNS_SNIPPET
+                    : tab === "media"
+                      ? MEDIA_SNIPPET
+                      : CONTEST_SNIPPET
+            }
           />
         </motion.div>
         <p className="mt-3 text-sm text-ink-400">

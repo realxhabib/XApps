@@ -10,7 +10,9 @@ import { haptic } from "@/lib/haptics";
 import { play } from "@/lib/sfx";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
+import { BackendError } from "@/platform/backend";
 import { useBackend } from "@/platform/client";
+import { launchApp } from "@/platform/match-utils";
 import type { AppManifest, PlayableMode, Profile } from "@/platform/types";
 import { AppGlyph } from "./app-glyph";
 
@@ -82,7 +84,7 @@ export function AppSetupFrame({
     const people = [viewer, ...rivals];
     return {
       purpose: "setup",
-      app: { id: app.slug, slug: app.slug, name: app.name },
+      app: launchApp(app),
       user: { id: viewer.id, handle: viewer.handle, name: viewer.name, avatarUrl: viewer.avatarUrl },
       match: {
         id: "setup",
@@ -106,6 +108,14 @@ export function AppSetupFrame({
       host: { name: "XApps", version: SDK_VERSION, origin: window.location.origin },
       locale: navigator.language,
     };
+  };
+
+  const rethrow = (error: unknown): never => {
+    if (error instanceof BackendError) {
+      const code = error.code === "rate_limited" ? "rate_limited" : error.code === "invalid" ? "invalid_params" : error.code === "forbidden" || error.code === "unauthenticated" ? "forbidden" : "internal";
+      throw new XAppsError(code, error.message);
+    }
+    throw error;
   };
 
   const notHere = (method: string) => () => {
@@ -144,11 +154,27 @@ export function AppSetupFrame({
     "ui.scores": () => null,
     "ui.turn": () => null,
     "ui.celebrate": () => null,
-    "storage.get": ({ key }) => backend.storageGet(app.slug, key),
+    "storage.get": ({ key, scope }) => backend.storageGet(app.slug, key, scope ?? "user").catch(rethrow),
     "storage.set": async ({ key, value }) => {
-      await backend.storageSet(app.slug, key, value);
+      await backend.storageSet(app.slug, key, value).catch(rethrow);
       return null;
     },
+    "storage.delete": async ({ key }) => {
+      await backend.storageDelete(app.slug, key).catch(rethrow);
+      return null;
+    },
+    "storage.list": ({ prefix, scope }) => backend.storageList(app.slug, prefix, scope ?? "user").catch(rethrow),
+    // Setup screens upload drops (e.g. Meme Duel's image) before the match exists.
+    "media.upload": async ({ file }) => {
+      try {
+        return await backend.uploadMedia(app.slug, file);
+      } catch (error) {
+        toast(error instanceof Error ? error.message : "Upload failed", { tone: "danger" });
+        return rethrow(error);
+      }
+    },
+    "stats.report": notHere("stats.report"),
+    "achievements.unlock": notHere("achievements.unlock"),
     "room.send": notHere("room.send"),
     "match.submit": notHere("match.submit"),
     "match.forfeit": notHere("match.forfeit"),

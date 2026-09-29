@@ -10,6 +10,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EntryView } from "@/components/arena/entry-view";
 import { APP_SANDBOX } from "@/components/play/use-app-bridge";
 import { toast } from "@/components/chrome/toasts";
+import { showAchievement } from "@/components/play/achievement-moment";
+import { absoluteMediaUrl, baseMime, mediaKindOf, postDemoMedia, probeMedia } from "@/lib/media";
 import { celebrate } from "@/components/motion/confetti";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -91,6 +93,7 @@ export function Sandbox() {
   const startedAt = useRef<number | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const storage = useRef(new Map<string, Json>());
+  const unlocked = useRef(new Set<string>());
   // Sources of truth for protocol handlers, which can fire back-to-back
   // before React re-renders (both seats saying ready at once, for example).
   const readyRef = useRef<boolean[]>([false, false]);
@@ -251,10 +254,48 @@ export function Sandbox() {
           toast("Would open the X composer", { description: text.slice(0, 100) });
           return null;
         },
-        "storage.get": ({ key }) => storage.current.get(`${me.id}:${key}`) ?? null,
+        "storage.get": ({ key, scope }) => storage.current.get(`${scope === "app" ? "app" : me.id}:${key}`) ?? null,
         "storage.set": ({ key, value }) => {
           storage.current.set(`${me.id}:${key}`, value);
           return null;
+        },
+        "storage.delete": ({ key }) => {
+          storage.current.delete(`${me.id}:${key}`);
+          return null;
+        },
+        "storage.list": ({ prefix, scope }) => {
+          const base = `${scope === "app" ? "app" : me.id}:`;
+          return [...storage.current.keys()]
+            .filter((k) => k.startsWith(base))
+            .map((k) => k.slice(base.length))
+            .filter((k) => !prefix || k.startsWith(prefix))
+            .sort();
+        },
+        // Demo mode keeps uploads in the dev server's memory; elsewhere a local blob: URL
+        // (fine for the app itself, but the host only renders uploaded media in entries).
+        "media.upload": async ({ file }) => {
+          const mime = baseMime(file.type);
+          const kind = mediaKindOf(mime)!;
+          const meta = await probeMedia(file, kind);
+          let url: string;
+          try {
+            url = absoluteMediaUrl((await postDemoMedia(file)).url);
+          } catch {
+            url = URL.createObjectURL(file);
+          }
+          return { url, kind, mime, bytes: file.size, ...meta };
+        },
+        "stats.report": ({ values }) => {
+          append({ seat, kind: "info", name: "stats (not stored in the sandbox)", detail: preview(values) });
+          return values;
+        },
+        "achievements.unlock": ({ id }) => {
+          const key = `${me.id}:achievement:${id}`;
+          if (unlocked.current.has(key)) return { unlocked: false };
+          unlocked.current.add(key);
+          showAchievement({ icon: "🏆", name: id, xp: 0, appName: "Sandbox", accent: ["#5b74ff", "#a35cff"], by: seat === 0 ? null : me.handle });
+          for (let i = 0; i < humanSeats; i++) emit(i, "achievement.unlock", { id, userId: me.id });
+          return { unlocked: true };
         },
         "state.get": () => ({ state: shared.current.state, version: shared.current.version }),
         "state.set": ({ state, expectedVersion }) => {
@@ -330,6 +371,7 @@ export function Sandbox() {
     setResult(null);
     setLog([]);
     storage.current.clear();
+    unlocked.current.clear();
     setRun({ url, scoring, mode, seed: randomId(12), key: Date.now() });
   };
 

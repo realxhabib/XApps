@@ -55,6 +55,45 @@ export function useLeaderboard(appSlug?: string) {
   return useQuery({ queryKey: ["leaderboard", appSlug ?? "all"], queryFn: () => backend.leaderboard(appSlug) });
 }
 
+/** One stat's leaderboard for an app (Stage 3). */
+export function useStatLeaderboard(appSlug: string, key: string | null) {
+  const backend = useBackend();
+  return useQuery({
+    queryKey: ["stat-leaderboard", appSlug, key],
+    queryFn: () => backend.statLeaderboard(appSlug, key as string),
+    enabled: !!appSlug && !!key,
+    staleTime: 15_000,
+  });
+}
+
+/** A player's stats across apps. */
+export function useUserStats(userId: string | undefined) {
+  const backend = useBackend();
+  return useQuery({
+    queryKey: ["user-stats", userId],
+    queryFn: () => backend.userStats(userId as string),
+    enabled: !!userId,
+  });
+}
+
+/** A player's unlocked achievements across apps (newest first). */
+export function useUserAchievements(userId: string | undefined) {
+  const backend = useBackend();
+  return useQuery({
+    queryKey: ["user-achievements", userId],
+    queryFn: () => backend.userAchievements(userId as string),
+    enabled: !!userId,
+  });
+}
+
+/** After stats or achievements change: refresh boards, profiles and XP. */
+export function invalidateProgress(queryClient: QueryClient, appSlug: string): void {
+  void queryClient.invalidateQueries({ queryKey: ["stat-leaderboard", appSlug] });
+  void queryClient.invalidateQueries({ queryKey: ["user-stats"] });
+  void queryClient.invalidateQueries({ queryKey: ["user-achievements"] });
+  void queryClient.invalidateQueries({ queryKey: ["profile"] });
+}
+
 /** A single match, kept live through the backend's realtime feed. */
 export function useMatch(matchId: string) {
   const backend = useBackend();

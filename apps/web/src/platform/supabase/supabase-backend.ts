@@ -1,5 +1,8 @@
 import type { PostgrestError, SupabaseClient } from "@supabase/supabase-js";
+import { LIMITS } from "@xapps/sdk";
+import { isBlobLike } from "@xapps/sdk/host";
 import { env } from "@/lib/env";
+import { APP_MEDIA_BUCKET, baseMime, displayProblem, mediaExtension, mediaKindOf, mediaProblem, probeMedia } from "@/lib/media";
 import { BackendError, type Backend, type RoomTransport } from "../backend";
 import { OFFICIAL_APPS, getOfficialApp, manifestShapeError, withManifestDefaults } from "../catalog";
 import type {
@@ -10,18 +13,30 @@ import type {
   Json,
   LeaderRow,
   Match,
+  MediaRef,
   Profile,
   RegisterAppInput,
+  StatLeaderRow,
+  StorageScope,
   SubmitInput,
+  UserAchievement,
+  UserStat,
   WebhookDelivery,
 } from "../types";
 import { getBrowserSupabase } from "./client";
 import {
   appInsert,
   challengeArgs,
+  isSchemaMissing,
   normalizeMatch,
   toApp,
   toBackendError,
+  toStatLeaderRows,
+  toStatValues,
+  toStorageKeys,
+  toUnlocked,
+  toUserAchievements,
+  toUserStats,
   toSecret,
   toServerConfig,
   toWebhookDeliveries,
@@ -404,7 +419,9 @@ export class SupabaseBackend implements Backend {
     return this.rpcThenGet("forfeit_match", matchId);
   }
 
-  submit(matchId: string, input: SubmitInput): Promise<Match> {
+  async submit(matchId: string, input: SubmitInput): Promise<Match> {
+    const mediaError = displayProblem(input.display);
+    if (mediaError) throw new BackendError(mediaError, "invalid");
     return this.rpcThenGet("submit_entry", matchId, {
       p_player: input.playerId ?? null,
       p_score: typeof input.score === "number" ? input.score : null,
@@ -500,22 +517,108 @@ export class SupabaseBackend implements Backend {
   /* Storage                                                          */
   /* ---------------------------------------------------------------- */
 
-  async storageGet(appSlug: string, key: string): Promise<Json | null> {
+  private async rpc(fn: string, args: Record<string, unknown>): Promise<unknown> {
+    const { data, error } = await this.sb.rpc(fn, args);
+    if (error) fail(error);
+    return data;
+  }
+
+  async storageGet(appSlug: string, key: string, scope: StorageScope = "user"): Promise<Json | null> {
+    const { data, error } = await this.sb.rpc("storage_get", { p_app: appSlug, p_key: key, p_scope: scope });
+    if (!error) return (data ?? null) as Json | null;
+    // Before the media & data migration: read the v1 table directly (user scope only).
+    if (!isSchemaMissing(error.code) || scope !== "user") fail(error);
     const id = await this.requireUserId();
-    const { data, error } = await this.sb
+    const legacy = await this.sb
       .from("app_storage")
       .select("value")
       .match({ app_slug: appSlug, user_id: id, key })
       .maybeSingle<{ value: Json }>();
-    if (error) fail(error);
-    return data?.value ?? null;
+    if (legacy.error) fail(legacy.error);
+    return legacy.data?.value ?? null;
   }
 
   async storageSet(appSlug: string, key: string, value: Json): Promise<void> {
     const id = await this.requireUserId();
-    const { error } = await this.sb
+    const { error } = await this.sb.rpc("storage_set", { p_app: appSlug, p_key: key, p_value: value });
+    if (!error) return;
+    if (!isSchemaMissing(error.code)) fail(error);
+    const legacy = await this.sb
       .from("app_storage")
       .upsert({ app_slug: appSlug, user_id: id, key, value, updated_at: new Date().toISOString() });
-    if (error) fail(error);
+    if (legacy.error) fail(legacy.error);
+  }
+
+  async storageDelete(appSlug: string, key: string): Promise<void> {
+    await this.requireUserId();
+    await this.rpc("storage_delete", { p_app: appSlug, p_key: key });
+  }
+
+  async storageList(appSlug: string, prefix?: string, scope: StorageScope = "user"): Promise<string[]> {
+    return toStorageKeys(await this.rpc("storage_list", { p_app: appSlug, p_prefix: prefix || null, p_scope: scope }));
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Media, stats & achievements (Stage 3)                            */
+  /* ---------------------------------------------------------------- */
+
+  async uploadMedia(appSlug: string, file: Blob): Promise<MediaRef> {
+    const userId = await this.requireUserId();
+    if (!isBlobLike(file)) throw new BackendError("Upload a file", "invalid");
+    const mime = baseMime(file.type);
+    const problem = mediaProblem(mime, file.size);
+    if (problem) throw new BackendError(problem, "invalid");
+    const kind = mediaKindOf(mime)!;
+    const path = `${appSlug}/${userId}/${crypto.randomUUID()}.${mediaExtension(mime)}`;
+    const bucket = this.sb.storage.from(APP_MEDIA_BUCKET);
+
+    const [upload, meta] = await Promise.all([
+      bucket.upload(path, file, { contentType: mime, cacheControl: "31536000", upsert: false }),
+      probeMedia(file, kind),
+    ]);
+    if (upload.error) {
+      const message = upload.error.message;
+      if (/bucket not found/i.test(message)) {
+        throw new BackendError("Media uploads need the latest database migration (supabase/migrations).", "setup_required");
+      }
+      // The insert policy refuses over-quota uploads (media_quota_ok).
+      if (/row-level security|violates|unauthorized|403/i.test(message)) {
+        throw new BackendError(
+          `Upload limit reached: ${LIMITS.media.uploadsPerDay} files or ${LIMITS.media.bytesPerDay / (1024 * 1024)} MB per app per day`,
+          "rate_limited",
+        );
+      }
+      if (/payload too large|exceeded the maximum/i.test(message)) throw new BackendError("That file is too large", "invalid");
+      throw new BackendError(message, "internal");
+    }
+    const recorded = await this.sb.rpc("record_media_upload", { p_app: appSlug, p_path: path, p_bytes: file.size, p_mime: mime });
+    if (recorded.error) {
+      // Don't leave an unrecorded object behind.
+      await bucket.remove([path]).catch(() => undefined);
+      fail(recorded.error);
+    }
+    return { url: bucket.getPublicUrl(path).data.publicUrl, kind, mime, bytes: file.size, ...meta };
+  }
+
+  async reportStats(appSlug: string, values: { [key: string]: number }): Promise<{ [key: string]: number }> {
+    await this.requireUserId();
+    return toStatValues(await this.rpc("report_stats", { p_app: appSlug, p_values: values }));
+  }
+
+  async statLeaderboard(appSlug: string, key: string): Promise<StatLeaderRow[]> {
+    return toStatLeaderRows(await this.rpc("app_stat_leaderboard", { p_app: appSlug, p_key: key, p_limit: 50 }));
+  }
+
+  async userStats(userId: string): Promise<UserStat[]> {
+    return toUserStats(await this.rpc("user_stats", { p_user: userId }));
+  }
+
+  async unlockAchievement(appSlug: string, id: string): Promise<{ unlocked: boolean }> {
+    await this.requireUserId();
+    return toUnlocked(await this.rpc("unlock_achievement", { p_app: appSlug, p_id: id }));
+  }
+
+  async userAchievements(userId: string): Promise<UserAchievement[]> {
+    return toUserAchievements(await this.rpc("list_user_achievements", { p_user: userId }));
   }
 }

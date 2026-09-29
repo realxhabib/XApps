@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { connect, resetConnection } from "../src/client";
 import { createMockHost, type MockHostOptions } from "../src/mock-host";
-import type { MatchResult } from "../src/protocol";
+import { LIMITS, type AchievementDef, type MatchResult, type StatDef } from "../src/protocol";
 
 afterEach(() => resetConnection());
 
@@ -165,6 +165,156 @@ describe("mock host (v2 matches)", () => {
       expect(mock.context.purpose).toBe("setup");
       expect(mock.context.match.settings).toEqual({ theme: "space" });
       expect(mock.context.match.players).toHaveLength(3);
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
+  });
+});
+
+describe("mock host (media & data)", () => {
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const stats: StatDef[] = [
+    { key: "best", label: "Best", aggregate: "max" },
+    { key: "fastest", label: "Fastest", aggregate: "min", format: "ms" },
+    { key: "total", label: "Total", aggregate: "sum" },
+    { key: "latest", label: "Latest", aggregate: "last" },
+  ];
+  const achievements: AchievementDef[] = [{ id: "first_win", name: "First win", description: "Win once", icon: "🏆", xp: 10 }];
+
+  async function mockClient(options: MockHostOptions = {}) {
+    const mock = createMockHost({ quiet: true, startDelayMs: 0, readUrl: false, stats, achievements, ...options });
+    const client = await connect({ transport: mock.transport, timeoutMs: 1000 });
+    return { mock, client };
+  }
+
+  afterEach(() => {
+    localStorage.clear();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("uploads to an object URL with the image size", async () => {
+    const createObjectURL = vi.fn(() => "blob:http://localhost/abc");
+    const original = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
+    Object.defineProperty(URL, "createObjectURL", { value: createObjectURL, configurable: true, writable: true });
+    onTestFinished(() => {
+      if (original) Object.defineProperty(URL, "createObjectURL", original);
+      else delete (URL as { createObjectURL?: unknown }).createObjectURL;
+    });
+    const close = vi.fn();
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 64, height: 48, close })));
+    const { client, mock } = await mockClient();
+    const file = new Blob([new Uint8Array(10)], { type: "image/png" });
+    const ref = await client.media.upload(file, { alt: "dot" });
+    expect(ref).toEqual({ url: "blob:http://localhost/abc", kind: "image", mime: "image/png", bytes: 10, width: 64, height: 48 });
+    expect(createObjectURL).toHaveBeenCalledWith(file);
+    expect(close).toHaveBeenCalled();
+    expect(mock.uploads).toMatchObject([{ url: ref.url, alt: "dot", file }]);
+    // ...and the upload can go straight into an entry.
+    const submitted = await client.submit({ display: { kind: "image", url: ref.url, alt: "dot" } });
+    expect(submitted.state).toBe("waiting");
+  });
+
+  it("uploads audio/video without metadata where the environment can't decode it", async () => {
+    const { client } = await mockClient();
+    const ref = await client.media.upload(new Blob(["clip"], { type: "video/webm;codecs=vp8" }));
+    expect(ref).toMatchObject({ kind: "video", mime: "video/webm", bytes: 4 });
+    expect(ref.url).toMatch(/^blob:/);
+    expect(ref.duration).toBeUndefined();
+    await client.submit({ display: { kind: "video", url: ref.url, alt: "My clip" } });
+  });
+
+  it("enforces the daily upload count", async () => {
+    const { client } = await mockClient({ probeMedia: false });
+    const file = new Blob(["x"], { type: "image/gif" });
+    for (let i = 0; i < LIMITS.media.uploadsPerDay; i++) await client.media.upload(file);
+    await expect(client.media.upload(file)).rejects.toMatchObject({ code: "rate_limited" });
+  });
+
+  it("keeps user storage in localStorage and a read-only, seeded app scope", async () => {
+    const { client, mock } = await mockClient({ appStorage: { "puzzle:today": { grid: [1, 2] }, config: { hard: true } } });
+    await client.storage.set("save:1", { level: 2 });
+    await client.storage.set("save:2", { level: 5 });
+    await client.storage.set("prefs", { sound: false });
+    await expect(client.storage.get("save:1")).resolves.toEqual({ level: 2 });
+    await expect(client.storage.list({ prefix: "save:" })).resolves.toEqual(["save:1", "save:2"]);
+    await client.storage.delete("save:1");
+    await expect(client.storage.get("save:1")).resolves.toBeNull();
+    await expect(client.storage.list()).resolves.toEqual(["prefs", "save:2"]);
+
+    await expect(client.storage.get("puzzle:today", { scope: "app" })).resolves.toEqual({ grid: [1, 2] });
+    await expect(client.storage.get("prefs", { scope: "app" })).resolves.toBeNull();
+    await expect(client.storage.list({ scope: "app" })).resolves.toEqual(["config", "puzzle:today"]);
+    await expect(client.request("storage.set", { key: "config", value: 1, scope: "app" } as never)).rejects.toMatchObject({
+      code: "invalid_params",
+    });
+    mock.setAppStorage("season", 3);
+    await expect(client.storage.get("season", { scope: "app" })).resolves.toBe(3);
+  });
+
+  it("caps user storage at storageKeysPerUser keys", async () => {
+    const { client } = await mockClient();
+    for (let i = 0; i < LIMITS.storageKeysPerUser; i++) localStorage.setItem(`xapps-mock:k${i}`, "1");
+    await expect(client.storage.set("one_more", 1)).rejects.toMatchObject({ code: "invalid_params" });
+    await expect(client.storage.set("k0", 2)).resolves.toBeNull(); // overwriting is fine
+  });
+
+  it("aggregates stats per declared def", async () => {
+    const { client, mock } = await mockClient();
+    expect(client.stats.defs.map((d) => d.key)).toEqual(["best", "fastest", "total", "latest"]);
+    await expect(client.stats.report({ best: 5, fastest: 900, total: 2, latest: 7 })).resolves.toEqual({
+      best: 5,
+      fastest: 900,
+      total: 2,
+      latest: 7,
+    });
+    await expect(client.stats.report({ best: 3, fastest: 1200, total: 3, latest: 1 })).resolves.toEqual({
+      best: 5,
+      fastest: 900,
+      total: 5,
+      latest: 1,
+    });
+    expect(mock.stats).toEqual({ best: 5, fastest: 900, total: 5, latest: 1 });
+    await expect(client.stats.report({ nope: 1 })).rejects.toMatchObject({ code: "invalid_params" });
+  });
+
+  it("unlocks achievements once, emits achievement.unlock and shows a banner", async () => {
+    const { client, mock } = await mockClient();
+    const events: string[] = [];
+    client.onAchievement(({ id, userId }, def) => events.push(`${id}:${userId}:${def?.icon}`));
+    await expect(client.achievements.unlock("first_win")).resolves.toEqual({ unlocked: true });
+    await expect(client.achievements.unlock("first_win")).resolves.toEqual({ unlocked: false });
+    await tick();
+    expect(events).toEqual(["first_win:you:🏆"]);
+    expect(mock.achievements.has("first_win")).toBe(true);
+    expect(client.achievements.unlocked.has("first_win")).toBe(true);
+    const banner = document.getElementById("xapps-mock-achievement");
+    expect(banner?.textContent).toContain("First win");
+    expect(banner?.textContent).toContain("+10 XP");
+    banner?.remove();
+    await expect(client.achievements.unlock("undeclared")).rejects.toMatchObject({ code: "invalid_params" });
+  });
+
+  it("refuses stats and achievements in setup purpose and for spectators", async () => {
+    const setup = await mockClient({ purpose: "setup", banner: false });
+    await expect(setup.client.stats.report({ best: 1 })).rejects.toMatchObject({ code: "forbidden" });
+    await expect(setup.client.achievements.unlock("first_win")).rejects.toMatchObject({ code: "forbidden" });
+    const file = new Blob(["x"], { type: "image/png" });
+    await expect(setup.client.media.upload(file)).resolves.toMatchObject({ kind: "image" });
+    resetConnection();
+    const watching = await mockClient({ role: "spectator" });
+    await expect(watching.client.media.upload(file)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(watching.client.storage.set("k", 1)).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("reads ?xapps-stats / ?xapps-achievements from the URL", async () => {
+    const s = encodeURIComponent(JSON.stringify([{ key: "best", aggregate: "max" }, { nope: true }]));
+    const a = encodeURIComponent(JSON.stringify([{ id: "gg" }]));
+    window.history.replaceState(null, "", `/?xapps-stats=${s}&xapps-achievements=${a}`);
+    try {
+      const mock = createMockHost({ quiet: true });
+      expect(mock.context.app.stats).toEqual([{ key: "best", label: "best", aggregate: "max" }]);
+      expect(mock.context.app.achievements).toEqual([{ id: "gg", name: "gg", description: "", icon: "🏆", xp: 0 }]);
     } finally {
       window.history.replaceState(null, "", "/");
     }

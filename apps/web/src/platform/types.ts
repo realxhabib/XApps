@@ -1,5 +1,9 @@
 import type {
+  AchievementDef,
   Json,
+  MediaRef,
+  StatDef,
+  StorageScope,
   MatchMode,
   MatchStatus,
   PlayerRole,
@@ -7,7 +11,7 @@ import type {
   SubmissionDisplay,
 } from "@xapps/sdk";
 
-export type { Json, MatchMode, MatchStatus, PlayerRole, Scoring, SubmissionDisplay };
+export type { AchievementDef, Json, MatchMode, MatchStatus, MediaRef, PlayerRole, Scoring, StatDef, StorageScope, SubmissionDisplay };
 
 export type AppCategory = "games" | "contests" | "debates" | "trivia" | "creative" | "social";
 
@@ -72,6 +76,10 @@ export interface AppManifest {
   turnBased?: boolean;
   /** Who settles matches: players' clients (default) or the app's server via the server API. */
   authority?: AppAuthority;
+  /** Per-player stats with leaderboards (Stage 3). */
+  stats?: StatDef[];
+  /** Achievements the app can unlock (Stage 3). */
+  achievements?: AchievementDef[];
   scoring: Scoring;
   /** For `votes` scoring: votes needed to decide a match. */
   votesToWin?: number;
@@ -211,6 +219,10 @@ export interface RegisterAppInput {
   setup?: boolean;
   /** Players take turns (default false). */
   turnBased?: boolean;
+  /** Per-player stats with leaderboards (≤ 8). */
+  stats?: StatDef[];
+  /** Achievements the app can unlock (≤ 30, ≤ 500 XP in total). */
+  achievements?: AchievementDef[];
 }
 
 export interface SubmitInput {
@@ -218,4 +230,23 @@ export interface SubmitInput {
   score?: number;
   data?: Json;
   display?: SubmissionDisplay;
+}
+
+export interface StatLeaderRow {
+  rank: number;
+  profile: Profile;
+  value: number;
+}
+
+export interface UserStat {
+  appSlug: string;
+  key: string;
+  value: number;
+  updatedAt: string;
+}
+
+export interface UserAchievement {
+  appSlug: string;
+  achievementId: string;
+  unlockedAt: string;
 }

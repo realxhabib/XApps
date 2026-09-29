@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Match, Profile } from "../types";
+import type { Match, Profile, RegisterAppInput, StatDef } from "../types";
 import {
   appInsert,
   challengeArgs,
@@ -11,6 +11,12 @@ import {
   toServerConfig,
   toWebhookDeliveries,
   type AppRow,
+  toStatLeaderRows,
+  toStatValues,
+  toStorageKeys,
+  toUnlocked,
+  toUserAchievements,
+  toUserStats,
 } from "./mapping";
 
 const profile = (id: string): Profile => ({
@@ -237,5 +243,37 @@ describe("stage 2 mapping", () => {
     expect(toSecret({ secret: "whsec_1" })).toBe("whsec_1");
     expect(toSecret([{ rotate_app_secret: "xas_2" }])).toBe("xas_2");
     expect(toSecret(null)).toBeNull();
+  });
+});
+
+describe("Stage 3 mapping", () => {
+  const stat = { key: "best_time", label: "Best time", aggregate: "min", format: "ms" };
+  const achievement = { id: "first_win", name: "First win", description: "Win", icon: "🏆", xp: 25, secret: true };
+
+  it("maps apps.stats / apps.achievements, dropping malformed entries", () => {
+    const app = toApp({ ...appRow, stats: [stat, { key: "Bad" }], achievements: [achievement, { id: "x", name: "", icon: "", xp: 500 }] });
+    expect(app.stats).toEqual([stat]);
+    expect(app.achievements).toEqual([achievement]);
+    expect(toApp(appRow).stats).toEqual([]);
+    const input = { ...appRow, accent: ["#000", "#fff"], howTo: [] } as unknown as RegisterAppInput;
+    expect(appInsert({ ...input, stats: [stat as StatDef], achievements: [] })).toMatchObject({ stats: [stat] });
+    expect(appInsert(input)).not.toHaveProperty("stats");
+  });
+
+  it("maps leaderboard rows, user stats and achievements", () => {
+    const profile = { id: "u1", handle: "ada", name: "Ada", avatarUrl: null, bio: "", xp: 5, wins: 1, losses: 0, draws: 0, streak: 1, bestStreak: 1, createdAt: "2026-01-01T00:00:00Z", isBot: false };
+    expect(toStatLeaderRows([{ rank: 1, profile, value: 812 }, { rank: 2, profile: null, value: 1 }])).toEqual([{ rank: 1, profile, value: 812 }]);
+    expect(toStatLeaderRows([{ rank: "2", profile: { ...profile, avatar_url: "x", avatarUrl: undefined }, value: "3.5" }])[0]).toMatchObject({ rank: 2, value: 3.5 });
+    expect(toUserStats([{ appSlug: "a", key: "k", value: 2, updatedAt: "t" }, { key: "k" }])).toEqual([{ appSlug: "a", key: "k", value: 2, updatedAt: "t" }]);
+    expect(toUserAchievements([{ appSlug: "a", achievementId: "x", unlockedAt: "t" }])).toEqual([{ appSlug: "a", achievementId: "x", unlockedAt: "t" }]);
+    expect(toStatValues({ runs: 3, bad: "x" })).toEqual({ runs: 3 });
+    expect(toUnlocked({ unlocked: true })).toEqual({ unlocked: true });
+    expect(toUnlocked(false)).toEqual({ unlocked: false });
+    expect(toStorageKeys(["b", "a", "a"])).toEqual(["a", "b"]);
+  });
+
+  it("maps limits (54000) to rate_limited", () => {
+    expect(errorKind("54000", "Too many stat reports — slow down")).toBe("rate_limited");
+    expect(toBackendError({ code: "54000", message: "Storage is full (200 keys)" }).code).toBe("rate_limited");
   });
 });

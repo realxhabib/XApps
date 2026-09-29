@@ -1,12 +1,14 @@
 # @xapps/sdk
 
-Build multiplayer apps for **XApps**, the social app marketplace on X: 1v1 duels, 2–8 player tables, team games, turn-based games that last days, and games with their own challenge setup. The SDK is a small bridge (~32 KB minified / ~11 KB gzipped including the standalone mock host, zero dependencies) between your app, running in a sandboxed iframe, and the XApps host. The host gives your app:
+Build multiplayer apps for **XApps**, the social app marketplace on X: 1v1 duels, 2–8 player tables, team games, turn-based games that last days, and games with their own challenge setup. The SDK is a small bridge (~44 KB minified / ~15 KB gzipped including the standalone mock host, zero dependencies) between your app, running in a sandboxed iframe, and the XApps host. The host gives your app:
 
 - **Identity**: every player is signed in with X (`handle`, `name`, `avatarUrl`).
 - **Realtime rooms**: `room.send` / `room.on`, plus presence.
 - **Shared match state**: one versioned JSON document per match that persists, with turns and rounds.
 - **Matches and results**: submit a score or an entry, and the platform settles the match, awards XP and updates leaderboards.
 - **Crowd judging**: with `votes` scoring, the Arena crowd picks the winner.
+- **Media**: upload images, audio and video clips, and submit them as entries.
+- **Progression**: key/value storage (per player and per app), custom stats with leaderboards, and achievements.
 - **Host UI**: VS intro, countdown, HUD, emoji reactions, confetti, results screen, rematch and share.
 
 ```bash
@@ -50,7 +52,7 @@ import { XAppsProvider, useXApps, useRoomEvent, useMatchStarted, useMatchResult 
 </XAppsProvider>;
 ```
 
-More hooks: `useMatch()`, `usePresence()`, `useReactions(fn)`, and for v2 matches `useMatchState()`, `useTurn()`, `useRound()`, `usePlayers()`, `useSetup()` (see below).
+More hooks: `useMatch()`, `usePresence()`, `useReactions(fn)`, for v2 matches `useMatchState()`, `useTurn()`, `useRound()`, `usePlayers()`, `useSetup()`, and for media and progression `useMediaUpload()`, `useStats()`, `useAchievements()`, `useAchievementEvents(fn)` (see below).
 
 ## Lifecycle
 
@@ -73,11 +75,14 @@ More hooks: `useMatch()`, `usePresence()`, `useReactions(fn)`, and for v2 matche
 | `xapps.random` | Seeded by the match, identical on every client: `next, int, float, pick, shuffle, normal, chance, fork(label)` |
 | `xapps.isHost` | `true` for seat 0, for when one client should referee |
 | `ready()` · `onStart(fn)` · `onUpdate(fn)` · `onEnd(fn)` · `forfeit()` | Lifecycle |
-| `submit({ score?, data?, display? })` · `submitFor(botId, …)` | `display` is `{kind:"text",title?,body}`, `{kind:"svg",svg,alt}` or `{kind:"image",url,alt}` (https) |
+| `submit({ score?, data?, display? })` · `submitFor(botId, …)` | `display` is `{kind:"text",title?,body}`, `{kind:"svg",svg,alt}`, `{kind:"image",url,alt}`, `{kind:"video",url,alt,poster?}`, `{kind:"audio",url,alt,cover?}` or `{kind:"gallery",items:[{url,alt}]}` (2–6 items). See [Media uploads](#media-uploads) |
 | `room.send(type, payload)` · `room.on(type, fn)` · `room.onAny(fn)` · `room.onPresence(fn)` | ≤ 8 KB payloads, ≤ 30 messages/s |
 | `ui.setStatus` · `ui.setScores` · `ui.setTurn` · `ui.toast` · `ui.celebrate` · `ui.haptic` | Host UI |
 | `social.share(text, url?)` | Opens the X composer. The player always confirms the post. |
-| `storage.get(key)` · `storage.set(key, value)` | Per player, per app, ≤ 16 KB per value |
+| `storage.get(key, { scope? })` · `storage.set(key, value)` · `storage.delete(key)` · `storage.list({ prefix?, scope? })` | ≤ 64 KB JSON per value, ≤ 200 keys per player. `scope: "user"` (default, private) or `"app"` (public, read-only here). See [Storage scopes](#storage-scopes) |
+| `media.upload(blob, { alt? })` · `media.kindOf(mime)` | Upload an image, audio or video file → `MediaRef { url, kind, mime, bytes, width?, height?, duration? }` |
+| `stats.defs` · `stats.report(values)` | Your manifest stats; report values, get the new aggregates |
+| `achievements.defs` · `achievements.unlock(id)` · `achievements.unlocked` · `onAchievement(fn)` | Your manifest achievements |
 | `state.current` · `state.version` · `state.get()` · `state.set(value, expectedVersion?)` · `state.update(fn, { retries? })` · `state.onChange(fn)` | Shared match state, ≤ 64 KB JSON, compare-and-set (error code `conflict`) |
 | `turn.current` · `turn.isMine` · `turn.deadline` · `turn.end(next?)` · `onTurn(fn)` | Turns (optional) |
 | `round.current` · `round.set(n)` · `onRound(fn)` | Round counter in the host HUD, never goes backwards |
@@ -171,11 +176,11 @@ if (xapps.purpose === "setup") {
 }
 ```
 
-Settings must be a JSON object of at most 4 KB, and the summary (shown on the invite) at most 140 characters. In setup purpose, match methods (`room.send`, `submit`, `state.*`, `turn.end`, `round.set`) are refused with `forbidden`. `ready()`, `ui.*` and `storage.*` still work.
+Settings must be a JSON object of at most 4 KB, and the summary (shown on the invite) at most 140 characters. In setup purpose, match methods (`room.send`, `submit`, `state.*`, `turn.end`, `round.set`, `stats.report`, `achievements.unlock`) are refused with `forbidden`. `ready()`, `ui.*`, `storage.*` and `media.upload` still work, so a setup screen can upload a picture and put its URL in the settings.
 
 ### Spectators
 
-People can watch a match without a seat. A spectator gets `role: "spectator"`, `seat: -1`, and is never listed in `players`. They receive room messages, state changes, turns, rounds and reactions, and they can read `state`. They can't `submit`, `forfeit`, `room.send`, `state.set`/`update`, `turn.end` or `round.set`; the SDK and the host refuse those with `forbidden`.
+People can watch a match without a seat. A spectator gets `role: "spectator"`, `seat: -1`, and is never listed in `players`. They receive room messages, state changes, turns, rounds and reactions, and they can read `state`. They can't `submit`, `forfeit`, `room.send`, `state.set`/`update`, `turn.end`, `round.set`, `media.upload`, `stats.report`, `achievements.unlock` or `storage.set`/`delete`; the SDK and the host refuse those with `forbidden`. They can still read storage.
 
 ```ts
 const xapps = await connect();
@@ -214,8 +219,12 @@ Opened directly, `connect()` starts the mock host. Configure it through `connect
 | `purpose: "setup"` | `?xapps-purpose=setup` | Setup mode. `setup.submit` logs the settings and shows a banner with a link that opens a mock match with them. |
 | `settings: {…}` | `?xapps-settings=<json>` | `match.settings` for the mock match |
 | `state: {…}` | | Initial shared state |
+| `stats: [...]` | `?xapps-stats=<json>` | Manifest stats. `stats.report` aggregates them in memory. |
+| `achievements: [...]` | `?xapps-achievements=<json>` | Manifest achievements. Each unlocks once, with a small banner and an `achievement.unlock` event. |
+| `appStorage: {…}` | | Seeds the read-only `app` storage scope |
+| `probeMedia: false` | | Skip reading width/height/duration of uploads |
 
-`createMockHost()` also returns `setState(state, by?)`, `endTurn(next?)` and `setRound(n)` so tests can simulate the other players.
+`createMockHost()` also returns `setState(state, by?)`, `endTurn(next?)`, `setRound(n)` and `setAppStorage(key, value)` so tests can simulate the other players and your server, plus `stats`, `achievements` and `uploads` to inspect. In the mock, uploads become object URLs (`blob:…`) that only live as long as the page, and user storage lives in `localStorage` under `xapps-mock:`.
 
 ### Hosting apps yourself
 
@@ -229,8 +238,158 @@ Opened directly, `connect()` starts the mock host. Configure it through `connect
 | `round.set` | `setRound` | `{ round }` → `null` |
 | `setup.submit` | `submitSetup` | `{ settings, summary? }` → `null` |
 | `setup.cancel` | `cancelSetup` | `{}` → `null` |
+| `storage.get` | | `{ key, scope? }` → value or `null` (`scope` defaults to `"user"`) |
+| `storage.set` | | `{ key, value }` → `null` (user scope) |
+| `storage.delete` | `storageDelete` | `{ key }` → `null` (user scope) |
+| `storage.list` | `storageList` | `{ prefix?, scope? }` → `string[]` |
+| `media.upload` | `uploadMedia` | `{ file: Blob, alt? }` → `MediaRef`. Type and size are already checked; enforce the daily quotas. |
+| `stats.report` | `reportStats` | `{ values }` → `{ [key]: newValue }` |
+| `achievements.unlock` | `unlockAchievement` | `{ id }` → `{ unlocked }`. Call `bridge.emitAchievement(id, userId)` when it's new. |
 
 The core validates params and refuses by purpose and role (read from `context()`, or from an `access()` option) before calling your handler. Push changes with `bridge.emitState(state, version, by)`, `bridge.emitTurn(turn, deadline)` and `bridge.emitRound(round)`, or emit a `match.update`, from which the client derives the same events. Emit before you answer `turn.end` so the app sees the new turn first. `rankPlayers(entries, "high" | "low", { teams })` computes placements, ties and team sums.
+
+The `file` of a `media.upload` comes from the app's window, so it is a `Blob` of *another realm*: `instanceof Blob` is false on the host. Use `isBlobLike()` (duck-typed), `mediaKindOf(mime)` and `mediaProblem(file)` from `@xapps/sdk/host`; `displayProblem(display)`, `statsProblem(values, defs?)`, `achievementProblem(id, defs?)` and `aggregateStat(aggregate, previous, value)` are there too. When `context().app.stats` / `.achievements` are set, the core also refuses undeclared stat keys and achievement ids.
+
+
+## Media & data
+
+Everything in this section is additive; apps that don't use it are unaffected.
+
+### Media uploads
+
+`xapps.media.upload(blob, { alt? })` hands a `Blob` (or `File`) to the host, which stores it for the signed-in player and returns a `MediaRef`:
+
+```ts
+interface MediaRef { url: string; kind: "image" | "audio" | "video"; mime: string; bytes: number; width?: number; height?: number; duration?: number }
+```
+
+| Kind | Types | Max size |
+| --- | --- | --- |
+| image | jpeg, png, webp, gif | 8 MB |
+| audio | mpeg, mp4, ogg, webm, wav | 10 MB |
+| video | mp4, webm, quicktime | 25 MB |
+
+Per player per app: 60 uploads and 200 MB per rolling 24 h (error code `rate_limited`). Codec parameters are ignored (`video/webm;codecs=vp9` is a webm video), and `xapps.media.kindOf(mime)` tells you the kind (or `null`) before you record anything. Uploads work in match and setup purpose; spectators get `forbidden`. The SDK checks type and size before sending, and the host checks again.
+
+Entries can then show the media. Media URLs must be ones the host issued (`media.upload` results):
+
+| `display` | Notes |
+| --- | --- |
+| `{ kind: "video", url, alt, poster? }` | Plays muted when in view, loops; tap for sound |
+| `{ kind: "audio", url, alt, cover? }` | Audio player, `cover` image optional |
+| `{ kind: "gallery", items: [{ url, alt }, …] }` | 2–6 images, swipeable |
+| `{ kind: "image", url, alt }` | As before; an upload URL works too |
+
+`alt` is required for video, audio and every gallery item.
+
+Record a 5-second clip and submit it as a crowd-judged entry:
+
+```ts
+const xapps = await connect();
+
+async function recordClip(seconds = 5): Promise<Blob> {
+  const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+  const type = ["video/webm;codecs=vp9,opus", "video/webm", "video/mp4"].find((t) => MediaRecorder.isTypeSupported(t));
+  const recorder = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+  const chunks: Blob[] = [];
+  recorder.ondataavailable = (e) => chunks.push(e.data);
+  const done = new Promise<void>((resolve) => (recorder.onstop = () => resolve()));
+  recorder.start();
+  await new Promise((r) => setTimeout(r, seconds * 1000));
+  recorder.stop();
+  await done;
+  stream.getTracks().forEach((t) => t.stop());
+  return new Blob(chunks, { type: recorder.mimeType });
+}
+
+const clip = await recordClip();
+if (xapps.media.kindOf(clip.type) !== "video") throw new Error(`Can't upload ${clip.type}`);
+const video = await xapps.media.upload(clip, { alt: "My 5-second impression" });
+await xapps.submit({
+  data: { seconds: video.duration ?? 5 },
+  display: { kind: "video", url: video.url, alt: "My 5-second impression" },
+});
+```
+
+The iframe needs camera/microphone permission from the host for `getUserMedia`; picking a file with `<input type="file" accept="video/*">` works everywhere. Uploads can take a while: the SDK waits up to 120 s (`upload(file, { timeoutMs })`).
+
+React:
+
+```tsx
+import { useMediaUpload } from "@xapps/sdk/react";
+
+function DropPicker({ onPicked }: { onPicked: (url: string) => void }) {
+  const { upload, uploading, error } = useMediaUpload();
+  return (
+    <label>
+      <input type="file" accept="image/*" disabled={uploading}
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          if (file) onPicked((await upload(file, { alt: file.name })).url);
+        }} />
+      {uploading ? "Uploading…" : error?.message}
+    </label>
+  );
+}
+```
+
+### Storage scopes
+
+| Scope | Who reads | Who writes | Use it for |
+| --- | --- | --- | --- |
+| `user` (default) | the player | the player's client | saves, preferences, unlocked levels |
+| `app` | everyone | only your server (`storageSet`, `PUT /api/v1/storage/:key`) | daily puzzles, config, seasons |
+
+```ts
+const progress = await xapps.storage.get<{ level: number }>("progress");      // user scope
+await xapps.storage.set("progress", { level: (progress?.level ?? 0) + 1 });
+await xapps.storage.delete("old-save");
+const saves = await xapps.storage.list({ prefix: "save:" });                 // keys only
+
+const puzzle = await xapps.storage.get("puzzle:2026-09-29", { scope: "app" }); // written by your server
+const days = await xapps.storage.list({ prefix: "puzzle:", scope: "app" });
+```
+
+Values are JSON of at most 64 KB; keys are 1–64 characters; each player has at most 200 keys per app. `set`/`delete` are user scope only.
+
+### Stats & leaderboards
+
+Declare up to 8 stats in your manifest: `{ key, label, aggregate: "max" | "min" | "sum" | "last", format?: "number" | "ms" | "percent" }` with keys like `best_time` (`^[a-z][a-z0-9_]{0,31}$`). The platform keeps one value per player per stat, folds every report into it with the aggregate, and shows a leaderboard tab per stat on your app page (a `min` stat ranks ascending) and the player's stats on their profile.
+
+```ts
+xapps.stats.defs;                                         // [{ key: "best_time", label: "Best time", aggregate: "min", format: "ms" }, …]
+const now = await xapps.stats.report({ best_time: 8_420, wins: 1 });
+// → { best_time: 7_900 (your best so far), wins: 12 (running sum) }
+```
+
+Values must be finite numbers, and keys must be declared (the SDK checks against `stats.defs` when the host sends them). Server-authoritative apps report from their server with `reportStats(userId, values)` instead. `stats.report` isn't available in setup purpose or to spectators.
+
+### Achievements
+
+Declare up to 30 achievements: `{ id, name, description, icon (one emoji), xp (0–100), secret?: boolean }`, at most 500 XP in total. XP is awarded once, and secret achievements stay hidden on profiles until unlocked.
+
+```ts
+if (won && !xapps.achievements.unlocked.has("first_win")) {
+  const { unlocked } = await xapps.achievements.unlock("first_win"); // false if the player already had it
+}
+
+xapps.onAchievement(({ id, userId }, def) => {
+  // Anyone in the match, you included. The host already shows the toast, sound and confetti.
+  if (userId !== xapps.me.id) showTicker(`${xapps.player(userId)?.name} unlocked ${def?.icon} ${def?.name}`);
+});
+```
+
+`achievements.unlocked` holds the ids this player unlocked (or was confirmed to already have) during this session.
+
+React:
+
+```tsx
+import { useAchievementEvents, useAchievements, useStats } from "@xapps/sdk/react";
+
+const { defs, report } = useStats();
+const { defs: badges, unlock, unlocked } = useAchievements();  // `unlocked` re-renders on change
+useAchievementEvents(({ id, userId }, def) => console.log(userId, "unlocked", def?.name ?? id));
+```
 
 ## Testing
 
@@ -268,7 +427,14 @@ await xapps.endTurn(id, nextPlayerId);                      // or endTurn(id) fo
 await xapps.setRound(id, 3);
 await xapps.reportResult(id, { scores: { [alice]: 12, [bob]: 9 } });          // ranked by your scoring
 await xapps.reportResult(id, { ranks: { [alice]: 1, [bob]: 2 } }, { leavers: [carol] });
+
+await xapps.storageSet("puzzle:2026-09-29", { grid, answer });  // app scope: every player can read it
+await xapps.storageDelete("puzzle:2026-09-28");
+await xapps.reportStats(alice, { best_time: 7_900 });        // → { best_time: <new aggregate> }
+await xapps.unlockAchievement(alice, "first_win");           // → { unlocked: boolean }
 ```
+
+Server-authoritative apps should report stats and unlock achievements from their server (for example when a `match.submitted` entry checks out), since anything a client does can be faked.
 
 ### Next.js route (Node or edge)
 
@@ -346,6 +512,7 @@ export default {
 | `match.submitted` | A player submitted an entry |
 | `match.ended` | The match settled (`reason: "server_timeout"` for the 24 h safety valve) |
 | `ping` | "Send test event" in the Server panel (`match` is null) |
+| `achievement.unlocked` | A player unlocked one of your achievements (from their client or your server): `{ userId, achievementId }`, `match` is null |
 
 Each delivery is a `POST` with the JSON body `{ id, type, createdAt, app: { slug }, match }` (the match as it was when the event was queued; call `getMatch` for the latest) and the headers `X-XApps-Event`, `X-XApps-Delivery` (a uuid) and `X-XApps-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(signing secret, t + "." + body)>`. `verifyWebhook` rejects signatures older than 5 minutes (`toleranceSeconds`), accepts any of several `v1` values, and throws `XAppsError` with code `invalid_signature`, `stale_signature` or `invalid_payload`. Non-2xx responses are retried with backoff (1, 2, 4 … 256 min, 9 attempts), so handle events idempotently (dedupe by `event.id`). `signWebhook(body, secret)` builds a header for tests.
 
@@ -360,5 +527,9 @@ The client wraps these routes on the XApps host. Call them directly from any lan
 | `POST /api/v1/matches/:id/turn` | `{ next? }` | `{ ok: true }` |
 | `POST /api/v1/matches/:id/round` | `{ round }` | `{ ok: true }` |
 | `POST /api/v1/matches/:id/result` | `{ scores }` or `{ ranks }`, optional `leavers` | `{ ok: true }` |
+| `PUT /api/v1/storage/:key` | `{ value }` (≤ 64 KB JSON) | `{ ok: true }` |
+| `DELETE /api/v1/storage/:key` | | `{ ok: true }` (or 204) |
+| `POST /api/v1/stats` | `{ userId, values }` | `{ values }` (new aggregates) |
+| `POST /api/v1/achievements` | `{ userId, id }` | `{ unlocked }` |
 
 Errors are `{ error: { code, message } }`: 401 `unauthorized` (missing or wrong secret), 403 `forbidden` (another app's match), 404 `not_found`, 409 `conflict` (state version moved) or `invalid_state` (e.g. already settled), 422 `invalid_params`, 501 `not_configured` (the host runs in demo mode: the server API and webhooks need Supabase).

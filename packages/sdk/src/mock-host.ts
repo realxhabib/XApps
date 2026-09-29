@@ -10,22 +10,28 @@
  * - `?xapps-settings=<json>` sets `match.settings` (the setup banner links here).
  * - `?xapps-players=4` seats 4 players (you + 3 bots); `?xapps-teams=2` plays in teams.
  * - `?xapps-turns=1` starts with a turn (seat 0); `?xapps-role=spectator` watches bots play.
+ * - `?xapps-stats=<json>` / `?xapps-achievements=<json>` declare manifest stats / achievements.
  */
 import { createHostCore, rankPlayers, type HostBridge } from "./host";
 import {
+  LIMITS,
+  SDK_VERSION,
   XAppsError,
+  type AchievementDef,
   type Json,
   type LaunchContext,
   type LaunchPurpose,
   type MatchMode,
+  type MediaRef,
   type MatchResult,
   type PlayerInfo,
   type PlayerRole,
   type Scoring,
+  type StatDef,
   type Submission,
 } from "./protocol";
 import { randomId } from "./random";
-import { cloneJson, isPlainObject } from "./rules";
+import { aggregateStat, baseMime, cloneJson, isPlainObject, mediaKindOf } from "./rules";
 import { createMemoryTransportPair, type AppTransport } from "./transport";
 
 export interface MockHostOptions {
@@ -57,8 +63,16 @@ export interface MockHostOptions {
   mode?: MatchMode;
   /** Read the `?xapps-*` URL switches. Default true. */
   readUrl?: boolean;
-  /** Show a small banner when setup settings are submitted. Default true (in browsers). */
+  /** Show a small banner when setup settings are submitted or an achievement unlocks. Default true (in browsers). */
   banner?: boolean;
+  /** Manifest stats (`?xapps-stats=<json>` overrides). `stats.report` aggregates them in memory. */
+  stats?: StatDef[];
+  /** Manifest achievements (`?xapps-achievements=<json>` overrides). Each unlocks once per mock host. */
+  achievements?: AchievementDef[];
+  /** Seed for the read-only `app` storage scope (your server writes it on the real platform). */
+  appStorage?: { [key: string]: Json };
+  /** Read width/height/duration of uploads (images via `createImageBitmap`, audio/video via a media element). Default true. */
+  probeMedia?: boolean;
 }
 
 export interface MockSetupOutcome {
@@ -78,6 +92,14 @@ export interface MockHost {
   setRound(round: number): void;
   /** What the app submitted in setup purpose, if anything. */
   readonly setup: MockSetupOutcome | null;
+  /** The player's aggregated stats so far. */
+  readonly stats: { [key: string]: number };
+  /** Achievement ids unlocked so far. */
+  readonly achievements: ReadonlySet<string>;
+  /** Files uploaded with `media.upload`, oldest first. */
+  readonly uploads: ReadonlyArray<MediaRef & { alt: string | null; file: Blob }>;
+  /** Pretend the app's server wrote an `app` scope key (`undefined` deletes it). */
+  setAppStorage(key: string, value: Json | undefined): void;
 }
 
 const clampInt = (value: unknown, min: number, max: number, fallback: number): number => {
@@ -105,7 +127,83 @@ function readUrlOptions(): Partial<MockHostOptions> {
   const role = params.get("xapps-role");
   if (role === "spectator" || role === "player") out.role = role;
   if (params.has("xapps-turns")) out.turnBased = params.get("xapps-turns") !== "0";
+  const defs = (name: string): unknown[] | undefined => {
+    const raw = params.get(name);
+    if (!raw) return undefined;
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // fall through
+    }
+    console.warn(`[xapps mock] ignoring ?${name}: not a JSON array`);
+    return undefined;
+  };
+  const stats = defs("xapps-stats");
+  if (stats) out.stats = stats.filter(isStatDef);
+  const achievements = defs("xapps-achievements");
+  if (achievements) out.achievements = achievements.filter(isAchievementDef);
   return out;
+}
+
+const isStatDef = (value: unknown): value is StatDef =>
+  isPlainObject(value) &&
+  typeof value.key === "string" &&
+  (value.aggregate === "max" || value.aggregate === "min" || value.aggregate === "sum" || value.aggregate === "last");
+
+const isAchievementDef = (value: unknown): value is AchievementDef =>
+  isPlainObject(value) && typeof value.id === "string";
+
+/** Fills in the display fields a quick `?xapps-stats=[{"key":"best","aggregate":"max"}]` leaves out. */
+const completeStat = (d: StatDef): StatDef => ({ ...d, label: typeof d.label === "string" ? d.label : d.key });
+const completeAchievement = (d: AchievementDef): AchievementDef => ({
+  ...d,
+  name: typeof d.name === "string" ? d.name : d.id,
+  description: typeof d.description === "string" ? d.description : "",
+  icon: typeof d.icon === "string" ? d.icon : "🏆",
+  xp: typeof d.xp === "number" ? d.xp : 0,
+});
+
+const withTimeout = <T>(promise: Promise<T>, ms: number): Promise<T | null> =>
+  Promise.race([promise, new Promise<null>((resolve) => setTimeout(() => resolve(null), ms))]);
+
+/** Width/height of an image (createImageBitmap) or duration of audio/video (media element), when the environment can tell. */
+async function probeMedia(file: Blob, kind: MediaRef["kind"], url: string): Promise<Partial<MediaRef>> {
+  try {
+    if (kind === "image") {
+      if (typeof createImageBitmap !== "function") return {};
+      const bitmap = await withTimeout(createImageBitmap(file), 3000);
+      if (!bitmap) return {};
+      const size = { width: bitmap.width, height: bitmap.height };
+      bitmap.close?.();
+      return size;
+    }
+    if (typeof document === "undefined" || !url.startsWith("blob:")) return {};
+    const el = document.createElement(kind);
+    // Environments without media support (jsdom, some webviews) can't tell us anything.
+    if (typeof el.canPlayType !== "function" || !el.canPlayType(baseMime(file.type))) return {};
+    const meta = await withTimeout(
+      new Promise<Partial<MediaRef>>((resolve) => {
+        el.preload = "metadata";
+        el.onloadedmetadata = () => {
+          const out: Partial<MediaRef> = {};
+          if (Number.isFinite(el.duration)) out.duration = el.duration;
+          if (el instanceof HTMLVideoElement && el.videoWidth) {
+            out.width = el.videoWidth;
+            out.height = el.videoHeight;
+          }
+          resolve(out);
+        };
+        el.onerror = () => resolve({});
+        el.src = url;
+      }),
+      3000,
+    );
+    el.removeAttribute("src");
+    return meta ?? {};
+  } catch {
+    return {};
+  }
 }
 
 export function createMockHost(input: MockHostOptions = {}): MockHost {
@@ -142,7 +240,13 @@ export function createMockHost(input: MockHostOptions = {}): MockHost {
 
   const context: LaunchContext = {
     purpose,
-    app: { id: "local", slug: "local", name: typeof document !== "undefined" ? document.title || "My app" : "My app" },
+    app: {
+      id: "local",
+      slug: "local",
+      name: typeof document !== "undefined" ? document.title || "My app" : "My app",
+      stats: (options.stats ?? []).map(completeStat),
+      achievements: (options.achievements ?? []).map(completeAchievement),
+    },
     user,
     match: {
       id: `mock-${randomId(6)}`,
@@ -163,7 +267,7 @@ export function createMockHost(input: MockHostOptions = {}): MockHost {
       turnDeadline: null,
       round: 0,
     },
-    host: { name: "XApps Mock Host", version: "0.2.0", origin: "memory://host" },
+    host: { name: "XApps Mock Host", version: SDK_VERSION, origin: "memory://host" },
     locale: typeof navigator !== "undefined" ? navigator.language : "en",
   };
   const match = context.match;
@@ -173,6 +277,22 @@ export function createMockHost(input: MockHostOptions = {}): MockHost {
   let startedAt: number | null = null;
   let ended: MatchResult | null = null;
   let setupOutcome: MockSetupOutcome | null = null;
+  const statValues: { [key: string]: number } = {};
+  const unlocked = new Set<string>();
+  const uploads: Array<MediaRef & { alt: string | null; file: Blob; at: number }> = [];
+  const appStorage = new Map<string, Json>(Object.entries(options.appStorage ?? {}).map(([k, v]) => [k, cloneJson(v)]));
+  const statDefs = context.app.stats ?? [];
+  const achievementDefs = context.app.achievements ?? [];
+  const storagePrefix = "xapps-mock:";
+  const userKeys = (): string[] => {
+    if (typeof localStorage === "undefined") return [];
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith(storagePrefix)) keys.push(key.slice(storagePrefix.length));
+    }
+    return keys.sort();
+  };
 
   const player = (id: string) => match.players.find((p) => p.id === id);
   const active = () => match.players.filter((p) => !left.has(p.id));
@@ -289,6 +409,29 @@ export function createMockHost(input: MockHostOptions = {}): MockHost {
     document.body.append(el);
   };
 
+  const showAchievement = (def: AchievementDef) => {
+    if (options.banner === false || typeof document === "undefined" || !document.body) return;
+    document.getElementById("xapps-mock-achievement")?.remove();
+    const el = document.createElement("div");
+    el.id = "xapps-mock-achievement";
+    el.setAttribute("role", "status");
+    el.style.cssText =
+      "position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:2147483647;display:flex;gap:10px;" +
+      "align-items:center;padding:10px 14px;border-radius:999px;background:#17132b;color:#f4f2ff;" +
+      "font:13px/1.3 system-ui,sans-serif;box-shadow:0 8px 30px rgba(0,0,0,.35);border:1px solid #8b5cf6";
+    const icon = document.createElement("span");
+    icon.style.fontSize = "20px";
+    icon.textContent = def.icon;
+    const text = document.createElement("span");
+    const title = document.createElement("strong");
+    title.textContent = `Achievement unlocked: ${def.name}`;
+    text.append(title);
+    if (def.xp) text.append(` · +${def.xp} XP`);
+    el.append(icon, text);
+    document.body.append(el);
+    setTimeout(() => el.remove(), 3500);
+  };
+
   const bridge = createHostCore(pair.host, {
     context: () => context,
     onConnect: () => log(purpose === "setup" ? "app connected (setup mode)" : "app connected", context),
@@ -367,14 +510,86 @@ export function createMockHost(input: MockHostOptions = {}): MockHost {
         if (typeof window !== "undefined") window.open(intent.toString(), "_blank", "noopener,noreferrer");
         return null;
       },
-      "storage.get": ({ key }) => {
+      "storage.get": ({ key, scope }) => {
+        if (scope === "app") return appStorage.has(key) ? cloneJson(appStorage.get(key) as Json) : null;
         if (typeof localStorage === "undefined") return null;
-        const raw = localStorage.getItem(`xapps-mock:${key}`);
+        const raw = localStorage.getItem(`${storagePrefix}${key}`);
         return raw === null ? null : (JSON.parse(raw) as Json);
       },
       "storage.set": ({ key, value }) => {
-        if (typeof localStorage !== "undefined") localStorage.setItem(`xapps-mock:${key}`, JSON.stringify(value));
+        if (typeof localStorage === "undefined") return null;
+        const id = `${storagePrefix}${key}`;
+        if (localStorage.getItem(id) === null && userKeys().length >= LIMITS.storageKeysPerUser) {
+          throw new XAppsError("invalid_params", `storage.set: at most ${LIMITS.storageKeysPerUser} keys per player`);
+        }
+        localStorage.setItem(id, JSON.stringify(value));
         return null;
+      },
+      "storage.delete": ({ key }) => {
+        if (typeof localStorage !== "undefined") localStorage.removeItem(`${storagePrefix}${key}`);
+        return null;
+      },
+      "storage.list": ({ prefix, scope }) => {
+        const keys = scope === "app" ? [...appStorage.keys()].sort() : userKeys();
+        return prefix ? keys.filter((k) => k.startsWith(prefix)) : keys;
+      },
+      "media.upload": async ({ file, alt }) => {
+        const kind = mediaKindOf(file.type);
+        if (!kind) throw new XAppsError("invalid_params", "media.upload: unsupported type");
+        const dayAgo = Date.now() - 86_400_000;
+        const recent = uploads.filter((u) => u.at > dayAgo);
+        if (
+          recent.length >= LIMITS.media.uploadsPerDay ||
+          recent.reduce((n, u) => n + u.bytes, 0) + file.size > LIMITS.media.bytesPerDay
+        ) {
+          throw new XAppsError("rate_limited", "media.upload: daily upload quota reached");
+        }
+        let url = `blob:xapps-mock/${randomId(12)}`; // placeholder where object URLs aren't available
+        try {
+          if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") url = URL.createObjectURL(file);
+        } catch {
+          // e.g. a Blob from another implementation (tests): keep the placeholder
+        }
+        const ref: MediaRef = {
+          url,
+          kind,
+          mime: baseMime(file.type),
+          bytes: file.size,
+          ...(options.probeMedia === false ? {} : await probeMedia(file, kind, url)),
+        };
+        uploads.push({ ...ref, alt: alt ?? null, file, at: Date.now() });
+        log("media.upload", ref);
+        return ref;
+      },
+      "stats.report": ({ values }) => {
+        const out: { [key: string]: number } = {};
+        for (const [key, value] of Object.entries(values)) {
+          const def = statDefs.find((d) => d.key === key);
+          if (!def) {
+            throw new XAppsError(
+              "invalid_params",
+              `stats.report: "${key}" is not a declared stat (mock: pass stats in connect({ mock }) or ?xapps-stats=)`,
+            );
+          }
+          out[key] = statValues[key] = aggregateStat(def.aggregate, statValues[key], value);
+        }
+        log("stats", out);
+        return out;
+      },
+      "achievements.unlock": ({ id }) => {
+        const def = achievementDefs.find((d) => d.id === id);
+        if (!def) {
+          throw new XAppsError(
+            "invalid_params",
+            `achievements.unlock: "${id}" is not a declared achievement (mock: pass achievements in connect({ mock }) or ?xapps-achievements=)`,
+          );
+        }
+        if (unlocked.has(id)) return { unlocked: false };
+        unlocked.add(id);
+        log(`🏆 achievement unlocked: ${def.name} (+${def.xp} XP)`);
+        showAchievement(def);
+        bridge.emitAchievement(id, user.id);
+        return { unlocked: true };
       },
       "state.get": () => ({ state: cloneJson(match.state), version: match.stateVersion }),
       "state.set": ({ state, expectedVersion }) => {
@@ -434,6 +649,26 @@ export function createMockHost(input: MockHostOptions = {}): MockHost {
     },
     get setup() {
       return setupOutcome;
+    },
+    get stats() {
+      return { ...statValues };
+    },
+    get achievements() {
+      return new Set(unlocked);
+    },
+    get uploads() {
+      return uploads.map((u) => {
+        const { url, kind, mime, bytes, width, height, duration, alt, file } = u;
+        const ref: MediaRef & { alt: string | null; file: Blob } = { url, kind, mime, bytes, alt, file };
+        if (width !== undefined) ref.width = width;
+        if (height !== undefined) ref.height = height;
+        if (duration !== undefined) ref.duration = duration;
+        return ref;
+      });
+    },
+    setAppStorage(key, value) {
+      if (value === undefined) appStorage.delete(key);
+      else appStorage.set(key, cloneJson(value));
     },
   };
 }

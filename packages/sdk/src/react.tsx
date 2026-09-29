@@ -26,13 +26,26 @@ import {
 } from "react";
 import {
   connect,
+  type AchievementUnlock,
   type ConnectOptions,
+  type MediaUploadOptions,
   type StateSnapshot,
   type StateUpdateOptions,
   type StateUpdater,
   type XAppsClient,
 } from "./client";
-import type { Json, LaunchContext, LaunchPurpose, MatchResult, PlayerInfo, PlayerRole, RoomMessage } from "./protocol";
+import type {
+  AchievementDef,
+  Json,
+  LaunchContext,
+  LaunchPurpose,
+  MatchResult,
+  MediaRef,
+  PlayerInfo,
+  PlayerRole,
+  RoomMessage,
+  StatDef,
+} from "./protocol";
 
 const ClientContext = createContext<XAppsClient | null>(null);
 
@@ -256,4 +269,88 @@ export function usePlayers(): PlayersHook {
     // opponents/teammates are derived together with players/me in the client.
     [client, players, me, role],
   );
+}
+
+/* ---------------------------------------------------------------------- */
+/* v3: media, stats, achievements                                         */
+/* ---------------------------------------------------------------------- */
+
+export interface MediaUploadHook {
+  /** Uploads a file (see `xapps.media.upload`). Also rejects, so you can `try/await` it. */
+  upload: (file: Blob, options?: MediaUploadOptions) => Promise<MediaRef>;
+  /** True while at least one upload started here is running. */
+  uploading: boolean;
+  /** The last upload's error, cleared when the next upload starts. */
+  error: Error | null;
+}
+
+/** Uploads with progress state for your UI. */
+export function useMediaUpload(): MediaUploadHook {
+  const client = useXApps();
+  const [running, setRunning] = useState(0);
+  const [error, setError] = useState<Error | null>(null);
+  const upload = useCallback(
+    async (file: Blob, options?: MediaUploadOptions) => {
+      setError(null);
+      setRunning((n) => n + 1);
+      try {
+        return await client.media.upload(file, options);
+      } catch (e) {
+        setError(e instanceof Error ? e : new Error(String(e)));
+        throw e;
+      } finally {
+        setRunning((n) => n - 1);
+      }
+    },
+    [client],
+  );
+  return useMemo(() => ({ upload, uploading: running > 0, error }), [upload, running, error]);
+}
+
+export interface StatsHook {
+  /** Stats declared in your manifest. */
+  defs: StatDef[];
+  /** Report values; resolves with each stat's new aggregated value. */
+  report: (values: { [key: string]: number }) => Promise<{ [key: string]: number }>;
+}
+
+/** Your manifest stats and `report`. */
+export function useStats(): StatsHook {
+  const client = useXApps();
+  return useMemo(
+    () => ({ defs: client.stats.defs, report: (values: { [key: string]: number }) => client.stats.report(values) }),
+    [client],
+  );
+}
+
+export interface AchievementsHook {
+  /** Achievements declared in your manifest. */
+  defs: AchievementDef[];
+  unlock: (id: string) => Promise<{ unlocked: boolean }>;
+  /** Ids this player unlocked (or was confirmed to have) during this session. Re-renders on change. */
+  unlocked: ReadonlySet<string>;
+}
+
+/** Your manifest achievements, `unlock`, and what's been unlocked this session. */
+export function useAchievements(): AchievementsHook {
+  const client = useXApps();
+  const subscribe = useCallback((notify: () => void) => client.achievements.onChange(notify), [client]);
+  const unlocked = useSyncExternalStore(
+    subscribe,
+    () => client.achievements.unlocked,
+    () => client.achievements.unlocked,
+  );
+  return useMemo(
+    () => ({ defs: client.achievements.defs, unlock: (id: string) => client.achievements.unlock(id), unlocked }),
+    [client, unlocked],
+  );
+}
+
+/** Called whenever someone in the match (you included) unlocks an achievement. */
+export function useAchievementEvents(
+  handler: (unlock: AchievementUnlock, def: AchievementDef | undefined) => void,
+): void {
+  const client = useXApps();
+  const latest = useLatest(handler);
+  useEffect(() => client.onAchievement((unlock, def) => latest.current(unlock, def)), [client, latest]);
 }

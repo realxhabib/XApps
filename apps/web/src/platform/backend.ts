@@ -1,5 +1,10 @@
 import type {
   AppAuthority,
+  MediaRef,
+  StatLeaderRow,
+  StorageScope,
+  UserAchievement,
+  UserStat,
   AppServerConfig,
   WebhookDelivery,
   AppManifest,
@@ -23,7 +28,9 @@ export type RoomEvent =
   /** Seat 0 tells everyone to start the intro. */
   | { kind: "start"; at: number }
   /** Emoji reaction from the HUD. */
-  | { kind: "reaction"; emoji: string };
+  | { kind: "reaction"; emoji: string }
+  /** The sender unlocked one of the app's achievements (so the others' hosts and apps hear about it). */
+  | { kind: "achievement"; id: string };
 
 export interface RoomPeer {
   userId: string;
@@ -122,8 +129,21 @@ export interface Backend {
   openRoom(matchId: string, viewerId: string): RoomTransport;
 
   // Per-app storage ----------------------------------------------------
-  storageGet(appSlug: string, key: string): Promise<Json | null>;
+  storageGet(appSlug: string, key: string, scope?: StorageScope): Promise<Json | null>;
   storageSet(appSlug: string, key: string, value: Json): Promise<void>;
+  storageDelete(appSlug: string, key: string): Promise<void>;
+  storageList(appSlug: string, prefix?: string, scope?: StorageScope): Promise<string[]>;
+
+  // Media, stats & achievements (Stage 3) -------------------------------
+  /** Validates and stores a file for the viewer under an app; returns a public URL. */
+  uploadMedia(appSlug: string, file: Blob): Promise<MediaRef>;
+  /** Applies each stat's aggregate; returns the new values. Refused for server-authoritative apps. */
+  reportStats(appSlug: string, values: { [key: string]: number }): Promise<{ [key: string]: number }>;
+  statLeaderboard(appSlug: string, key: string): Promise<StatLeaderRow[]>;
+  userStats(userId: string): Promise<UserStat[]>;
+  /** `unlocked` is false if the viewer already had it. Refused for server-authoritative apps. */
+  unlockAchievement(appSlug: string, id: string): Promise<{ unlocked: boolean }>;
+  userAchievements(userId: string): Promise<UserAchievement[]>;
 
   /** Demo-only helpers (persona switching, reset). */
   readonly demo?: DemoControls;
@@ -146,6 +166,8 @@ export class BackendError extends Error {
       | "conflict"
       | "invalid"
       | "setup_required"
+      /** A quota or rate limit (uploads per day, stat reports per minute). */
+      | "rate_limited"
       | "internal" = "internal",
   ) {
     super(message);

@@ -5,14 +5,17 @@
  *   deliveries and returns the typed event.
  * - `createServerClient` calls the XApps server API with your app secret
  *   (`xas_…`): read matches (every player's entry included), write shared
- *   state, end turns, set rounds and report results.
+ *   state, end turns, set rounds and report results; write app-scope
+ *   storage, report stats and unlock achievements for players.
  *
  * Runtime-agnostic: uses `fetch` and Web Crypto only (Node 20+, Deno, Bun,
  * Cloudflare Workers, Vercel/Next edge and Node runtimes). Never ship your
  * secrets to a browser.
  */
 import {
+  LIMITS,
   XAppsError,
+  byteLength,
   type Json,
   type MatchMode,
   type MatchStatus,
@@ -20,6 +23,7 @@ import {
   type Scoring,
   type SubmissionDisplay,
 } from "./protocol";
+import { achievementProblem, jsonProblem, statsProblem, storageKeyProblem } from "./rules";
 
 export { XAppsError, type Json };
 
@@ -120,7 +124,10 @@ export type MatchEventType =
   | "match.submitted"
   | "match.ended";
 
-export type WebhookEventType = MatchEventType | "ping";
+/** Player progression events. */
+export type PlayerEventType = "achievement.unlocked";
+
+export type WebhookEventType = MatchEventType | PlayerEventType | "ping";
 
 interface WebhookEventBase<T extends WebhookEventType> {
   /** Delivery-independent event id; use it to deduplicate retries. */
@@ -149,6 +156,14 @@ export interface PingEvent extends WebhookEventBase<"ping"> {
   match: null;
 }
 
+/** A player unlocked one of your achievements (from the client or your server). */
+export interface AchievementUnlockedEvent extends WebhookEventBase<"achievement.unlocked"> {
+  match: null;
+  userId: string;
+  /** An `id` from your manifest's `achievements`. */
+  achievementId: string;
+}
+
 export type WebhookEvent =
   | MatchWebhookEvent<"match.created">
   | MatchWebhookEvent<"match.started">
@@ -156,6 +171,7 @@ export type WebhookEvent =
   | MatchWebhookEvent<"match.turn">
   | MatchWebhookEvent<"match.submitted">
   | MatchEndedEvent
+  | AchievementUnlockedEvent
   | PingEvent;
 
 /* ------------------------------------------------------------------------ */
@@ -384,6 +400,14 @@ export interface ServerClient {
   setRound(matchId: string, round: number): Promise<void>;
   /** Settles the match. The only way to settle a match of an `authority: "server"` app. */
   reportResult(matchId: string, result: MatchResultReport, options?: ReportResultOptions): Promise<void>;
+  /** Writes a key of your app's public `app` storage scope (≤ 64 KB JSON). Every player can read it. */
+  storageSet(key: string, value: Json): Promise<void>;
+  /** Deletes a key of your app's `app` storage scope. */
+  storageDelete(key: string): Promise<void>;
+  /** Reports stats for a player; resolves with each stat's new aggregated value. */
+  reportStats(userId: string, values: { [key: string]: number }): Promise<{ [key: string]: number }>;
+  /** Unlocks an achievement for a player. `unlocked` is false when they already had it. */
+  unlockAchievement(userId: string, id: string): Promise<{ unlocked: boolean }>;
 }
 
 const STATUS_CODES: Record<number, ServerErrorCode> = {
@@ -416,13 +440,12 @@ export function createServerClient(options: ServerClientOptions): ServerClient {
   const base = options.baseUrl.replace(/\/+$/, "");
   const doFetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
 
-  async function call<T>(method: "GET" | "PUT" | "POST", matchId: string, path: string, body?: unknown): Promise<T> {
-    if (typeof matchId !== "string" || !matchId) throw new XAppsError("invalid_params", "Missing match id");
+  async function send<T>(method: "GET" | "PUT" | "POST" | "DELETE", path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = { Authorization: `Bearer ${secret}`, Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     let res: Response;
     try {
-      res = await doFetch(`${base}/api/v1/matches/${encodeURIComponent(matchId)}${path}`, {
+      res = await doFetch(`${base}/api/v1${path}`, {
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
@@ -432,8 +455,23 @@ export function createServerClient(options: ServerClientOptions): ServerClient {
       throw new XAppsError("network", error instanceof Error ? error.message : "Network error");
     }
     if (!res.ok) throw await errorFromResponse(res);
-    return (await res.json()) as T;
+    const text = res.status === 204 ? "" : await res.text();
+    if (!text) return null as T;
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      throw new XAppsError("internal", "XApps server API sent a response that isn't JSON");
+    }
   }
+
+  function call<T>(method: "GET" | "PUT" | "POST", matchId: string, path: string, body?: unknown): Promise<T> {
+    if (typeof matchId !== "string" || !matchId) return Promise.reject(new XAppsError("invalid_params", "Missing match id"));
+    return send<T>(method, `/matches/${encodeURIComponent(matchId)}${path}`, body);
+  }
+
+  const invalid = (problem: string) => Promise.reject(new XAppsError("invalid_params", problem));
+  const userProblem = (userId: unknown) =>
+    typeof userId === "string" && userId.length > 0 ? null : "userId must be a player id";
 
   const client: ServerClient = {
     getMatch: (matchId) => call<ServerMatch>("GET", matchId, ""),
@@ -485,6 +523,37 @@ export function createServerClient(options: ServerClientOptions): ServerClient {
       else throw new XAppsError("invalid_params", "reportResult: pass { scores } or { ranks }");
       if (opts.leavers?.length) body.leavers = opts.leavers;
       await call("POST", matchId, "/result", body);
+    },
+
+    async storageSet(key, value) {
+      const problem = storageKeyProblem(key) ?? jsonProblem(value, "value");
+      if (problem) return invalid(`storageSet: ${problem}`);
+      if (byteLength(value) > LIMITS.storageValueBytes) {
+        return invalid(`storageSet: value is larger than ${LIMITS.storageValueBytes / 1024} KB`);
+      }
+      await send("PUT", `/storage/${encodeURIComponent(key)}`, { value });
+    },
+
+    async storageDelete(key) {
+      const problem = storageKeyProblem(key);
+      if (problem) return invalid(`storageDelete: ${problem}`);
+      await send("DELETE", `/storage/${encodeURIComponent(key)}`);
+    },
+
+    async reportStats(userId, values) {
+      const problem = userProblem(userId) ?? statsProblem(values);
+      if (problem) return invalid(`reportStats: ${problem}`);
+      const res = await send<{ values?: { [key: string]: number } } | null>("POST", "/stats", { userId, values });
+      // `{ values }` per the API; tolerate a bare object of values too.
+      const out = res && typeof res === "object" && res.values && typeof res.values === "object" ? res.values : res;
+      return (out ?? {}) as { [key: string]: number };
+    },
+
+    async unlockAchievement(userId, id) {
+      const problem = userProblem(userId) ?? achievementProblem(id);
+      if (problem) return invalid(`unlockAchievement: ${problem}`);
+      const res = await send<{ unlocked?: unknown } | null>("POST", "/achievements", { userId, id });
+      return { unlocked: res?.unlocked === true };
     },
   };
   return client;

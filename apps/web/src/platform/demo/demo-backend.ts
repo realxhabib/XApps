@@ -1,7 +1,16 @@
 import { LIMITS, createRandom, randomId } from "@xapps/sdk";
 import { byteLength } from "@xapps/sdk/protocol";
+import { isBlobLike } from "@xapps/sdk/host";
+import { absoluteMediaUrl, displayProblem, mediaKindOf, mediaProblem, mediaQuotaProblem, postDemoMedia, probeMedia } from "@/lib/media";
 import { BackendError, type Backend, type DemoControls, type RoomTransport } from "../backend";
-import { OFFICIAL_APPS, getOfficialApp, manifestShapeError, withManifestDefaults } from "../catalog";
+import {
+  OFFICIAL_APPS,
+  getOfficialApp,
+  manifestShapeError,
+  toAchievementDefs,
+  toStatDefs,
+  withManifestDefaults,
+} from "../catalog";
 import { XP, teamForSeat } from "../scoring";
 import type {
   AppAuthority,
@@ -11,10 +20,15 @@ import type {
   Json,
   LeaderRow,
   Match,
+  MediaRef,
   PlayableMode,
   Profile,
   RegisterAppInput,
+  StatLeaderRow,
+  StorageScope,
   SubmitInput,
+  UserAchievement,
+  UserStat,
   WebhookDelivery,
 } from "../types";
 import { createDemoRoom } from "./room";
@@ -250,6 +264,63 @@ function cleanHandle(handle: string): string {
   return handle.replace(/^@/, "").trim().toLowerCase();
 }
 
+/* ---------------------------------------------------------------------- */
+/* Stage 3 rules (mirroring supabase/migrations/…_media_and_data.sql)      */
+/* ---------------------------------------------------------------------- */
+
+const STAT_LIMIT = 1e15;
+
+function storageKeyCheck(key: unknown): asserts key is string {
+  if (typeof key !== "string" || key.length < 1 || key.length > LIMITS.storageKeyLength) {
+    throw new BackendError(`Storage keys are 1–${LIMITS.storageKeyLength} characters`, "invalid");
+  }
+}
+
+/** Mirrors `apply_stats`: each declared stat's aggregate; `updatedAt` only moves when the value changes. */
+export function applyStats(db: DemoDb, app: AppManifest, userId: string, values: unknown): { [key: string]: number } {
+  if (!values || typeof values !== "object" || Array.isArray(values)) {
+    throw new BackendError("Stats must be an object of numbers", "invalid");
+  }
+  const entries = Object.entries(values as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+  if (!entries.length) throw new BackendError("Report at least one stat", "invalid");
+  // Validate everything first so a bad value doesn't leave a half-applied report.
+  for (const [key, value] of entries) {
+    if (!app.stats?.some((s) => s.key === key)) throw new BackendError(`Unknown stat ${key}`, "invalid");
+    if (typeof value !== "number" || !Number.isFinite(value)) throw new BackendError(`Stat ${key} must be a finite number`, "invalid");
+    if (Math.abs(value) > STAT_LIMIT) throw new BackendError(`Stat ${key} is out of range`, "invalid");
+  }
+  db.userStats ??= {};
+  const result: { [key: string]: number } = {};
+  for (const [key, raw] of entries) {
+    const value = raw as number;
+    const aggregate = app.stats!.find((s) => s.key === key)!.aggregate;
+    const id = `${app.slug}:${userId}:${key}`;
+    const previous = db.userStats[id];
+    let next: number;
+    if (!previous) next = value;
+    else if (aggregate === "max") next = Math.max(previous.value, value);
+    else if (aggregate === "min") next = Math.min(previous.value, value);
+    else if (aggregate === "sum") next = Math.min(Math.max(previous.value + value, -STAT_LIMIT), STAT_LIMIT);
+    else next = value;
+    if (!previous || previous.value !== next) db.userStats[id] = { value: next, updatedAt: nowIso() };
+    result[key] = next;
+  }
+  return result;
+}
+
+/** Mirrors `grant_achievement`: a declared id, unlocked once, its XP added to the profile once. */
+export function grantAchievement(db: DemoDb, app: AppManifest, userId: string, id: string): { unlocked: boolean } {
+  const def = app.achievements?.find((a) => a.id === id);
+  if (!def) throw new BackendError(`Unknown achievement ${id}`, "invalid");
+  db.achievements ??= {};
+  const key = `${app.slug}:${userId}:${id}`;
+  if (db.achievements[key]) return { unlocked: false };
+  db.achievements[key] = nowIso();
+  const profile = db.profiles[userId];
+  if (profile && def.xp > 0) profile.xp += def.xp;
+  return { unlocked: true };
+}
+
 /**
  * Local, zero-config backend. Every tab shares one localStorage database,
  * personas act as bots, and BroadcastChannel carries live match traffic.
@@ -392,6 +463,8 @@ export class DemoBackend implements Backend {
       const app = withManifestDefaults({
         ...input,
         players: input.players ? { min: input.players.min, max: input.players.max } : { min: 2, max: 2 },
+        stats: toStatDefs(input.stats ?? []),
+        achievements: toAchievementDefs(input.achievements ?? []),
         votesToWin: input.scoring === "votes" ? 5 : undefined,
         durationLabel: "Community",
         official: false,
@@ -1043,6 +1116,9 @@ export class DemoBackend implements Backend {
       if (typeof input.score === "number" && (Number.isNaN(input.score) || Math.abs(input.score) > 1e9)) {
         throw new BackendError("Invalid score", "invalid");
       }
+      // Demo uploads live on /api/demo-media, whatever the environment says.
+      const mediaError = displayProblem(input.display, { demo: true });
+      if (mediaError) throw new BackendError(mediaError, "invalid");
       target.state = "submitted";
       target.score = typeof input.score === "number" ? input.score : null;
       target.submission = { data: input.data, display: input.display };
@@ -1150,16 +1226,185 @@ export class DemoBackend implements Backend {
   /* Storage                                                          */
   /* ---------------------------------------------------------------- */
 
-  async storageGet(appSlug: string, key: string): Promise<Json | null> {
-    const viewer = this.requireViewer();
-    return load().storage[`${appSlug}:${viewer.id}:${key}`] ?? null;
+  /** Mirrors `playable_app`: the app must exist (official, published, or the viewer's own). */
+  private requireApp(db: DemoDb, appSlug: string): AppManifest {
+    const app = appFor(db, appSlug);
+    if (!app || (!app.official && app.status !== "published" && app.developer.id !== getViewerId())) {
+      throw new BackendError("App not found", "not_found");
+    }
+    return app;
+  }
+
+  async storageGet(appSlug: string, key: string, scope: StorageScope = "user"): Promise<Json | null> {
+    const userId = this.storageScopeUser(scope);
+    storageKeyCheck(key);
+    const db = load();
+    this.requireApp(db, appSlug);
+    const value = userId ? db.storage[`${appSlug}:${userId}:${key}`] : db.appStorage?.[`${appSlug}:${key}`];
+    return value ?? null;
   }
 
   async storageSet(appSlug: string, key: string, value: Json): Promise<void> {
     const viewer = this.requireViewer();
+    storageKeyCheck(key);
+    if (value === undefined || value === null) throw new BackendError("A value is required (use delete to remove a key)", "invalid");
+    if (byteLength(value) > LIMITS.storageValueBytes) throw new BackendError("Storage values are limited to 64 KB", "invalid");
     mutate((db) => {
-      db.storage[`${appSlug}:${viewer.id}:${key}`] = value;
+      this.requireApp(db, appSlug);
+      const prefix = `${appSlug}:${viewer.id}:`;
+      const id = prefix + key;
+      if (!(id in db.storage)) {
+        const count = Object.keys(db.storage).filter((k) => k.startsWith(prefix)).length;
+        if (count >= LIMITS.storageKeysPerUser) {
+          throw new BackendError(`Storage is full (${LIMITS.storageKeysPerUser} keys)`, "conflict");
+        }
+      }
+      db.storage[id] = structuredClone(value);
     });
+  }
+
+  async storageDelete(appSlug: string, key: string): Promise<void> {
+    const viewer = this.requireViewer();
+    storageKeyCheck(key);
+    mutate((db) => {
+      this.requireApp(db, appSlug);
+      delete db.storage[`${appSlug}:${viewer.id}:${key}`];
+    });
+  }
+
+  async storageList(appSlug: string, prefix?: string, scope: StorageScope = "user"): Promise<string[]> {
+    const userId = this.storageScopeUser(scope);
+    if (prefix !== undefined && (typeof prefix !== "string" || prefix.length > LIMITS.storageKeyLength)) {
+      throw new BackendError(`Prefixes are at most ${LIMITS.storageKeyLength} characters`, "invalid");
+    }
+    const db = load();
+    this.requireApp(db, appSlug);
+    const base = userId ? `${appSlug}:${userId}:` : `${appSlug}:`;
+    const source = userId ? db.storage : (db.appStorage ?? {});
+    return Object.keys(source)
+      .filter((k) => k.startsWith(base))
+      .map((k) => k.slice(base.length))
+      .filter((k) => !prefix || k.startsWith(prefix))
+      .sort();
+  }
+
+  /** Mirrors `storage_scope_user`: user scope needs a signed-in viewer, app scope is public. */
+  private storageScopeUser(scope: StorageScope): string | null {
+    if (scope !== "user" && scope !== "app") throw new BackendError("Storage scope is user or app", "invalid");
+    return scope === "app" ? null : this.requireViewer().id;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Media, stats & achievements (Stage 3)                            */
+  /* ---------------------------------------------------------------- */
+
+  async uploadMedia(appSlug: string, file: Blob): Promise<MediaRef> {
+    const viewer = this.requireViewer();
+    this.requireApp(load(), appSlug);
+    if (!isBlobLike(file)) throw new BackendError("Upload a file", "invalid");
+    const problem = mediaProblem(file.type, file.size);
+    if (problem) throw new BackendError(problem, "invalid");
+    const kind = mediaKindOf(file.type)!;
+    const since = Date.now() - 86_400_000;
+    const recent = (load().mediaUploads ?? []).filter(
+      (u) => u.appSlug === appSlug && u.userId === viewer.id && Date.parse(u.createdAt) > since,
+    );
+    const quota = mediaQuotaProblem(recent, file.size);
+    if (quota) throw new BackendError(quota, "rate_limited");
+
+    const [stored, meta] = await Promise.all([
+      postDemoMedia(file).catch((error: unknown) => {
+        throw new BackendError(error instanceof Error ? error.message : "Upload failed", "invalid");
+      }),
+      probeMedia(file, kind),
+    ]);
+    const url = absoluteMediaUrl(stored.url);
+    const mime = file.type.split(";")[0]!.trim().toLowerCase();
+    mutate((db) => {
+      const keep = (db.mediaUploads ?? []).filter((u) => Date.parse(u.createdAt) > since);
+      keep.push({ appSlug, userId: viewer.id, url, bytes: file.size, mime, createdAt: nowIso() });
+      db.mediaUploads = keep;
+    });
+    return { url, kind, mime, bytes: file.size, ...meta };
+  }
+
+  /** Mirrors `report_stats` / `apply_stats`. */
+  async reportStats(appSlug: string, values: { [key: string]: number }): Promise<{ [key: string]: number }> {
+    const viewer = this.requireViewer();
+    return mutate((db) => {
+      const app = this.requireApp(db, appSlug);
+      if (app.authority === "server") throw new BackendError(`${app.name} reports stats from its server`, "forbidden");
+      return applyStats(db, app, viewer.id, values);
+    });
+  }
+
+  /** Mirrors `app_stat_leaderboard`: best first (min ascending), ties share a rank, earlier holders first. */
+  async statLeaderboard(appSlug: string, key: string): Promise<StatLeaderRow[]> {
+    const db = load();
+    const app = this.requireApp(db, appSlug);
+    const def = app.stats?.find((s) => s.key === key);
+    if (!def) throw new BackendError(`Unknown stat ${key}`, "invalid");
+    const prefix = `${appSlug}:`;
+    const suffix = `:${key}`;
+    const rows = Object.entries(db.userStats ?? {})
+      .filter(([k]) => k.startsWith(prefix) && k.endsWith(suffix))
+      .map(([k, row]) => ({ userId: k.slice(prefix.length, -suffix.length), ...row }))
+      .filter((r) => db.profiles[r.userId] && !isPracticeBot(r.userId));
+    const better = (a: number, b: number) => (def.aggregate === "min" ? a - b : b - a);
+    rows.sort((a, b) => better(a.value, b.value) || a.updatedAt.localeCompare(b.updatedAt) || a.userId.localeCompare(b.userId));
+    const out: StatLeaderRow[] = [];
+    rows.slice(0, 50).forEach((row, i) => {
+      const prev = out[i - 1];
+      const rank = prev && prev.value === row.value ? prev.rank : i + 1;
+      out.push({ rank, profile: db.profiles[row.userId]!, value: row.value });
+    });
+    return out;
+  }
+
+  /** Mirrors `user_stats`: declared stats of apps the viewer can see, by app then manifest order. */
+  async userStats(userId: string): Promise<UserStat[]> {
+    const db = load();
+    const out: UserStat[] = [];
+    for (const [k, row] of Object.entries(db.userStats ?? {})) {
+      const [appSlug, user, key] = k.split(":");
+      if (user !== userId || !appSlug || !key) continue;
+      const app = this.visibleApp(db, appSlug);
+      if (!app?.stats?.some((s) => s.key === key)) continue;
+      out.push({ appSlug, key, value: row.value, updatedAt: row.updatedAt });
+    }
+    const order = (s: UserStat) => this.visibleApp(db, s.appSlug)?.stats?.findIndex((d) => d.key === s.key) ?? 0;
+    return out.sort((a, b) => a.appSlug.localeCompare(b.appSlug) || order(a) - order(b));
+  }
+
+  /** Mirrors `unlock_achievement` / `grant_achievement`: once per player; the XP is added once. */
+  async unlockAchievement(appSlug: string, id: string): Promise<{ unlocked: boolean }> {
+    const viewer = this.requireViewer();
+    return mutate((db) => {
+      const app = this.requireApp(db, appSlug);
+      if (app.authority === "server") throw new BackendError(`${app.name} unlocks achievements from its server`, "forbidden");
+      return grantAchievement(db, app, viewer.id, id);
+    });
+  }
+
+  /** Mirrors `list_user_achievements`: newest first, declared achievements of visible apps only. */
+  async userAchievements(userId: string): Promise<UserAchievement[]> {
+    const db = load();
+    const out: UserAchievement[] = [];
+    for (const [k, unlockedAt] of Object.entries(db.achievements ?? {})) {
+      const [appSlug, user, achievementId] = k.split(":");
+      if (user !== userId || !appSlug || !achievementId) continue;
+      if (!this.visibleApp(db, appSlug)?.achievements?.some((a) => a.id === achievementId)) continue;
+      out.push({ appSlug, achievementId, unlockedAt });
+    }
+    return out.sort(
+      (a, b) => b.unlockedAt.localeCompare(a.unlockedAt) || a.appSlug.localeCompare(b.appSlug) || a.achievementId.localeCompare(b.achievementId),
+    );
+  }
+
+  private visibleApp(db: DemoDb, appSlug: string): AppManifest | null {
+    const app = appFor(db, appSlug);
+    if (!app) return null;
+    return app.official || app.status === "published" || app.developer.id === getViewerId() ? app : null;
   }
 
   /* ---------------------------------------------------------------- */

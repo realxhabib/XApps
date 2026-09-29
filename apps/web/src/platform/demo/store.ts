@@ -104,6 +104,22 @@ export interface WebhookDeliveryRow {
   lastError: string | null;
 }
 
+/** Stage 3: one player's value for one stat (`app_user_stats`). */
+export interface UserStatRow {
+  value: number;
+  updatedAt: string;
+}
+
+/** Stage 3: an upload recorded for the rolling 24 h quota (`media_uploads`). */
+export interface MediaUploadRow {
+  appSlug: string;
+  userId: string;
+  url: string;
+  bytes: number;
+  mime: string;
+  createdAt: string;
+}
+
 export interface DemoDb {
   version: 4;
   profiles: Record<string, Profile>;
@@ -116,6 +132,13 @@ export interface DemoDb {
   /** Stage 2 (added without a version bump; absent in older demo databases). */
   credentials?: Record<string, CredentialRow>;
   webhookDeliveries?: WebhookDeliveryRow[];
+  /** Stage 3 (also optional). App-scope storage by `app:key`; user scope stays in `storage` (`app:user:key`). */
+  appStorage?: Record<string, Json>;
+  /** Stat values by `app:user:key`. */
+  userStats?: Record<string, UserStatRow>;
+  /** Unlock time by `app:user:achievementId`. */
+  achievements?: Record<string, string>;
+  mediaUploads?: MediaUploadRow[];
 }
 
 export const DB_VERSION = 4 as const;

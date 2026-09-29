@@ -185,9 +185,9 @@ describe("validateRequest", () => {
   it("rejects bad params", () => {
     expect(validateRequest("room.send", { type: "", payload: 1 })).toMatch(/type/);
     expect(validateRequest("match.submit", { display: { kind: "svg", svg: "<script>" } })).toMatch(/SVG/);
-    expect(validateRequest("match.submit", { display: { kind: "image", url: "javascript:alert(1)" } })).toMatch(/https/);
+    expect(validateRequest("match.submit", { display: { kind: "image", url: "javascript:alert(1)" } })).toMatch(/http\(s\)/);
     expect(validateRequest("social.share", { text: "x".repeat(300) })).toMatch(/long/);
-    expect(validateRequest("storage.set", { key: "k", value: "x".repeat(20_000) })).toMatch(/large/);
+    expect(validateRequest("storage.set", { key: "k", value: "x".repeat(70_000) })).toMatch(/large/);
   });
 });
 
