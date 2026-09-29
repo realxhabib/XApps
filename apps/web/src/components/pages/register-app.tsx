@@ -13,7 +13,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { play } from "@/lib/sfx";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import { AppImagesField } from "@/components/developers/app-images-field";
+import { CoverField, IconField } from "@/components/developers/app-images-field";
 import { useBackend, useViewer } from "@/platform/client";
 import { achievementDefsError, manifestShapeError, statDefsError } from "@/platform/catalog";
 import { useRegisterApp } from "@/platform/queries";
@@ -28,7 +28,6 @@ import {
 } from "./progress-editors";
 import { SignInPrompt } from "./sign-in-prompt";
 
-const ICONS = ["🎯", "🧠", "🎨", "🎲", "🏁", "🪩", "🧩", "🎤", "🗳️", "🃏", "🏀", "👾"];
 const PALETTES: [string, string][] = [
   ["#5b74ff", "#a35cff"],
   ["#ff5ca8", "#8b5cff"],
@@ -333,24 +332,15 @@ export function RegisterApp() {
           </div>
 
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-            <div>
-              <span className="text-sm font-semibold">Icon</span>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {ICONS.map((icon) => (
-                  <motion.button
-                    type="button"
-                    key={icon}
-                    whileHover={{ scale: 1.15, rotate: -6 }}
-                    whileTap={{ scale: 0.9 }}
-                    onClick={() => set("icon", icon)}
-                    className={cn("flex size-10 items-center justify-center rounded-xl text-xl transition", form.icon === icon ? "bg-white/15 ring-2 ring-white/60" : "bg-white/[0.04]")}
-                    aria-label={`Icon ${icon}`}
-                  >
-                    {icon}
-                  </motion.button>
-                ))}
-              </div>
-            </div>
+            <IconField
+              icon={form.icon}
+              iconImage={form.iconImage}
+              accent={form.accent}
+              name={form.name}
+              onChange={(next) => setForm((f) => ({ ...f, ...next }))}
+              error={errors.icon}
+              idPrefix="register-icon"
+            />
             <div>
               <span className="text-sm font-semibold">Accent</span>
               <div className="mt-2 flex flex-wrap gap-2">
@@ -374,11 +364,11 @@ export function RegisterApp() {
             </div>
           </div>
 
-          <AppImagesField
-            value={{ iconImage: form.iconImage, coverImage: form.coverImage }}
+          <CoverField
+            coverImage={form.coverImage}
+            accent={form.accent}
             onChange={(next) => setForm((f) => ({ ...f, ...next }))}
-            app={{ name: form.name, icon: form.icon, accent: form.accent }}
-            idPrefix="register"
+            idPrefix="register-cover"
           />
 
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">

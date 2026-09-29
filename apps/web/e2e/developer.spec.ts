@@ -13,9 +13,16 @@ test("a developer ships a new version through review", async ({ page }) => {
   await page.getByPlaceholder("Tap Race").fill(`Tap Race ${suffix}`);
   await page.getByPlaceholder("Ten seconds. Fastest thumbs win.").fill("Ten seconds. Fastest thumbs win.");
   await page.getByPlaceholder("https://tap-race.dev").fill("http://localhost:3000/examples/rps/index.html");
-  // A custom icon: cropped, re-encoded and stored, then shown instead of the emoji.
+  // Icon: an emoji or an uploaded image. The image is cropped, re-encoded and stored, then shown instead of the emoji.
+  await page.getByRole("tab", { name: "Image" }).click();
+  await expect(page.getByRole("button", { name: "Icon 🎯" })).toHaveCount(0);
   await page.getByLabel("Upload icon").setInputFiles(resolve("e2e/fixtures/app-icon.jpg"));
   await expect(page.getByRole("button", { name: "Replace icon" })).toBeVisible({ timeout: 15_000 });
+  // Back to Emoji drops the image; Image again brings it back.
+  await page.getByRole("tab", { name: "Emoji" }).click();
+  await expect(page.getByRole("button", { name: "Icon 🎯" })).toBeVisible();
+  await page.getByRole("tab", { name: "Image" }).click();
+  await expect(page.getByRole("button", { name: "Replace icon" })).toBeVisible();
   await page.getByRole("button", { name: "Submit app" }).click();
   await expect(page.getByText(/1\.0\.0/).first()).toBeVisible({ timeout: 15_000 });
   await page.goto(`/apps/${slug}`);

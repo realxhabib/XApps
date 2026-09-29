@@ -7,7 +7,7 @@ import { AchievementsEditor, StatsEditor, stripAchievementRows, stripStatRows, t
 import { Segmented } from "@/components/ui/segmented";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import { AppImagesField } from "@/components/developers/app-images-field";
+import { CoverField, IconField } from "@/components/developers/app-images-field";
 import { achievementDefsError, manifestShapeError, statDefsError, MANIFEST_DEFAULTS } from "@/platform/catalog";
 import { versionUrlError } from "@/platform/shipping";
 import { CATEGORIES, type AppCategory, type PlayableMode, type Scoring, type VersionManifest } from "@/platform/types";
@@ -43,7 +43,6 @@ export interface ManifestForm {
 
 export type ManifestErrors = Partial<Record<keyof ManifestForm, string>>;
 
-export const ICONS = ["🎯", "🧠", "🎨", "🎲", "🏁", "🪩", "🧩", "🎤", "🗳️", "🃏", "🏀", "👾"];
 export const PALETTES: [string, string][] = [
   ["#5b74ff", "#a35cff"],
   ["#ff5ca8", "#8b5cff"],
@@ -268,24 +267,15 @@ export function ManifestFields({
       </Field>
 
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-        <Field as="div" label="Icon" error={errors.icon}>
-          <div className="flex flex-wrap gap-1.5">
-            {(ICONS.includes(value.icon) ? ICONS : [value.icon, ...ICONS]).map((icon) => (
-              <motion.button
-                type="button"
-                key={icon}
-                whileHover={{ scale: 1.15, rotate: -6 }}
-                whileTap={{ scale: 0.9 }}
-                onClick={() => onChange({ icon })}
-                className={cn("flex size-10 items-center justify-center rounded-xl text-xl transition", value.icon === icon ? "bg-white/15 ring-2 ring-white/60" : "bg-white/[0.04]")}
-                aria-label={`Icon ${icon}`}
-                aria-pressed={value.icon === icon}
-              >
-                {icon}
-              </motion.button>
-            ))}
-          </div>
-        </Field>
+        <IconField
+          icon={value.icon}
+          iconImage={value.iconImage}
+          accent={value.accent}
+          name={value.name}
+          onChange={onChange}
+          error={errors.icon}
+          idPrefix={`${idPrefix}-icon`}
+        />
         <Field as="div" label="Accent" error={errors.accent}>
           <div className="flex flex-wrap gap-2">
             {PALETTES.map((pair) => (
@@ -308,12 +298,7 @@ export function ManifestFields({
         </Field>
       </div>
 
-      <AppImagesField
-        value={{ iconImage: value.iconImage, coverImage: value.coverImage }}
-        onChange={onChange}
-        app={{ name: value.name, icon: value.icon, accent: value.accent }}
-        idPrefix={`${idPrefix}-images`}
-      />
+      <CoverField coverImage={value.coverImage} accent={value.accent} onChange={onChange} idPrefix={`${idPrefix}-cover`} />
 
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
         <Field as="div" label="Modes" error={errors.modes}>

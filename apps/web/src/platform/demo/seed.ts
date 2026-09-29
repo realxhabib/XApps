@@ -146,7 +146,13 @@ export function ensureShowcase(db: DemoDb): boolean {
     changed = true;
   }
   for (const app of SHOWCASE_APPS) {
-    if (db.apps[app.slug] || (db.showcaseSeeded ?? []).includes(app.slug)) continue;
+    const existing = db.apps[app.slug];
+    // Registered by hand before the showcase existed: give the owner's listing its art if it has none.
+    if (existing && existing.developer.handle === app.developer.handle && !existing.iconImage && !existing.coverImage) {
+      db.apps[app.slug] = { ...existing, iconImage: app.iconImage, coverImage: app.coverImage };
+      changed = true;
+    }
+    if (existing || (db.showcaseSeeded ?? []).includes(app.slug)) continue;
     db.apps[app.slug] = structuredClone(app);
     (db.showcaseSeeded ??= []).push(app.slug);
     changed = true;
