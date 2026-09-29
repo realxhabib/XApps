@@ -281,14 +281,89 @@ status/attempts, "Send test event", and copy-paste snippets for Node
 (Express/Next route) verifying a webhook and reporting a result. Demo mode
 explains that the server API and webhooks need Supabase.
 
-## Stage 3: Media & data (outline)
+## Stage 3: Media & data
 
-- `media.upload(blob)` → hosted URL in a per-app bucket (quotas, image/video/audio).
-- Entry displays: `video`, `audio`, and image galleries.
-- Storage: larger values, key listing, per-match scoped storage.
-- `stats.report(key, value)` + per-app custom leaderboards.
-- Achievements declared in the manifest; unlocked by the app (server-only for
-  `authority: "server"` apps); shown on profiles.
+Goal: apps can carry real media and real progression. Everything stays
+additive; v1/v2 apps are unaffected.
+
+### Media
+
+- `xapps.media.upload(blob, { alt? })` → `MediaRef { url, kind: "image" | "video" | "audio", mime, bytes, width?, height?, duration? }`.
+  The app hands the host a `Blob` (structured-cloned over postMessage); the
+  host validates it and uploads it for the signed-in user. Allowed in match
+  and setup purposes, refused for spectators.
+- Types and limits (`LIMITS.media`): images (jpeg/png/webp/gif) ≤ 8 MB,
+  audio (mpeg/mp4/ogg/webm/wav) ≤ 10 MB, video (mp4/webm/quicktime) ≤ 25 MB;
+  per user per app: 60 uploads and 200 MB per rolling 24 h.
+- Supabase: public bucket `app-media`, path `<app_slug>/<user_id>/<uuid>.<ext>`;
+  insert policy = own folder + quota check (`media_quota_ok`); bucket
+  `file_size_limit` 25 MB + `allowed_mime_types`. Rows are also recorded in
+  `media_uploads(app_slug, user_id, path, bytes, mime, created_at)` via
+  `record_media_upload(p_app, p_path, p_bytes, p_mime)` (called by the host
+  right after the storage upload; verifies the object exists and belongs to
+  the caller).
+- Demo mode: `/api/demo-media` keeps files in the dev server's memory
+  (LRU, 200 MB) and serves `/api/demo-media/<id>`; demo only, not
+  persistent.
+- Media URLs the platform accepts anywhere (entries, meme drops, state):
+  our `app-media` public URLs and `/api/demo-media/<id>` (plus the existing
+  meme allow list). `isAllowedMediaUrl()` is the single check.
+
+### Entries
+
+`SubmissionDisplay` gains:
+- `{ kind: "video", url, poster?, alt }` (muted autoplay-on-view, loops, tap for sound)
+- `{ kind: "audio", url, alt, cover? }` (waveform-style player)
+- `{ kind: "gallery", items: { url, alt }[] }` (2–6 images, swipeable)
+Media URLs must pass `isAllowedMediaUrl`. Arena, voting and results render
+all kinds.
+
+### Storage
+
+- Values up to 64 KB (was 16 KB); up to 200 keys per user per app.
+- `storage.get/set/delete/list({ prefix? })` with `scope: "user"` (default,
+  private to the player) or `"app"` (one public key/value space per app:
+  everyone can read, only the app's **server** can write via
+  `PUT /api/v1/storage/:key` — daily puzzles, config, seasons).
+- SQL: `app_storage` gains `scope` (user|app) with `user_id` null for app
+  scope; RPCs `storage_get/set/delete/list` and `app_api_storage_set/delete`.
+
+### Stats & leaderboards
+
+- Manifest `stats: { key, label, aggregate: "max" | "min" | "sum" | "last", format?: "number" | "ms" | "percent" }[]` (≤ 8; key `^[a-z][a-z0-9_]{0,31}$`).
+- `xapps.stats.report({ [key]: number })` → applies each aggregate to the
+  player's value. Client apps report from the client; server-authoritative
+  apps only via `POST /api/v1/stats { userId, values }`.
+- SQL: `app_user_stats(app_slug, user_id, key, value, updated_at)`;
+  `report_stats(p_app, p_values)`, `app_api_report_stats(p_secret, p_user, p_values)`,
+  `app_stat_leaderboard(p_app, p_key, p_limit)` (ordered by the stat's
+  aggregate direction: min → ascending).
+- App pages show a tab per stat; profiles show a player's stats per app.
+
+### Achievements
+
+- Manifest `achievements: { id, name, description, icon (one emoji), xp (0–100), secret?: boolean }[]` (≤ 30; id like stat keys; total XP ≤ 500 per app).
+- `xapps.achievements.unlock(id)` → `{ unlocked: boolean }` (false if you
+  already had it). Client apps unlock from the client; server apps only via
+  `POST /api/v1/achievements { userId, id }`. XP is added once.
+- Host shows an unlock moment (toast with the icon, sound, confetti burst);
+  event `achievement.unlock` `{ id, userId }` reaches the app.
+- SQL: `user_achievements(app_slug, user_id, achievement_id, unlocked_at)`;
+  `unlock_achievement(p_app, p_id)`, `app_api_unlock_achievement(p_secret, p_user, p_id)`,
+  `list_user_achievements(p_user)`. Profiles show badges; secret ones are
+  hidden until unlocked.
+
+### Manifest storage
+
+`apps.stats jsonb default '[]'`, `apps.achievements jsonb default '[]'`,
+validated by a check function; `register_app` (or the existing insert
+path) accepts them; the registration form gets editors for both.
+
+### Meme Duel on the public platform
+
+Meme Duel declares `setup: true` and renders its own challenge setup in
+setup purpose (template/trending/drop/topic), uploading drops with
+`media.upload`. The platform's hard-coded Meme Duel setup is removed.
 
 ## Stage 4: Shipping (outline)
 
