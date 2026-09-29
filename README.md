@@ -18,6 +18,7 @@ Anyone can build and list their own app with the `@xapps/sdk`.
 | 🔥 Hot Takes | You're assigned a side; argue it in 280 characters, and the crowd picks the better argument | votes |
 | 🔴 Four in a Row | Connect-four with physics and a minimax bot; play live or turn by turn over days | win/draw/loss |
 | 🎯 Trivia Royale | 2–8 players, eight rounds, faster right answers score more; spectators welcome | points |
+| 🛻 Wedge Wars | 3D arena brawl for 2–4 players: armored wedge trucks with spinners, flippers, hammers and flamethrowers, with saws, flame vents and a KO pit | placement + damage |
 | 🧩 Emoji Decode | Eight emoji puzzles, where both speed and accuracy score | points |
 | ✊ RPS Showdown | Example community app: **one HTML file**, commit-reveal included | rounds won |
 

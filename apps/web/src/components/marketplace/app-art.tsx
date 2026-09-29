@@ -125,6 +125,67 @@ export function AppArt({ app, className }: { app: AppManifest; className?: strin
         </div>
       );
     }
+    case "wedge-wars":
+      return (
+        <div className={className} aria-hidden>
+          <div className="relative flex size-full items-end justify-center overflow-hidden">
+            <div
+              className="absolute inset-x-0 bottom-0 h-[34%]"
+              style={{
+                background: "linear-gradient(to top, #0b0e14, #1a1f2b)",
+                boxShadow: `inset 0 1px 0 ${a}55`,
+              }}
+            />
+            {[0, 1].map((side) => (
+              <motion.svg
+                key={side}
+                viewBox="0 0 120 56"
+                className="absolute bottom-[22%] w-[46%]"
+                style={side ? { right: "2%", scaleX: -1 } : { left: "2%" }}
+                animate={{ x: side ? [-6, 6, -6] : [6, -6, 6] }}
+                transition={loop(1.6, side * 0.2)}
+              >
+                <defs>
+                  <linearGradient id={`ww-steel-${side}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stopColor="#f2f5fa" />
+                    <stop offset="0.55" stopColor="#9aa3b3" />
+                    <stop offset="1" stopColor="#4a5160" />
+                  </linearGradient>
+                </defs>
+                {/* body: sharp wedge, rising to the roof apex, sloping sail */}
+                <path d="M4 38 L6 32 L64 12 L106 24 L110 38 Z" fill={`url(#ww-steel-${side})`} stroke="#1a1d24" strokeWidth="1" />
+                <path d="M40 22 L64 14 L84 20 L46 26 Z" fill="#0d1118" opacity="0.9" />
+                <path d="M6 33 L104 33" stroke={side ? b : a} strokeWidth="2.2" />
+                <rect x="3" y="30.5" width="10" height="2.2" rx="1" fill="#fff" style={{ filter: `drop-shadow(0 0 3px ${a})` }} />
+                <circle cx="26" cy="42" r="9" fill="#12151c" stroke="#3b4150" strokeWidth="2" />
+                <circle cx="90" cy="42" r="9" fill="#12151c" stroke="#3b4150" strokeWidth="2" />
+                <circle cx="26" cy="42" r="3" fill={side ? b : a} />
+                <circle cx="90" cy="42" r="3" fill={side ? b : a} />
+                <motion.rect
+                  x="-2"
+                  y="35"
+                  width="18"
+                  height="2.4"
+                  rx="1"
+                  fill="#dfe4ec"
+                  style={{ originX: "7px", originY: "36px" }}
+                  animate={{ scaleX: [1, -1, 1] }}
+                  transition={reduced ? { duration: 0 } : { duration: 0.18, repeat: Infinity, ease: "linear" }}
+                />
+              </motion.svg>
+            ))}
+            {Array.from({ length: 7 }).map((_, i) => (
+              <motion.span
+                key={i}
+                className="absolute bottom-[34%] left-1/2 h-[3px] w-3 rounded-full"
+                style={{ background: i % 2 ? "#fff3c4" : b, boxShadow: `0 0 8px ${b}` }}
+                animate={{ x: [0, (i - 3) * 18], y: [0, -30 - (i % 3) * 14, -8], opacity: [0, 1, 0], rotate: (i - 3) * 20 }}
+                transition={loop(1.6, 0.75 + i * 0.03)}
+              />
+            ))}
+          </div>
+        </div>
+      );
     case "meme-duel":
       return (
         <div className={className} aria-hidden>

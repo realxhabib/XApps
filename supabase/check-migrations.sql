@@ -15,6 +15,7 @@ from (values
                                               and exists (select 1 from public.apps where slug = 'meme-duel' and has_setup)),
   (10, '20261002000200_first_party_progress', exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'apps' and column_name = 'stats')
                                               and exists (select 1 from public.apps where slug = 'quick-draw' and jsonb_array_length(stats) > 0)),
-  (11, '20261003000000_shipping',             to_regclass('public.app_versions') is not null)
+  (11, '20261003000000_shipping',             to_regclass('public.app_versions') is not null),
+  (12, '20261004000000_wedge_wars',           exists (select 1 from public.apps where slug = 'wedge-wars' and jsonb_array_length(achievements) > 0))
 ) as m(n, file, applied)
 order by n;
