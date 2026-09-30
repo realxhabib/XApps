@@ -39,6 +39,7 @@
   html.v .tag { font-size: 70px; text-align: center; }
   html.v .cap { left: 72px; bottom: 300px; } /* clear of game HUDs and X's mobile controls */
   html.v .cap.right { right: 72px; }
+  .cap.top, html.v .cap.top { bottom: auto; top: 260px; }
   html.v .cap .h { font-size: 96px; }
 </style>
 </head>
@@ -104,8 +105,8 @@ if (kind === "open") {
 } else if (kind === "end") {
   root.innerHTML = background() + `<div class="center" id="c">
     <div class="brand" id="m" style="gap:22px"><div>${mark(120)}</div><div class="word" style="font-size:120px">Apps</div></div>
-    <div class="tag" id="t" style="font-size:${p.get("v") === "1" ? 92 : 104}px;margin-top:64px">Build yours${p.get("v") === "1" ? "<br>" : " "}with <span class="grad">@xapps/sdk</span></div>
-    <div class="chip" id="chip"><b>$</b> npm i @xapps/sdk</div>
+    <div class="tag" id="t" style="font-size:${p.get("v") === "1" ? 92 : 104}px;margin-top:64px">${p.get("tag") || `Build yours${p.get("v") === "1" ? "<br>" : " "}with <span class="grad">@xapps/sdk</span>`}</div>
+    <div class="chip" id="chip">${p.get("chip") || "<b>$</b> npm i @xapps/sdk"}</div>
     </div>`;
   window.render = (t) => {
     drift(t + 3);
@@ -125,7 +126,7 @@ if (kind === "open") {
   };
 } else if (kind === "cap") {
   const side = p.get("side") || "left";
-  root.innerHTML = `<div class="cap ${side === "right" ? "right" : ""}" id="cap"><div class="scrim" id="s"></div>
+  root.innerHTML = `<div class="cap ${side === "right" ? "right" : ""} ${p.get("pos") === "top" ? "top" : ""}" id="cap"><div class="scrim" id="s"></div>
     <div class="e" id="e">${p.get("e") || ""}</div><div class="h" id="h">${p.get("h") || ""}</div></div>`;
   const dur = Number(p.get("dur") || 2.5);
   window.render = (t) => {

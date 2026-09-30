@@ -1,0 +1,7 @@
+{"size":[1080,1920],"clips":[
+ {"name":"1 Send a challenge","src":"chalv","start":26,"end":140,"caption":{"dir":"vcap-chal-top","at":10}},
+ {"name":"2 Match starts: VS","src":"chalv","start":196,"end":270,"xfade":6},
+ {"name":"3 1 → GO","src":"chalv","start":300,"end":350},
+ {"name":"4 Victory + Share on X","src":"chalv","start":750,"end":855,"xfade":6,"caption":{"dir":"vcap-share","at":10}},
+ {"name":"5 End card","src":"vcard-short","start":0,"end":75,"xfade":8}
+]}
