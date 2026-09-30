@@ -596,7 +596,7 @@ export const OFFICIAL_APPS: AppManifest[] = [
   {
     slug: "nova-rally",
     name: "Nova Rally",
-    tagline: "Kart racing with rocket ships. Drift, boost and blast your way across Mars, the asteroid belt and beyond.",
+    tagline: "Kart racing with rocket ships across Mars, the asteroid belt and beyond.",
     description:
       "A full 3D kart racer in space for up to 8 racers (CPU pilots fill the grid). Pick one of eight rocket ships and a paint job, then race a three-track Grand Prix: the red canyons of Mars, a floating ribbon through a tumbling asteroid belt, Saturn's rings with a full loop and a corkscrew, an upside-down space station in a nebula, and big low-gravity jumps on the Moon. Drift for blue, orange and purple mini-turbos, nail rocket starts, trick off ramps, slipstream rivals and grab stardust for top speed. Eleven items: seeker missiles, pulse bolts, plasma mines, ion shields, EMP storms, warp drives, cloaks and a singularity that hunts down the leader. Dodge asteroids, dust devils, meteor strikes and plasma arcs. Challengers pick the cup, speed class (100cc to 200cc) and laps. Play live, anytime, or practice against CPU pilots.",
     category: "games",
@@ -645,7 +645,7 @@ export const OFFICIAL_APPS: AppManifest[] = [
       { id: "comeback", name: "Comeback kid", description: "Win a race after dropping to 7th or worse.", icon: "📈", xp: 50 },
       { id: "first_win", name: "Podium finish", description: "Win a Nova Rally match.", icon: "🥇", xp: 30 },
       { id: "event_horizon", name: "Event horizon", description: "Hit the leader with a Singularity.", icon: "🕳️", xp: 40, secret: true },
-      { id: "flawless", name: "Flawless", description: "Win every race of a Grand Prix.", icon: "💎", xp: 100, secret: true },
+      { id: "flawless", name: "Flawless", description: "Win every race of a Grand Prix.", icon: "💎", xp: 85, secret: true },
     ],
   },
 ];
