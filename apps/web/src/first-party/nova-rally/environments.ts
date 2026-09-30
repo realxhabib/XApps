@@ -650,9 +650,7 @@ function equirect(ctx: Ctx, w: number, h: number, fn: (x: number, y: number, z: 
 /** Tiling greyscale detail (multiplier around 1) for the terrain's triplanar mapping. */
 function detailTexture(ctx: Ctx, seed: number, kind: "mars" | "luna" | "europa"): DataTexture {
   const S = ctx.hi ? 512 : 256;
-  const sc = S / 256;
   const data = new Uint8Array(S * S * 4);
-  const r = rng(seed);
   const hgt = new Float32Array(S * S);
   for (let y = 0; y < S; y++) {
     for (let x = 0; x < S; x++) {
@@ -672,23 +670,6 @@ function detailTexture(ctx: Ctx, seed: number, kind: "mars" | "luna" | "europa")
         h = h * 0.9;
       }
       hgt[y * S + x] = h;
-    }
-  }
-  // Pebbles (mars) or micro-craters (luna).
-  const n = 0 * sc;
-  for (let k = 0; k < n; k++) {
-    const px = r() * S;
-    const py = r() * S;
-    const rad = (kind === "mars" ? 1 + r() * 2.5 : 2 + Math.pow(r(), 3) * 18) * sc;
-    const R = Math.ceil(rad * 1.6);
-    for (let dy = -R; dy <= R; dy++) {
-      for (let dx = -R; dx <= R; dx++) {
-        const d = Math.hypot(dx, dy) / rad;
-        if (d > 1.6) continue;
-        const k2 = pmod(Math.floor(py + dy), S) * S + pmod(Math.floor(px + dx), S);
-        if (kind === "mars") hgt[k2] += d < 1 ? (1 - d * d) * 0.22 : 0;
-        else hgt[k2] += d < 1 ? (d * d - 1) * 0.25 + 0.06 * smooth(0.6, 1, d) : 0.06 * Math.exp(-(d - 1) * (d - 1) * 12);
-      }
     }
   }
   for (let i = 0; i < S * S; i++) {
