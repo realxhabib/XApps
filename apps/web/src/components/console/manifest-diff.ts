@@ -47,6 +47,8 @@ const SCALARS: [string, string, (m: ManifestSide) => string, boolean?][] = [
   ["name", "Name", (s) => s.manifest.name],
   ["tagline", "Tagline", (s) => s.manifest.tagline],
   ["description", "Description", (s) => s.manifest.description || "—", true],
+  // Absent kind (manifests from before standalone apps) is a game.
+  ["kind", "Kind", (s) => ((s.manifest.kind ?? MANIFEST_DEFAULTS.kind) === "app" ? "App" : "Game")],
   ["category", "Category", (s) => categoryLabel(s.manifest.category)],
   ["icon", "Icon", (s) => s.manifest.icon],
   ["accent", "Accent", (s) => s.manifest.accent.join(" → ")],

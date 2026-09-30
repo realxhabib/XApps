@@ -8,9 +8,10 @@ import { Segmented } from "@/components/ui/segmented";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { CoverField, IconField } from "@/components/developers/app-images-field";
+import { KindPicker } from "@/components/developers/kind-picker";
 import { achievementDefsError, manifestShapeError, statDefsError, MANIFEST_DEFAULTS } from "@/platform/catalog";
 import { versionUrlError } from "@/platform/shipping";
-import { CATEGORIES, type AppCategory, type PlayableMode, type Scoring, type VersionManifest } from "@/platform/types";
+import { CATEGORIES, type AppCategory, type AppKind, type PlayableMode, type Scoring, type VersionManifest } from "@/platform/types";
 import { fieldClass } from "./ui";
 import type { ManifestSide } from "./manifest-diff";
 
@@ -24,6 +25,7 @@ export interface ManifestForm {
   tagline: string;
   description: string;
   category: AppCategory;
+  kind: AppKind;
   icon: string;
   iconImage: string | null;
   coverImage: string | null;
@@ -63,6 +65,7 @@ export function formFromSide(side: ManifestSide): ManifestForm {
     tagline: m.tagline,
     description: m.description ?? "",
     category: m.category,
+    kind: m.kind ?? "game",
     icon: m.icon,
     iconImage: m.iconImage ?? null,
     coverImage: m.coverImage ?? null,
@@ -88,6 +91,7 @@ export function sideFromForm(form: ManifestForm): ManifestSide {
     tagline: form.tagline.trim(),
     description: form.description.trim(),
     category: form.category,
+    kind: form.kind,
     icon: form.icon,
     iconImage: form.iconImage,
     coverImage: form.coverImage,
@@ -231,6 +235,7 @@ export function ManifestFields({
   };
   return (
     <div className="space-y-6">
+      <KindPicker value={value.kind} onChange={(kind) => onChange({ kind })} idPrefix={`${idPrefix}-kind`} />
       <Field label="App URL" error={errors.url} hint="The build reviewers and testers load. It must allow framing by this site.">
         <input className={cn(fieldClass, "font-mono")} value={value.url} onChange={(e) => onChange({ url: e.target.value })} placeholder="https://tap-race.dev/v2" inputMode="url" />
       </Field>
@@ -300,110 +305,114 @@ export function ManifestFields({
 
       <CoverField coverImage={value.coverImage} accent={value.accent} onChange={onChange} idPrefix={`${idPrefix}-cover`} />
 
-      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-        <Field as="div" label="Modes" error={errors.modes}>
-          <div className="space-y-2">
-            {(
-              [
-                ["live", "Live", "Both online at once"],
-                ["async", "Play anytime", "Take turns on your own time"],
-                ["practice", "Practice", "Your app plays a bot"],
-              ] as [PlayableMode, string, string][]
-            ).map(([mode, label, sub]) => {
-              const on = value.modes.includes(mode);
-              return (
-                <button
-                  type="button"
-                  key={mode}
-                  aria-pressed={on}
-                  onClick={() => onChange({ modes: on ? value.modes.filter((m) => m !== mode) : [...value.modes, mode] })}
-                  className={cn("flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition", on ? "border-white/30 bg-white/[0.07]" : "border-white/10")}
-                >
-                  <span className={cn("flex size-5 items-center justify-center rounded-md border transition", on ? "border-volt bg-volt text-ink-950" : "border-white/25")}>{on && "✓"}</span>
-                  <span>
-                    <span className="block text-sm font-semibold">{label}</span>
-                    <span className="block text-xs text-ink-400">{sub}</span>
-                  </span>
-                </button>
-              );
-            })}
+      {value.kind === "game" && (
+        <>
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+            <Field as="div" label="Modes" error={errors.modes}>
+              <div className="space-y-2">
+                {(
+                  [
+                    ["live", "Live", "Both online at once"],
+                    ["async", "Play anytime", "Take turns on your own time"],
+                    ["practice", "Practice", "Your app plays a bot"],
+                  ] as [PlayableMode, string, string][]
+                ).map(([mode, label, sub]) => {
+                  const on = value.modes.includes(mode);
+                  return (
+                    <button
+                      type="button"
+                      key={mode}
+                      aria-pressed={on}
+                      onClick={() => onChange({ modes: on ? value.modes.filter((m) => m !== mode) : [...value.modes, mode] })}
+                      className={cn("flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition", on ? "border-white/30 bg-white/[0.07]" : "border-white/10")}
+                    >
+                      <span className={cn("flex size-5 items-center justify-center rounded-md border transition", on ? "border-volt bg-volt text-ink-950" : "border-white/25")}>{on && "✓"}</span>
+                      <span>
+                        <span className="block text-sm font-semibold">{label}</span>
+                        <span className="block text-xs text-ink-400">{sub}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+            <Field as="div" label="Who wins?" error={errors.votesToWin}>
+              <div className="space-y-2">
+                {(
+                  [
+                    ["high", "Highest score", "Points, rounds, streaks"],
+                    ["low", "Lowest score", "Times, moves, strokes"],
+                    ["votes", "The crowd", "Arena voters judge entries"],
+                  ] as [Scoring, string, string][]
+                ).map(([scoring, label, sub]) => (
+                  <button
+                    type="button"
+                    key={scoring}
+                    aria-pressed={value.scoring === scoring}
+                    onClick={() => onChange({ scoring })}
+                    className={cn("relative flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition", value.scoring === scoring ? "border-white/30" : "border-white/10")}
+                  >
+                    {value.scoring === scoring && <motion.span layoutId={`${idPrefix}-scoring`} className="absolute inset-0 rounded-2xl bg-white/[0.07]" transition={spring.layout} />}
+                    <span className={cn("relative size-4 rounded-full border-2 transition", value.scoring === scoring ? "border-volt bg-volt" : "border-white/25")} />
+                    <span className="relative">
+                      <span className="block text-sm font-semibold">{label}</span>
+                      <span className="block text-xs text-ink-400">{sub}</span>
+                    </span>
+                  </button>
+                ))}
+                {value.scoring === "votes" && (
+                  <label className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 px-3 py-2">
+                    <span className="text-sm text-ink-200">Votes to win</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={99}
+                      className="h-9 w-20 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-right font-mono text-sm outline-none focus:border-nova-400/60"
+                      value={value.votesToWin ?? ""}
+                      placeholder="auto"
+                      onChange={(e) => onChange({ votesToWin: e.target.value ? Number(e.target.value) : null })}
+                    />
+                  </label>
+                )}
+              </div>
+            </Field>
           </div>
-        </Field>
-        <Field as="div" label="Who wins?" error={errors.votesToWin}>
-          <div className="space-y-2">
-            {(
-              [
-                ["high", "Highest score", "Points, rounds, streaks"],
-                ["low", "Lowest score", "Times, moves, strokes"],
-                ["votes", "The crowd", "Arena voters judge entries"],
-              ] as [Scoring, string, string][]
-            ).map(([scoring, label, sub]) => (
-              <button
-                type="button"
-                key={scoring}
-                aria-pressed={value.scoring === scoring}
-                onClick={() => onChange({ scoring })}
-                className={cn("relative flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition", value.scoring === scoring ? "border-white/30" : "border-white/10")}
-              >
-                {value.scoring === scoring && <motion.span layoutId={`${idPrefix}-scoring`} className="absolute inset-0 rounded-2xl bg-white/[0.07]" transition={spring.layout} />}
-                <span className={cn("relative size-4 rounded-full border-2 transition", value.scoring === scoring ? "border-volt bg-volt" : "border-white/25")} />
-                <span className="relative">
-                  <span className="block text-sm font-semibold">{label}</span>
-                  <span className="block text-xs text-ink-400">{sub}</span>
-                </span>
-              </button>
-            ))}
-            {value.scoring === "votes" && (
-              <label className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 px-3 py-2">
-                <span className="text-sm text-ink-200">Votes to win</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={99}
-                  className="h-9 w-20 rounded-xl border border-white/10 bg-white/[0.03] px-3 text-right font-mono text-sm outline-none focus:border-nova-400/60"
-                  value={value.votesToWin ?? ""}
-                  placeholder="auto"
-                  onChange={(e) => onChange({ votesToWin: e.target.value ? Number(e.target.value) : null })}
-                />
-              </label>
-            )}
-          </div>
-        </Field>
-      </div>
 
-      <Field as="div" label="Table" error={errors.players}>
-        <div className="grid grid-cols-1 gap-4 rounded-3xl border border-white/10 p-4 sm:grid-cols-2">
-          <div className="space-y-3">
-            <Stepper label="Fewest players" value={value.players.min} onChange={(n) => setPlayers({ ...value.players, min: n })} />
-            <Stepper label="Most players" value={value.players.max} onChange={(n) => setPlayers({ ...value.players, max: n })} />
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-sm text-ink-200">Teams</span>
-              <Segmented
-                layoutId={`${idPrefix}-teams`}
-                size="sm"
-                value={String(value.teams) as "0" | "2" | "3" | "4"}
-                onChange={(t) => onChange({ teams: Number(t) as ManifestForm["teams"] })}
-                items={[
-                  { id: "0", label: "None" },
-                  { id: "2", label: "2" },
-                  { id: "3", label: "3" },
-                  { id: "4", label: "4" },
-                ]}
-              />
+          <Field as="div" label="Table" error={errors.players}>
+            <div className="grid grid-cols-1 gap-4 rounded-3xl border border-white/10 p-4 sm:grid-cols-2">
+              <div className="space-y-3">
+                <Stepper label="Fewest players" value={value.players.min} onChange={(n) => setPlayers({ ...value.players, min: n })} />
+                <Stepper label="Most players" value={value.players.max} onChange={(n) => setPlayers({ ...value.players, max: n })} />
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm text-ink-200">Teams</span>
+                  <Segmented
+                    layoutId={`${idPrefix}-teams`}
+                    size="sm"
+                    value={String(value.teams) as "0" | "2" | "3" | "4"}
+                    onChange={(t) => onChange({ teams: Number(t) as ManifestForm["teams"] })}
+                    items={[
+                      { id: "0", label: "None" },
+                      { id: "2", label: "2" },
+                      { id: "3", label: "3" },
+                      { id: "4", label: "4" },
+                    ]}
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Toggle on={value.spectators} label="Spectators" sub="Others can watch live matches" onClick={() => onChange({ spectators: !value.spectators })} />
+                <Toggle on={value.turnBased} label="Turn-based" sub="Players take turns; we ping whoever's up" onClick={() => onChange({ turnBased: !value.turnBased })} />
+                <Toggle on={value.setup} label="Custom setup" sub="You render the challenge setup screen" onClick={() => onChange({ setup: !value.setup })} />
+              </div>
             </div>
-          </div>
-          <div className="space-y-2">
-            <Toggle on={value.spectators} label="Spectators" sub="Others can watch live matches" onClick={() => onChange({ spectators: !value.spectators })} />
-            <Toggle on={value.turnBased} label="Turn-based" sub="Players take turns; we ping whoever's up" onClick={() => onChange({ turnBased: !value.turnBased })} />
-            <Toggle on={value.setup} label="Custom setup" sub="You render the challenge setup screen" onClick={() => onChange({ setup: !value.setup })} />
-          </div>
-        </div>
-      </Field>
+          </Field>
+        </>
+      )}
 
       <StatsEditor value={value.stats} error={errors.stats} onChange={(stats) => onChange({ stats })} />
       <AchievementsEditor value={value.achievements} error={errors.achievements} onChange={(achievements) => onChange({ achievements })} />
 
-      <Field as="div" label="How to play (up to 3 steps)" error={errors.howTo}>
+      <Field as="div" label={value.kind === "app" ? "How it works (up to 3 steps)" : "How to play (up to 3 steps)"} error={errors.howTo}>
         <div className="space-y-2">
           {value.howTo.map((step, i) => (
             <div key={i} className="flex items-center gap-2">

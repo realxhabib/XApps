@@ -34,6 +34,7 @@ import { createMockHost, type MockHostOptions } from "./mock-host";
 import {
   accessProblem,
   achievementProblem,
+  purposeOf,
   clampFrameHeight,
   cloneJson,
   createTokenBucket,
@@ -47,6 +48,7 @@ import {
   storagePrefixProblem,
   storageScopeProblem,
   storageValueProblem,
+  standaloneMatch,
   type MediaKind,
 } from "./rules";
 
@@ -292,9 +294,21 @@ export class XAppsClient {
   /* Identity & match                                                 */
   /* ---------------------------------------------------------------- */
 
-  /** `match` to play, or `setup` to render your challenge setup screen (`setup.submit`). */
+  /**
+   * `match` to play, `setup` to render your challenge setup screen (`setup.submit`), or `app`
+   * for a standalone app (no match: `onStart`/`onEnd` never fire and match-only calls are refused).
+   */
   get purpose(): LaunchPurpose {
     return this.context.purpose;
+  }
+
+  /**
+   * True when the host opened a standalone app (purpose `app`): the viewer just opened it, there
+   * is no match, and `me` is the viewer alone in a one-player stub. Use storage, stats,
+   * achievements, media, logs, `ui.*` and `social.share`; skip `ready`/`onStart`/`submit`.
+   */
+  get isStandalone(): boolean {
+    return this.context.purpose === "app";
   }
 
   get user(): LaunchContext["user"] {
@@ -367,17 +381,18 @@ export class XAppsClient {
 
   /**
    * Tell the host your app has rendered. The host plays its versus intro once
-   * every player is ready and then fires `onStart`.
+   * every player is ready and then fires `onStart`. Standalone apps don't need
+   * it (it resolves and starts nothing).
    */
   async ready(): Promise<void> {
-    const { startedAt } = await this.request("ready", {});
-    // Setup screens never start a match.
-    if (this.purpose === "match" && startedAt !== null && this.startedAt === null) {
+    const { startedAt } = (await this.request("ready", {})) ?? { startedAt: null };
+    // Setup screens and standalone apps never start a match.
+    if (this.purpose === "match" && typeof startedAt === "number" && this.startedAt === null) {
       this.handleStart(startedAt);
     }
   }
 
-  /** Called once when the match starts (immediately if it already has). */
+  /** Called once when the match starts (immediately if it already has). Never fires for setup screens or standalone apps. */
   onStart(handler: (at: number) => void): Unsubscribe {
     if (this.startedAt !== null) {
       const at = this.startedAt;
@@ -523,8 +538,11 @@ export class XAppsClient {
     haptic: (style: HapticStyle = "light") => this.request("ui.haptic", { style }),
     setStatus: (text: string | null) =>
       this.request("ui.status", { text: text === null ? null : text.slice(0, LIMITS.statusLength) }),
-    setScores: (scores: { [playerId: string]: number | string }) => this.request("ui.scores", { scores }),
-    setTurn: (playerId: string | null) => this.request("ui.turn", { playerId }),
+    /** Match HUD only (refused for standalone apps). */
+    setScores: (scores: { [playerId: string]: number | string }) =>
+      this.deny("ui.scores") ?? this.request("ui.scores", { scores }),
+    /** Match HUD only (refused for standalone apps). */
+    setTurn: (playerId: string | null) => this.deny("ui.turn") ?? this.request("ui.turn", { playerId }),
     /**
      * Tell the host how tall your content is (CSS px), so it can size the
      * frame it shows you in (e.g. the challenge setup sheet). Rounded up and
@@ -987,13 +1005,13 @@ export class XAppsClient {
       case "match.start": {
         const { at } = message.data as HostEventData<"match.start">;
         if (this.startedAt !== null) return; // start fires once
-        if (this.purpose === "setup") return; // setup screens never start a match
+        if (this.purpose !== "match") return; // setup screens and standalone apps never start a match
         this.handleStart(at);
         return;
       }
       case "match.end": {
         const { result } = message.data as HostEventData<"match.end">;
-        if (this.result) return;
+        if (this.result || this.purpose === "app") return; // standalone apps have no match to end
         this.result = result;
         break;
       }
@@ -1297,7 +1315,18 @@ function normalizeMatch(raw: Partial<Match>, userId: string, base?: Match): Matc
 
 /** Fills in v2 defaults so apps can rely on every field, whatever host version launched them. */
 function normalizeContext(context: LaunchContext): LaunchContext {
-  const purpose: LaunchPurpose = context.purpose === "setup" ? "setup" : "match";
+  const purpose = purposeOf(context.purpose);
+  if (purpose === "app") {
+    // A standalone app has no table: the viewer alone in seat 0, never a spectator.
+    const raw = (context.match ?? {}) as Partial<Match>;
+    const stub = standaloneMatch(context.user);
+    const { players, seat, role, minPlayers, maxPlayers, teams } = stub;
+    return {
+      ...context,
+      purpose,
+      match: normalizeMatch({ ...stub, ...raw, players, seat, role, minPlayers, maxPlayers, teams }, context.user.id),
+    };
+  }
   return {
     ...context,
     purpose,

@@ -15,6 +15,7 @@ import type {
   UserStat,
   AppServerConfig,
   WebhookDelivery,
+  AppLaunch,
   AppManifest,
   CreateChallengeInput,
   Json,
@@ -71,6 +72,12 @@ export interface Backend {
   // Catalog ------------------------------------------------------------
   listApps(): Promise<AppManifest[]>;
   getApp(slug: string): Promise<AppManifest | null>;
+  /**
+   * Opens a standalone (`kind: "app"`) app: records the open (it counts toward the app's
+   * play count) and returns the app to run. `versionId` opens a test build (owner and testers only).
+   * Refuses games, which are played through matches.
+   */
+  openApp(appSlug: string, versionId?: string | null): Promise<AppLaunch>;
   registerApp(input: RegisterAppInput): Promise<AppManifest>;
   listMyApps(): Promise<AppManifest[]>;
 

@@ -469,8 +469,9 @@ export const OFFICIAL_APPS: AppManifest[] = [
   },
 ];
 
-/** Manifest defaults for the v2 fields (players 2–2, free for all, watchable, no setup, no turns, client-settled). */
+/** Manifest defaults for the v2 fields (a game, players 2–2, free for all, watchable, no setup, no turns, client-settled). */
 export const MANIFEST_DEFAULTS = {
+  kind: "game",
   players: { min: 2, max: 2 },
   teams: 0,
   spectators: true,
@@ -483,6 +484,7 @@ export const MANIFEST_DEFAULTS = {
 export function withManifestDefaults(app: AppManifest): AppManifest {
   return {
     ...app,
+    kind: app.kind ?? MANIFEST_DEFAULTS.kind,
     players: app.players ?? { ...MANIFEST_DEFAULTS.players },
     teams: app.teams ?? MANIFEST_DEFAULTS.teams,
     spectators: app.spectators ?? MANIFEST_DEFAULTS.spectators,

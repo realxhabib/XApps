@@ -142,6 +142,25 @@ async function play(move) {
   await xapps.turn.end();                           // next seated player's move (inbox pings them)
 }`;
 
+const standaloneSnippet = (origin: string) => `// manifest: kind "app" — people open it at /apps/<slug>/open, no matches.
+import { connect } from "${origin}/sdk/v1.js";
+
+const xapps = await connect({ mock: { purpose: "app" } }); // mock: outside XApps too
+// xapps.purpose === "app": no ready(), no onStart, no submit. Just render.
+
+hello.textContent = \`Hey @\${xapps.user.handle}\`;         // always signed in with X
+const watchlist = (await xapps.storage.get("watchlist")) ?? [];
+
+async function add(ticker) {
+  watchlist.push(ticker);
+  await xapps.storage.set("watchlist", watchlist);          // private to this viewer
+  await xapps.stats.report({ tracked: watchlist.length });  // stats from your manifest
+  await xapps.achievements.unlock("first_pick");            // the host shows the toast
+  xapps.ui.setStatus(\`\${watchlist.length} tickers\`);      // shown in the host's top bar
+}`;
+
+type SnippetTab = "react" | "vanilla" | "contest" | "turns" | "media" | "app";
+
 const LIFECYCLE = [
   { title: "Load", body: "Host opens your URL in a sandboxed iframe." },
   { title: "Handshake", body: "connect() receives players, seed and mode." },
@@ -490,8 +509,16 @@ function TrustSection() {
 }
 
 export function Developers() {
-  const [tab, setTab] = useState<"react" | "vanilla" | "contest" | "turns" | "media">("react");
+  const [tab, setTab] = useState<SnippetTab>("react");
   const origin = useOrigin();
+  const snippets: Record<SnippetTab, { filename: string; code: string }> = {
+    react: { filename: "App.tsx", code: REACT_SNIPPET },
+    vanilla: { filename: "index.html", code: vanillaSnippet(origin) },
+    contest: { filename: "submit.ts", code: CONTEST_SNIPPET },
+    turns: { filename: "game.ts", code: TURNS_SNIPPET },
+    media: { filename: "clip.ts", code: MEDIA_SNIPPET },
+    app: { filename: "app.js", code: standaloneSnippet(origin) },
+  };
   return (
     <div>
       <section className="grid grid-cols-1 items-center gap-10 lg:grid-cols-[1.1fr_1fr]">
@@ -502,7 +529,8 @@ export function Developers() {
           </h1>
           <p className="mt-5 max-w-xl text-lg text-ink-300">
             XApps handles identity, matchmaking, realtime rooms, results, XP and the crowd. You write the fun part — in
-            any framework, hosted anywhere.
+            any framework, hosted anywhere. It hosts both games people challenge each other to and standalone apps people
+            simply open, like a news reader, a dashboard or a meme maker.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <Button href="/developers/sandbox" size="xl" variant="accent" magnetic icon={<FlaskConical className="size-5" />}>
@@ -551,31 +579,31 @@ export function Developers() {
             { id: "contest", label: "Contest entry" },
             { id: "turns", label: "Turn-based" },
             { id: "media", label: "Media & stats" },
+            { id: "app", label: "Standalone app" },
           ]}
         />
         <motion.div key={tab} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={spring.snappy} className="mt-4">
-          <CodeBlock
-            filename={tab === "react" ? "App.tsx" : tab === "vanilla" ? "index.html" : tab === "turns" ? "game.ts" : tab === "media" ? "clip.ts" : "submit.ts"}
-            code={
-              tab === "react"
-                ? REACT_SNIPPET
-                : tab === "vanilla"
-                  ? vanillaSnippet(origin)
-                  : tab === "turns"
-                    ? TURNS_SNIPPET
-                    : tab === "media"
-                      ? MEDIA_SNIPPET
-                      : CONTEST_SNIPPET
-            }
-          />
+          <CodeBlock filename={snippets[tab].filename} code={snippets[tab].code} />
         </motion.div>
-        <p className="mt-3 text-sm text-ink-400">
-          A complete example lives at{" "}
-          <Link href="/examples/rps/index.html" className="text-nova-300 hover:underline">
-            /examples/rps
-          </Link>{" "}
-          — one HTML file, commit-reveal included. Play it as <Link href="/apps/rps-showdown" className="text-nova-300 hover:underline">RPS Showdown</Link>.
-        </p>
+        {tab === "app" ? (
+          <p className="mt-3 text-sm text-ink-400">
+            Standalone apps (register with kind <span className="font-mono text-ink-200">app</span>) open full screen with
+            the viewer signed in: storage, stats, achievements, media, logs and toasts work; matches, rooms and shared state
+            don&apos;t. A complete example lives at{" "}
+            <Link href="/examples/notes/index.html?xapps-purpose=app" className="text-nova-300 hover:underline">
+              /examples/notes
+            </Link>{" "}
+            — a private pinboard in one HTML file.
+          </p>
+        ) : (
+          <p className="mt-3 text-sm text-ink-400">
+            A complete example lives at{" "}
+            <Link href="/examples/rps/index.html" className="text-nova-300 hover:underline">
+              /examples/rps
+            </Link>{" "}
+            — one HTML file, commit-reveal included. Play it as <Link href="/apps/rps-showdown" className="text-nova-300 hover:underline">RPS Showdown</Link>.
+          </p>
+        )}
       </section>
 
       <section className="mt-20">

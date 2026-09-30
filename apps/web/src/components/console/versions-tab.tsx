@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ChevronDown, FlaskConical, GitCompare, Pencil, Play, Plus, Rocket, Send, Swords, Undo2 } from "lucide-react";
+import { AppWindow, ChevronDown, FlaskConical, GitCompare, Pencil, Play, Plus, Rocket, Send, Swords, Undo2 } from "lucide-react";
 import { useCallback, useState } from "react";
 import { toast } from "@/components/chrome/toasts";
 import { celebrate } from "@/components/motion/confetti";
@@ -275,19 +275,34 @@ function VersionItem({
                 Publish
               </Button>
             )}
-            {playable && (
-              <Button size="sm" variant="glass" icon={<Play className="size-3.5" />} loading={playing} onClick={onPlay}>
-                {v.status === "published" ? "Practice" : "Play test build"}
-              </Button>
+            {v.manifest.kind === "app" ? (
+              playable && (
+                <Button
+                  size="sm"
+                  variant="glass"
+                  icon={<AppWindow className="size-3.5" />}
+                  href={v.status === "published" ? `/apps/${v.appSlug}/open` : `/apps/${v.appSlug}/open?version=${v.id}`}
+                >
+                  {v.status === "published" ? "Open" : "Open test build"}
+                </Button>
+              )
+            ) : (
+              <>
+                {playable && (
+                  <Button size="sm" variant="glass" icon={<Play className="size-3.5" />} loading={playing} onClick={onPlay}>
+                    {v.status === "published" ? "Practice" : "Play test build"}
+                  </Button>
+                )}
+                {playable && v.manifest.modes.some((m) => m !== "practice") && (
+                  <Button size="sm" variant="glass" icon={<Swords className="size-3.5" />} onClick={onChallenge}>
+                    Challenge a tester
+                  </Button>
+                )}
+                <Button size="sm" variant="ghost" icon={<FlaskConical className="size-3.5" />} href={sandboxHref(v.url, v.manifest.scoring)}>
+                  Sandbox
+                </Button>
+              </>
             )}
-            {playable && v.manifest.modes.some((m) => m !== "practice") && (
-              <Button size="sm" variant="glass" icon={<Swords className="size-3.5" />} onClick={onChallenge}>
-                Challenge a tester
-              </Button>
-            )}
-            <Button size="sm" variant="ghost" icon={<FlaskConical className="size-3.5" />} href={sandboxHref(v.url, v.manifest.scoring)}>
-              Sandbox
-            </Button>
           </div>
         </div>
 

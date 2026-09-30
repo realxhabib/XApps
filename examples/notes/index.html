@@ -1,0 +1,262 @@
+<!doctype html>
+<!--
+  Pinboard: a standalone XApps app in one HTML file, no build step.
+
+  Standalone apps (manifest `kind: "app"`) are opened, not played: no
+  challenges, lobbies or results. XApps launches them with purpose "app" and
+  the viewer signed in with X. This one shows the whole surface:
+    • connect()                      no ready()/onStart() dance: render right away
+    • xapps.user                     greet the viewer by @handle
+    • storage.get / storage.set      notes are private to each viewer
+    • stats.report                   "Notes pinned" (sum) feeds a leaderboard
+    • achievements.unlock            the host shows its achievement toast
+    • ui.setStatus / ui.toast / log  host top bar, toasts, developer logs
+
+  Manifest to register it with (kind "app"):
+    stats:        [{ "key": "pinned", "label": "Notes pinned", "aggregate": "sum" }]
+    achievements: [{ "id": "first_pin", "name": "First pin", "description": "Pin your first note", "icon": "📌", "xp": 10 },
+                   { "id": "full_board", "name": "Full board", "description": "Have 10 notes pinned at once", "icon": "🗂️", "xp": 25 }]
+
+  Open it directly and the SDK's mock host runs it standalone (you are @you,
+  notes live in localStorage). Hosting it yourself? Import the SDK from your
+  XApps host: import { connect } from "https://<your-xapps-host>/sdk/v1.js";
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pinboard</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --a: #ffd35c;
+        --b: #ff8a3d;
+        --ink: #f6f7fb;
+        --muted: #8d96ad;
+        --line: rgb(255 255 255 / 0.1);
+      }
+      * { box-sizing: border-box; }
+      html { background: #07080d; }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: radial-gradient(ellipse at 10% 0%, #3a2a10 0%, transparent 50%),
+          radial-gradient(ellipse at 100% 100%, #3a1a10 0%, transparent 45%), #07080d;
+        color: var(--ink);
+      }
+      main { width: min(760px, 100% - 32px); margin: 0 auto; padding: 32px 0 48px; }
+      .hello { display: flex; align-items: center; gap: 12px; }
+      .avatar {
+        width: 44px; height: 44px; border-radius: 999px; flex: none; object-fit: cover;
+        background: linear-gradient(135deg, var(--a), var(--b)); display: grid; place-items: center;
+        font-weight: 800; color: #1b1405;
+      }
+      h1 { font-size: clamp(24px, 5vw, 34px); margin: 0; letter-spacing: -0.03em; line-height: 1.1; }
+      .muted { color: var(--muted); margin: 4px 0 0; font-size: 14px; }
+      form { display: flex; gap: 8px; margin: 24px 0 8px; }
+      input {
+        flex: 1; min-width: 0; height: 48px; padding: 0 16px; border-radius: 16px; font: inherit; color: inherit;
+        background: rgb(255 255 255 / 0.05); border: 1px solid var(--line); outline: none;
+      }
+      input:focus-visible { border-color: var(--a); box-shadow: 0 0 0 3px rgb(255 211 92 / 0.2); }
+      button { font: inherit; cursor: pointer; }
+      .pin {
+        height: 48px; padding: 0 20px; border-radius: 16px; border: 0; font-weight: 800; color: #1b1405;
+        background: linear-gradient(135deg, var(--a), var(--b));
+        transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.2s;
+      }
+      .pin:active:not(:disabled) { transform: scale(0.94); }
+      .pin:disabled { opacity: 0.5; cursor: default; }
+      .count { font-size: 12px; color: var(--muted); text-align: right; min-height: 16px; }
+      .board { list-style: none; padding: 0; margin: 20px 0 0; display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+      .note {
+        position: relative; padding: 18px 16px 14px; border-radius: 6px 18px 18px 18px; min-height: 120px;
+        background: linear-gradient(160deg, #fff3b8, #ffd873); color: #2a2208;
+        box-shadow: 0 14px 30px -18px rgb(0 0 0 / 0.9);
+        transform: rotate(var(--tilt, 0deg)); animation: drop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+        display: flex; flex-direction: column; gap: 10px;
+      }
+      .note::before { content: "📌"; position: absolute; top: -10px; left: 50%; transform: translateX(-50%); font-size: 18px; }
+      .note p { margin: 0; white-space: pre-wrap; word-break: break-word; font-weight: 600; line-height: 1.35; }
+      .note footer { margin-top: auto; display: flex; align-items: center; justify-content: space-between; font-size: 11px; opacity: 0.65; }
+      .unpin { background: none; border: 0; color: inherit; font-weight: 700; padding: 4px 6px; border-radius: 8px; }
+      .unpin:hover, .unpin:focus-visible { background: rgb(0 0 0 / 0.08); }
+      .empty { text-align: center; padding: 48px 16px; border: 1px dashed var(--line); border-radius: 24px; color: var(--muted); }
+      .empty span { font-size: 40px; display: block; margin-bottom: 8px; }
+      @keyframes drop { from { transform: translateY(-16px) scale(0.9) rotate(var(--tilt, 0deg)); opacity: 0; } }
+      @media (prefers-reduced-motion: reduce) { .note { animation: none; } .pin { transition: none; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="hello">
+        <div id="avatar" class="avatar" aria-hidden="true"></div>
+        <div>
+          <h1 id="greeting">Pinboard</h1>
+          <p class="muted" id="subtitle">Connecting…</p>
+        </div>
+      </div>
+      <form id="form" autocomplete="off">
+        <input id="text" aria-label="Note" maxlength="280" placeholder="Pin a thought, a link, a ticker…" disabled />
+        <button class="pin" id="pin" type="submit" disabled>Pin it</button>
+      </form>
+      <div class="count" id="count" aria-live="polite"></div>
+      <ul class="board" id="board" aria-label="Pinned notes"></ul>
+    </main>
+
+    <script type="module">
+      import { connect } from "/sdk/v1.js";
+
+      const KEY = "notes";
+      const MAX_NOTES = 50;
+      const FULL_BOARD = 10;
+
+      // Outside XApps the mock host runs us as a standalone app, with the same
+      // stats and achievements the real manifest declares.
+      const xapps = await connect({
+        mock: {
+          purpose: "app",
+          stats: [{ key: "pinned", label: "Notes pinned", aggregate: "sum" }],
+          achievements: [
+            { id: "first_pin", name: "First pin", description: "Pin your first note", icon: "📌", xp: 10 },
+            { id: "full_board", name: "Full board", description: "Have 10 notes pinned at once", icon: "🗂️", xp: 25 },
+          ],
+        },
+      });
+
+      const $ = (id) => document.getElementById(id);
+      const hasStat = (key) => xapps.stats.defs.some((d) => d.key === key);
+      const hasAchievement = (id) => xapps.achievements.defs.some((d) => d.id === id);
+
+      // 1. Greet the signed-in viewer. No ready()/onStart(): there's no match to wait for.
+      const { user } = xapps;
+      $("greeting").textContent = `Hey @${user.handle} 👋`;
+      if (user.avatarUrl) {
+        const img = document.createElement("img");
+        img.src = user.avatarUrl;
+        img.alt = "";
+        img.className = "avatar";
+        $("avatar").replaceWith(img);
+      } else {
+        $("avatar").textContent = (user.name || user.handle).slice(0, 1).toUpperCase();
+      }
+      $("subtitle").textContent = xapps.isStandalone
+        ? "Your private pinboard. Only you can see these notes."
+        : "Tip: this is a standalone app; open it with ?xapps-purpose=app.";
+
+      // 2. Load this viewer's notes (user-scope storage is private to them).
+      let notes = [];
+      try {
+        const saved = await xapps.storage.get(KEY);
+        if (Array.isArray(saved)) notes = saved;
+      } catch (error) {
+        xapps.log.warn("couldn't load notes", { message: String(error?.message ?? error) });
+        xapps.ui.toast("Couldn't load your notes", "warning").catch(() => {});
+      }
+
+      const formatter = (locale) => new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" });
+      let time;
+      try {
+        time = formatter(xapps.context.locale);
+      } catch {
+        time = formatter(undefined); // the host's locale tag wasn't one Intl understands
+      }
+      const tilt = (id) => `${((id.charCodeAt(0) + id.charCodeAt(id.length - 1)) % 7) - 3}deg`;
+
+      function render() {
+        const board = $("board");
+        board.replaceChildren();
+        if (notes.length === 0) {
+          const empty = document.createElement("li");
+          empty.className = "empty";
+          empty.innerHTML = "<span>🗒️</span>Nothing pinned yet. Your first note unlocks an achievement.";
+          board.append(empty);
+        }
+        for (const note of notes) {
+          const li = document.createElement("li");
+          li.className = "note";
+          li.style.setProperty("--tilt", tilt(note.id));
+          const p = document.createElement("p");
+          p.textContent = note.text;
+          const footer = document.createElement("footer");
+          const when = document.createElement("time");
+          when.dateTime = new Date(note.at).toISOString();
+          when.textContent = time.format(note.at);
+          const unpin = document.createElement("button");
+          unpin.className = "unpin";
+          unpin.type = "button";
+          unpin.textContent = "Unpin";
+          unpin.setAttribute("aria-label", `Unpin “${note.text.slice(0, 40)}”`);
+          unpin.addEventListener("click", () => remove(note.id));
+          footer.append(when, unpin);
+          li.append(p, footer);
+          board.append(li);
+        }
+        $("count").textContent = notes.length ? `${notes.length} / ${MAX_NOTES} pinned` : "";
+        // Shown in the host's top bar next to the app's name.
+        xapps.ui.setStatus(notes.length === 1 ? "1 note pinned" : `${notes.length} notes pinned`).catch(() => {});
+      }
+
+      async function save() {
+        await xapps.storage.set(KEY, notes);
+      }
+
+      async function add(text) {
+        if (notes.length >= MAX_NOTES) {
+          await xapps.ui.toast(`The board holds ${MAX_NOTES} notes. Unpin one first.`, "warning");
+          return;
+        }
+        const note = { id: Math.random().toString(36).slice(2, 10), text, at: Date.now() };
+        notes = [note, ...notes];
+        render();
+        try {
+          await save();
+        } catch (error) {
+          notes = notes.filter((n) => n.id !== note.id);
+          render();
+          await xapps.ui.toast("Couldn't save that note", "danger");
+          throw error;
+        }
+        xapps.log.info("pinned a note", { length: text.length, total: notes.length });
+        // 3. Progression: a stat for the leaderboard and two achievements.
+        if (hasStat("pinned")) await xapps.stats.report({ pinned: 1 }).catch(() => {});
+        if (hasAchievement("first_pin")) await xapps.achievements.unlock("first_pin").catch(() => {});
+        if (notes.length >= FULL_BOARD && hasAchievement("full_board")) {
+          await xapps.achievements.unlock("full_board").catch(() => {});
+        }
+      }
+
+      async function remove(id) {
+        const before = notes;
+        notes = notes.filter((n) => n.id !== id);
+        render();
+        try {
+          await save();
+        } catch {
+          notes = before;
+          render();
+          await xapps.ui.toast("Couldn't unpin that note", "danger");
+        }
+      }
+
+      const input = $("text");
+      const pin = $("pin");
+      const sync = () => (pin.disabled = input.value.trim().length === 0);
+      input.addEventListener("input", sync);
+      $("form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const text = input.value.trim();
+        if (!text) return;
+        input.value = "";
+        sync();
+        await add(text).catch(() => {});
+        input.focus();
+      });
+
+      input.disabled = false;
+      render();
+      input.focus();
+    </script>
+  </body>
+</html>

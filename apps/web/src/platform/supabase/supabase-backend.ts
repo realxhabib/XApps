@@ -8,6 +8,7 @@ import { BackendError, type Backend, type RoomTransport } from "../backend";
 import { OFFICIAL_APPS, getOfficialApp, manifestShapeError, withManifestDefaults } from "../catalog";
 import type {
   AppAnalytics,
+  AppLaunch,
   AppLogEntry,
   AppVersion,
   DeveloperNotice,
@@ -41,6 +42,7 @@ import {
   quickMatchArgs,
   toAnalytics,
   toApp,
+  toAppLaunch,
   toAppLogs,
   toAppVersion,
   toAppVersionResult,
@@ -216,6 +218,15 @@ export class SupabaseBackend implements Backend {
       return official ? withManifestDefaults(official) : null;
     }
     return toApp(data);
+  }
+
+  async openApp(appSlug: string, versionId?: string | null): Promise<AppLaunch> {
+    // Signed out works for the live app (anon may open published apps); test builds need sign-in.
+    const { data, error } = await this.sb.rpc("open_app", { p_app: appSlug, p_version: versionId ?? null });
+    if (error) fail(error);
+    const launch = toAppLaunch(data);
+    if (!launch) throw new BackendError("App not found", "not_found");
+    return launch;
   }
 
   async registerApp(input: RegisterAppInput): Promise<AppManifest> {

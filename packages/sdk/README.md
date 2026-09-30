@@ -11,6 +11,8 @@ Build multiplayer apps for **XApps**, the social app marketplace on X: 1v1 duels
 - **Progression**: key/value storage (per player and per app), custom stats with leaderboards, and achievements.
 - **Host UI**: VS intro, countdown, HUD, emoji reactions, confetti, results screen, rematch and share.
 
+Not building a game? XApps also hosts **standalone apps** (news readers, dashboards, tools, meme makers) that people simply open: see [Standalone apps](#standalone-apps).
+
 ## Install
 
 ```bash
@@ -67,7 +69,7 @@ import { XAppsProvider, useXApps, useRoomEvent, useMatchStarted, useMatchResult 
 </XAppsProvider>;
 ```
 
-More hooks: `useMatch()`, `usePresence()`, `useReactions(fn)`, for v2 matches `useMatchState()`, `useTurn()`, `useRound()`, `usePlayers()`, `useSetup()`, for media and progression `useMediaUpload()`, `useStats()`, `useAchievements()`, `useAchievementEvents(fn)`, `useLogger()` and `useAutoResize()` (see below).
+More hooks: `useUser()`, `useStandalone()`, `useMatch()`, `usePresence()`, `useReactions(fn)`, for v2 matches `useMatchState()`, `useTurn()`, `useRound()`, `usePlayers()`, `useSetup()`, for media and progression `useMediaUpload()`, `useStats()`, `useAchievements()`, `useAchievementEvents(fn)`, `useLogger()` and `useAutoResize()` (see below).
 
 ## Lifecycle
 
@@ -83,7 +85,7 @@ More hooks: `useMatch()`, `usePresence()`, `useReactions(fn)`, for v2 matches `u
 | API | Notes |
 | --- | --- |
 | `connect(options?)` | Shared client (safe to call repeatedly). `hostOrigins` pins trusted hosts. `mock` controls the standalone mock host. |
-| `xapps.purpose` | `"match"` (play) or `"setup"` (render your challenge setup screen) |
+| `xapps.purpose` · `xapps.isStandalone` | `"match"` (play), `"setup"` (render your challenge setup screen) or `"app"` (a [standalone app](#standalone-apps): no match). `isStandalone` is `purpose === "app"` |
 | `xapps.me` / `players` / `opponents` / `opponent` / `teammates` | `PlayerInfo`: `id, handle, name, avatarUrl, seat, isBot, submitted, score, team, role`. `players` = seated players by seat, `opponents` = every other seated player, `opponent` = the first one (1v1), `teammates` = same team |
 | `xapps.role` · `xapps.isSpectator` | `"player"` or `"spectator"` |
 | `xapps.match` | `id, mode (live·async·practice·sandbox), status, scoring, seed, settings, minPlayers, maxPlayers, teams, state, stateVersion, turn, turnDeadline, round` |
@@ -92,7 +94,7 @@ More hooks: `useMatch()`, `usePresence()`, `useReactions(fn)`, for v2 matches `u
 | `ready()` · `onStart(fn)` · `onUpdate(fn)` · `onEnd(fn)` · `forfeit()` | Lifecycle |
 | `submit({ score?, data?, display? })` · `submitFor(botId, …)` | `display` is `{kind:"text",title?,body}`, `{kind:"svg",svg,alt}`, `{kind:"image",url,alt}`, `{kind:"video",url,alt,poster?}`, `{kind:"audio",url,alt,cover?}` or `{kind:"gallery",items:[{url,alt}]}` (2–6 items). See [Media uploads](#media-uploads) |
 | `room.send(type, payload)` · `room.on(type, fn)` · `room.onAny(fn)` · `room.onPresence(fn)` | ≤ 8 KB payloads, ≤ 30 messages/s |
-| `ui.setStatus` · `ui.setScores` · `ui.setTurn` · `ui.toast` · `ui.celebrate` · `ui.haptic` | Host UI |
+| `ui.setStatus` · `ui.setScores` · `ui.setTurn` · `ui.toast` · `ui.celebrate` · `ui.haptic` | Host UI (`setScores`/`setTurn` are match HUD only) |
 | `ui.resize(height)` · `ui.autoResize({ element?, intervalMs? })` | Tell the host your content height (CSS px, clamped to 120–2000) so it can size the frame it shows you in, e.g. the challenge setup sheet. `autoResize` watches `document.documentElement` (don't pin `html`/`body` to `height: 100%`) with a `ResizeObserver`, sends at most one update per 100 ms and returns a stop function. React: `useAutoResize()` |
 | `social.share(text, url?)` | Opens the X composer. The player always confirms the post. |
 | `storage.get(key, { scope? })` · `storage.set(key, value)` · `storage.delete(key)` · `storage.list({ prefix?, scope? })` | ≤ 64 KB JSON per value, ≤ 200 keys per player. `scope: "user"` (default, private) or `"app"` (public, read-only here). See [Storage scopes](#storage-scopes) |
@@ -106,6 +108,42 @@ More hooks: `useMatch()`, `usePresence()`, `useReactions(fn)`, for v2 matches `u
 | `log.debug` · `log.info` · `log.warn` · `log.error` `(message, data?)` | Your app's log, fire and forget. See [Logs](#logs) |
 
 `@xapps/sdk/host` exports `createHostBridge` / `createHostCore` if you want to embed XApps apps yourself or write integration tests. `@xapps/sdk/protocol` has the wire types.
+
+## Standalone apps
+
+Not everything is a game. A **standalone app** (manifest `kind: "app"`) is something people simply open: a news reader, an analytics dashboard, a trading tool, a meme maker. There are no challenges, lobbies, scoring or results. XApps opens it full screen at `/apps/<slug>/open` with `purpose: "app"`, and the viewer is always signed in with X.
+
+```ts
+import { connect } from "@xapps/sdk";
+
+// Outside XApps the mock host opens it as a standalone app too.
+const xapps = await connect({ mock: { purpose: "app" } });
+
+greet(`Hi @${xapps.user.handle}`);                        // the signed-in viewer
+const notes = (await xapps.storage.get<string[]>("notes")) ?? [];
+
+async function pin(text: string) {
+  notes.unshift(text);
+  await xapps.storage.set("notes", notes);                // private to this viewer
+  await xapps.stats.report({ notes: notes.length });      // stats from your manifest
+  if (notes.length === 1) await xapps.achievements.unlock("first_note"); // host shows its toast
+}
+```
+
+No `ready()`, no `onStart`, no `submit`: render as soon as `connect()` resolves. What purpose `app` gets:
+
+| Works | Refused (`forbidden`: there is no match) |
+| --- | --- |
+| `user`, `storage.*` (both scopes), `stats.report`, `achievements.unlock`, `onAchievement`, `media.upload`, `log.*`, `social.share`, `ui.toast`, `ui.celebrate`, `ui.haptic`, `ui.setStatus` (shown in the host's top bar), `ui.resize` (a no-op: the frame fills the screen), `ready()` (optional, starts nothing) | `room.*` sends, `submit`, `submitFor`, `forfeit`, `state.*`, `turn.end`, `round.set`, `ui.setScores`, `ui.setTurn`, `setup.*` |
+
+- `xapps.match` is a one-player stub: you alone in seat 0 (`me`), no opponents, `minPlayers`/`maxPlayers` 1, never a spectator. `onStart`, `onEnd` and `useMatchStarted()` never fire.
+- `xapps.random` is seeded per open, not shared with anyone.
+- Test builds (`?version=<id>` for you and your testers) run with the version's manifest; their stats and achievements are shown but never saved.
+- Mock host: `connect({ mock: { purpose: "app", stats, achievements } })` or `?xapps-purpose=app` gives you the same one-player stub with storage (localStorage), stats, achievements and media working.
+- React: `useUser()` and `useStandalone()`; the storage, stats, achievements, media and log hooks work unchanged.
+- Hosts: the host core refuses the match-only methods for `purpose: "app"` contexts (or `access: () => ({ purpose: "app" })`). `standaloneMatch(user, { id, seed })` from `@xapps/sdk/host` builds the stub match.
+
+A complete one-file example lives in [`examples/notes`](../../examples/notes/index.html).
 
 ## Matches for 2–8 players
 

@@ -6,7 +6,9 @@
  * is unit tested and the script only does I/O.
  *
  * The columns are exactly the ones the seeding migrations write (see
- * supabase/migrations/20261004000000_wedge_wars.sql) plus `votes_to_win`.
+ * supabase/migrations/20261004000000_wedge_wars.sql) plus `votes_to_win` and
+ * `kind` (20261006000100_standalone_apps.sql: official apps are games unless the
+ * catalog says otherwise, so a first-party standalone app would sync as one).
  * Everything else on the row is platform-owned and never sent: `play_count`,
  * `created_at`, `developer_id` (null for official apps), `authority` (only
  * set_app_authority moves it) and `published_version_id` (official apps have no
@@ -14,7 +16,7 @@
  */
 import { OFFICIAL_APPS, achievementDefsError, isSingleEmoji, manifestShapeError, statDefsError } from "./catalog";
 import { CATEGORIES } from "./types";
-import type { AchievementDef, AppCategory, AppManifest, AppStatus, PlayableMode, Scoring, StatDef } from "./types";
+import type { AchievementDef, AppCategory, AppKind, AppManifest, AppStatus, PlayableMode, Scoring, StatDef } from "./types";
 
 export interface OfficialAppRow {
   slug: string;
@@ -42,6 +44,7 @@ export interface OfficialAppRow {
   status: AppStatus;
   stats: StatDef[];
   achievements: AchievementDef[];
+  kind: AppKind;
 }
 
 /** The `public.apps` columns the sync writes (and compares), in migration order. */
@@ -71,6 +74,7 @@ export const OFFICIAL_APP_COLUMNS = [
   "status",
   "stats",
   "achievements",
+  "kind",
 ] as const satisfies readonly (keyof OfficialAppRow)[];
 
 /** `apps.votes_to_win` default (the core migration seeds 5 for every app). */
@@ -114,6 +118,7 @@ export function officialAppRow(app: AppManifest): OfficialAppRow {
     status: app.status,
     stats: (app.stats ?? []).map((s) => ({ ...s })),
     achievements: (app.achievements ?? []).map((a) => ({ ...a })),
+    kind: app.kind ?? "game",
   };
 }
 
@@ -160,6 +165,7 @@ export function officialAppRowError(row: OfficialAppRow): string | null {
   if (row.how_to.length > 6) return "howTo must have at most 6 steps";
   if (row.tags.length > 8) return "tags must have at most 8 entries";
   if (!["published", "pending", "rejected"].includes(row.status)) return `unknown status "${row.status}"`;
+  if (row.kind !== "game" && row.kind !== "app") return `unknown kind "${row.kind}"`;
   return (
     manifestShapeError({
       players: { min: row.min_players, max: row.max_players },

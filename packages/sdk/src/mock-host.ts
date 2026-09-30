@@ -7,6 +7,8 @@
  *
  * Handy URL switches (they override the options passed in code):
  * - `?xapps-purpose=setup` opens your app in challenge-setup mode.
+ * - `?xapps-purpose=app` opens it as a standalone app: you alone in a one-player stub, no
+ *   match lifecycle, match-only calls refused; storage, stats, achievements and media work.
  * - `?xapps-settings=<json>` sets `match.settings` (the setup banner links here).
  * - `?xapps-players=4` seats 4 players (you + 3 bots); `?xapps-teams=2` plays in teams.
  * - `?xapps-turns=1` starts with a turn (seat 0); `?xapps-role=spectator` watches bots play.
@@ -35,7 +37,7 @@ import {
   type Submission,
 } from "./protocol";
 import { randomId } from "./random";
-import { aggregateStat, baseMime, cloneJson, isPlainObject, mediaKindOf } from "./rules";
+import { aggregateStat, baseMime, cloneJson, isPlainObject, mediaKindOf, purposeOf, standaloneMatch } from "./rules";
 import { createMemoryTransportPair, type AppTransport } from "./transport";
 
 export interface MockHostOptions {
@@ -62,7 +64,10 @@ export interface MockHostOptions {
   state?: Json;
   /** `spectator` watches a table of bots (and is refused like a real spectator). */
   role?: PlayerRole;
-  /** `setup` opens the app in challenge-setup mode. Default `match`. */
+  /**
+   * `setup` opens the app in challenge-setup mode; `app` opens it as a standalone app (you alone,
+   * no bots, no `match.start`; `players`, `teams`, `role` and `turnBased` are ignored). Default `match`.
+   */
   purpose?: LaunchPurpose;
   mode?: MatchMode;
   /** Read the `?xapps-*` URL switches. Default true. */
@@ -135,7 +140,7 @@ function readUrlOptions(): Partial<MockHostOptions> {
   const params = new URLSearchParams(location.search);
   const out: Partial<MockHostOptions> = {};
   const purpose = params.get("xapps-purpose");
-  if (purpose === "setup" || purpose === "match") out.purpose = purpose;
+  if (purpose === "setup" || purpose === "match" || purpose === "app") out.purpose = purpose;
   const settings = params.get("xapps-settings");
   if (settings) {
     try {
@@ -236,12 +241,13 @@ export function createMockHost(input: MockHostOptions = {}): MockHost {
     if (!options.quiet) console.info("%c[xapps mock]", "color:#8b5cf6;font-weight:600", ...args);
   };
 
-  const teams = clampInt(options.teams, 0, 4, 0);
-  const minPlayers = clampInt(options.minPlayers, 2, 8, 2);
-  const seats = Math.max(minPlayers, clampInt(options.players, 2, 8, minPlayers));
-  const maxPlayers = clampInt(options.maxPlayers, seats, 8, seats);
-  const spectating = options.role === "spectator";
-  const purpose: LaunchPurpose = options.purpose === "setup" ? "setup" : "match";
+  const purpose: LaunchPurpose = purposeOf(options.purpose);
+  const standalone = purpose === "app";
+  const teams = standalone ? 0 : clampInt(options.teams, 0, 4, 0);
+  const minPlayers = standalone ? 1 : clampInt(options.minPlayers, 2, 8, 2);
+  const seats = standalone ? 1 : Math.max(minPlayers, clampInt(options.players, 2, 8, minPlayers));
+  const maxPlayers = standalone ? 1 : clampInt(options.maxPlayers, seats, 8, seats);
+  const spectating = !standalone && options.role === "spectator";
   const user = { id: "you", handle: "you", name: "You", avatarUrl: null };
 
   const players: PlayerInfo[] = Array.from({ length: seats }, (_, seat) => {
@@ -261,6 +267,32 @@ export function createMockHost(input: MockHostOptions = {}): MockHost {
     };
   });
 
+  const match: LaunchContext["match"] = standalone
+    ? standaloneMatch(user, {
+        id: `mock-app-${randomId(6)}`,
+        seed: options.seed ?? randomId(12),
+        settings: options.settings ?? {},
+      })
+    : {
+        id: `mock-${randomId(6)}`,
+        mode: options.mode ?? "sandbox",
+        status: purpose === "setup" ? "open" : "active",
+        scoring: options.scoring ?? "high",
+        seed: options.seed ?? randomId(12),
+        seat: spectating ? -1 : 0,
+        settings: options.settings ?? {},
+        players,
+        minPlayers,
+        maxPlayers,
+        teams,
+        role: spectating ? "spectator" : "player",
+        state: options.state === undefined ? null : cloneJson(options.state),
+        stateVersion: options.state === undefined ? 0 : 1,
+        turn: options.turnBased && purpose === "match" ? (players[0]?.id ?? null) : null,
+        turnDeadline: null,
+        round: 0,
+      };
+
   const context: LaunchContext = {
     purpose,
     app: {
@@ -271,29 +303,10 @@ export function createMockHost(input: MockHostOptions = {}): MockHost {
       achievements: (options.achievements ?? []).map(completeAchievement),
     },
     user,
-    match: {
-      id: `mock-${randomId(6)}`,
-      mode: options.mode ?? "sandbox",
-      status: purpose === "setup" ? "open" : "active",
-      scoring: options.scoring ?? "high",
-      seed: options.seed ?? randomId(12),
-      seat: spectating ? -1 : 0,
-      settings: options.settings ?? {},
-      players,
-      minPlayers,
-      maxPlayers,
-      teams,
-      role: spectating ? "spectator" : "player",
-      state: options.state === undefined ? null : cloneJson(options.state),
-      stateVersion: options.state === undefined ? 0 : 1,
-      turn: options.turnBased && purpose === "match" ? (players[0]?.id ?? null) : null,
-      turnDeadline: null,
-      round: 0,
-    },
+    match,
     host: { name: "XApps Mock Host", version: SDK_VERSION, origin: "memory://host" },
     locale: typeof navigator !== "undefined" ? navigator.language : "en",
   };
-  const match = context.match;
 
   const submissions = new Map<string, Submission>();
   const left = new Set<string>();
@@ -458,13 +471,19 @@ export function createMockHost(input: MockHostOptions = {}): MockHost {
 
   const bridge = createHostCore(pair.host, {
     context: () => context,
-    onConnect: () => log(purpose === "setup" ? "app connected (setup mode)" : "app connected", context),
+    onConnect: () =>
+      log(
+        purpose === "setup" ? "app connected (setup mode)" : standalone ? "app connected (standalone app)" : "app connected",
+        context,
+      ),
     handlers: {
       ready: () => {
         if (purpose === "setup") {
           log("setup mode: call xapps.setup.submit(settings, summary) when the player is done");
           return { startedAt: null };
         }
+        // Standalone apps have no match to start.
+        if (standalone) return { startedAt: null };
         if (startedAt === null) {
           setTimeout(() => {
             startedAt = Date.now();

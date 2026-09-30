@@ -13,7 +13,7 @@ import type {
 
 export type { AchievementDef, Json, MatchMode, MatchStatus, MediaRef, PlayerRole, Scoring, StatDef, StorageScope, SubmissionDisplay };
 
-export type AppCategory = "games" | "contests" | "debates" | "trivia" | "creative" | "social";
+export type AppCategory = "games" | "contests" | "debates" | "trivia" | "creative" | "social" | "news" | "tools" | "finance";
 
 export const CATEGORIES: { id: AppCategory; label: string; emoji: string }[] = [
   { id: "games", label: "Games", emoji: "🎮" },
@@ -22,7 +22,25 @@ export const CATEGORIES: { id: AppCategory; label: string; emoji: string }[] = [
   { id: "trivia", label: "Trivia", emoji: "🧠" },
   { id: "creative", label: "Creative", emoji: "🎨" },
   { id: "social", label: "Social", emoji: "💬" },
+  { id: "news", label: "News", emoji: "📰" },
+  { id: "tools", label: "Tools", emoji: "🧰" },
+  { id: "finance", label: "Finance", emoji: "📈" },
 ];
+
+/**
+ * What an app is. `game`: people play matches against each other (challenges,
+ * lobbies, scoring, results). `app`: a standalone app people simply open (news,
+ * analytics, trading, a meme maker…): the viewer arrives signed in with X and
+ * gets storage, stats, achievements and media, but there are no matches.
+ */
+export type AppKind = "game" | "app";
+
+/** An opened standalone app: the app as the viewer should run it (a test build's manifest for owners/testers). */
+export interface AppLaunch {
+  app: AppManifest;
+  /** The test build being opened, or null for the live app. */
+  versionId: string | null;
+}
 
 export type AppStatus = "published" | "pending" | "rejected";
 
@@ -67,6 +85,8 @@ export interface AppManifest {
   accent: [string, string];
   /** Where the app is served. Relative URLs are same-origin (first-party). */
   url: string;
+  /** `game` (default) or a standalone `app` with no matches. */
+  kind?: AppKind;
   modes: PlayableMode[];
   /** Seats per match: 2 ≤ min ≤ max ≤ 8. */
   players: { min: number; max: number };
@@ -240,6 +260,8 @@ export interface RegisterAppInput {
   /** Uploaded images (keys from `uploadAppImage`). */
   iconImage?: string | null;
   coverImage?: string | null;
+  /** `game` (default) or a standalone `app`. */
+  kind?: AppKind;
 }
 
 export interface SubmitInput {
@@ -283,6 +305,7 @@ export type VersionManifest = Pick<
   | "icon"
   | "iconImage"
   | "coverImage"
+  | "kind"
   | "accent"
   | "modes"
   | "players"

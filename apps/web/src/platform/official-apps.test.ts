@@ -63,7 +63,15 @@ describe("officialAppRow", () => {
       status: "published",
       stats: [],
       achievements: [],
+      kind: "game",
     });
+  });
+
+  it("syncs kind: official apps are games unless the catalog says otherwise", () => {
+    expect(OFFICIAL_APPS.filter((a) => a.official).every((a) => officialAppRow(a).kind === "game")).toBe(true);
+    expect(officialAppRow({ ...base, kind: "app" }).kind).toBe("app");
+    expect(officialAppRowError({ ...officialAppRow(base), kind: "widget" as never })).toMatch(/kind/);
+    expect(OFFICIAL_APP_COLUMNS).toContain("kind");
   });
 
   it("carries v2 fields, votes and progress through", () => {

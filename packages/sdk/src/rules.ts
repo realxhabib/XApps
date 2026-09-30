@@ -9,6 +9,7 @@ import {
   type AchievementDef,
   type Json,
   type LaunchContext,
+  type LaunchPurpose,
   type LogLevel,
   type MediaRef,
   type RequestMethod,
@@ -87,6 +88,26 @@ const MATCH_METHODS: ReadonlySet<RequestMethod> = new Set<RequestMethod>([
   "achievements.unlock",
 ]);
 
+/**
+ * Methods refused to standalone apps (purpose `app`): there is no match, so no
+ * room, submissions, shared state, turns, rounds or match HUD (`ui.scores`,
+ * `ui.turn`), and no challenge to set up. Everything else (storage, stats,
+ * achievements, media, logs, toasts, share, `ui.status`, `ui.resize`…) works.
+ */
+const APP_REFUSED: ReadonlySet<RequestMethod> = new Set<RequestMethod>([
+  "room.send",
+  "match.submit",
+  "match.forfeit",
+  "state.get",
+  "state.set",
+  "turn.end",
+  "round.set",
+  "ui.scores",
+  "ui.turn",
+  "setup.submit",
+  "setup.cancel",
+]);
+
 /** Methods only available in setup purpose. */
 const SETUP_METHODS: ReadonlySet<RequestMethod> = new Set<RequestMethod>(["setup.submit", "setup.cancel"]);
 
@@ -110,13 +131,26 @@ type AccessContext = {
   match?: { role?: LaunchContext["match"]["role"] } | null;
 };
 
+/** A context's launch purpose; anything unknown (v1 hosts send none) is `match`. */
+export function purposeOf(purpose: unknown): LaunchPurpose {
+  return purpose === "setup" || purpose === "app" ? purpose : "match";
+}
+
 /**
  * Why the app may not call `method` given its launch purpose and role, or
  * `null` when it may. Hosts answer a non-null result with `forbidden`.
  * Contexts from v1 hosts (no `purpose`/`role`) count as a seated match player.
+ * Standalone apps (purpose `app`) have no match, so roles don't apply to them.
  */
 export function accessProblem(method: RequestMethod, context: AccessContext): string | null {
-  const purpose = context.purpose === "setup" ? "setup" : "match";
+  const purpose = purposeOf(context.purpose);
+  if (purpose === "app") {
+    return APP_REFUSED.has(method)
+      ? SETUP_METHODS.has(method)
+        ? `${method} is only available in setup mode`
+        : `${method} needs a match: standalone apps can't use it`
+      : null;
+  }
   if (purpose === "setup") {
     return MATCH_METHODS.has(method) ? `${method} is not available while setting up a challenge` : null;
   }
@@ -125,6 +159,49 @@ export function accessProblem(method: RequestMethod, context: AccessContext): st
     return `spectators can't call ${method}`;
   }
   return null;
+}
+
+/**
+ * The stub match a standalone app (purpose `app`) is launched with: the
+ * viewer alone in seat 0, nothing to play. Hosts and the mock host use it so
+ * every field an app might read is present.
+ */
+export function standaloneMatch(
+  user: LaunchContext["user"],
+  options: { id?: string; seed?: string; settings?: { [key: string]: Json } } = {},
+): LaunchContext["match"] {
+  return {
+    id: options.id ?? "app",
+    mode: "live",
+    status: "active",
+    scoring: "high",
+    seed: options.seed ?? "",
+    players: [
+      {
+        id: user.id,
+        handle: user.handle,
+        name: user.name,
+        avatarUrl: user.avatarUrl,
+        seat: 0,
+        isBot: false,
+        submitted: false,
+        score: null,
+        team: null,
+        role: "player",
+      },
+    ],
+    seat: 0,
+    settings: options.settings ?? {},
+    minPlayers: 1,
+    maxPlayers: 1,
+    teams: 0,
+    role: "player",
+    state: null,
+    stateVersion: 0,
+    turn: null,
+    turnDeadline: null,
+    round: 0,
+  };
 }
 
 /* -------------------------------------------------------------------- */

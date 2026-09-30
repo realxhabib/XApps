@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "motion/react";
-import { Bot, Clock3, Eye, Gavel, LayoutDashboard, Repeat, Share2, Swords, Target, Users, Zap } from "lucide-react";
+import { AppWindow, Bot, Clock3, Eye, Gavel, LayoutDashboard, Repeat, Share2, Swords, Target, Users, Zap } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -52,6 +52,7 @@ export function AppDetail({ slug }: { slug: string }) {
   }
 
   const category = CATEGORIES.find((c) => c.id === app.category);
+  const standalone = app.kind === "app";
   const step = (app.teams ?? 0) >= 2 ? app.teams! : 1;
   const seatChoices: number[] = [];
   for (let n = Math.ceil(app.players.min / step) * step; n <= app.players.max; n += step) seatChoices.push(n);
@@ -125,29 +126,37 @@ export function AppDetail({ slug }: { slug: string }) {
               animate={{ opacity: 1 }}
               transition={{ delay: 0.25 }}
             >
-              <span className="flex items-center gap-1.5">
-                <Users className="size-4" /> {tableSizeLabel(app)}
-              </span>
-              {app.turnBased && (
+              {standalone ? (
                 <span className="flex items-center gap-1.5">
-                  <Repeat className="size-4" /> Turn-based
+                  <AppWindow className="size-4" /> App · opens right here
                 </span>
+              ) : (
+                <>
+                  <span className="flex items-center gap-1.5">
+                    <Users className="size-4" /> {tableSizeLabel(app)}
+                  </span>
+                  {app.turnBased && (
+                    <span className="flex items-center gap-1.5">
+                      <Repeat className="size-4" /> Turn-based
+                    </span>
+                  )}
+                  {app.spectators !== false && (
+                    <span className="flex items-center gap-1.5">
+                      <Eye className="size-4" /> Spectators welcome
+                    </span>
+                  )}
+                  <span className="flex items-center gap-1.5">
+                    <Clock3 className="size-4" /> {app.durationLabel}
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    {app.scoring === "votes" ? <Gavel className="size-4" /> : <Target className="size-4" />}
+                    {app.scoring === "votes" ? `Crowd judged · first to ${app.votesToWin ?? 5}` : "Score decides"}
+                  </span>
+                </>
               )}
-              {app.spectators !== false && (
-                <span className="flex items-center gap-1.5">
-                  <Eye className="size-4" /> Spectators welcome
-                </span>
-              )}
-              <span className="flex items-center gap-1.5">
-                <Clock3 className="size-4" /> {app.durationLabel}
-              </span>
-              <span className="flex items-center gap-1.5">
-                {app.scoring === "votes" ? <Gavel className="size-4" /> : <Target className="size-4" />}
-                {app.scoring === "votes" ? `Crowd judged · first to ${app.votesToWin ?? 5}` : "Score decides"}
-              </span>
               {app.playCount > 0 && (
                 <span className="flex items-center gap-1.5">
-                  <Zap className="size-4" /> {formatCompact(app.playCount)} matches
+                  <Zap className="size-4" /> {formatCompact(app.playCount)} {standalone ? "opens" : "matches"}
                 </span>
               )}
             </motion.div>
@@ -158,57 +167,79 @@ export function AppDetail({ slug }: { slug: string }) {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.3, ...spring.soft }}
             >
-              {app.modes.includes("live") && (
-                <Button size="xl" variant="accent" magnetic icon={<Zap className="size-5" />} loading={quick.isPending} onClick={() => go("quick")}>
-                  Quick match
-                </Button>
+              {standalone ? (
+                <>
+                  <Button size="xl" variant="accent" magnetic icon={<AppWindow className="size-5" />} href={`/apps/${app.slug}/open`}>
+                    Open {app.name}
+                  </Button>
+                  <Button
+                    size="xl"
+                    variant="glass"
+                    icon={<Share2 className="size-5" />}
+                    onClick={() => openXIntent(`${app.icon} ${app.name} on XApps — ${app.tagline}`, `${window.location.origin}/apps/${app.slug}`)}
+                  >
+                    Share
+                  </Button>
+                </>
+              ) : (
+                <>
+                  {app.modes.includes("live") && (
+                    <Button size="xl" variant="accent" magnetic icon={<Zap className="size-5" />} loading={quick.isPending} onClick={() => go("quick")}>
+                      Quick match
+                    </Button>
+                  )}
+                  {canChallenge && (
+                    <Button
+                      size="xl"
+                      variant={app.modes.includes("live") ? "glass" : "accent"}
+                      icon={<Swords className="size-5" />}
+                      onClick={async () => ((viewer ?? (await resolveViewer())) ? setSheet(true) : needSignIn())}
+                    >
+                      Challenge someone
+                    </Button>
+                  )}
+                  <Button size="xl" variant="ghost" icon={<Bot className="size-5" />} loading={practice.isPending} onClick={() => go("practice")}>
+                    {seatChoices.length > 1 ? `Practice · ${seats}` : "Practice"}
+                  </Button>
+                </>
               )}
-              {canChallenge && (
-                <Button
-                  size="xl"
-                  variant={app.modes.includes("live") ? "glass" : "accent"}
-                  icon={<Swords className="size-5" />}
-                  onClick={async () => ((viewer ?? (await resolveViewer())) ? setSheet(true) : needSignIn())}
-                >
-                  Challenge someone
-                </Button>
-              )}
-              <Button size="xl" variant="ghost" icon={<Bot className="size-5" />} loading={practice.isPending} onClick={() => go("practice")}>
-                {seatChoices.length > 1 ? `Practice · ${seats}` : "Practice"}
-              </Button>
             </motion.div>
-            {seatChoices.length > 1 && (
-              <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-ink-400">
-                <span>Practice table</span>
-                <div className="flex items-center gap-1 rounded-full glass p-1" role="radiogroup" aria-label="Practice table size">
-                  {seatChoices.map((n) => {
-                    const active = n === seats;
-                    return (
-                      <button
-                        key={n}
-                        role="radio"
-                        aria-checked={active}
-                        onClick={() => {
-                          if (!active) play("tick");
-                          setPracticeSeats(n);
-                        }}
-                        className={cn(
-                          "relative flex h-7 min-w-9 items-center justify-center rounded-full px-2 font-semibold tabular transition-colors",
-                          active ? "text-ink-950" : "text-ink-300 hover:text-ink-50",
-                        )}
-                      >
-                        {active && <motion.span layoutId="practice-seats" className="absolute inset-0 rounded-full bg-ink-50" transition={spring.layout} />}
-                        <span className="relative">{(app.teams ?? 0) >= 2 ? tableSizeLabel({ players: { min: n, max: n }, teams: app.teams }) : n}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-                <span>{(app.teams ?? 0) >= 2 ? "" : "seats · bots fill the rest"}</span>
-              </div>
+            {!standalone && (
+              <>
+                {seatChoices.length > 1 && (
+                  <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-ink-400">
+                    <span>Practice table</span>
+                    <div className="flex items-center gap-1 rounded-full glass p-1" role="radiogroup" aria-label="Practice table size">
+                      {seatChoices.map((n) => {
+                        const active = n === seats;
+                        return (
+                          <button
+                            key={n}
+                            role="radio"
+                            aria-checked={active}
+                            onClick={() => {
+                              if (!active) play("tick");
+                              setPracticeSeats(n);
+                            }}
+                            className={cn(
+                              "relative flex h-7 min-w-9 items-center justify-center rounded-full px-2 font-semibold tabular transition-colors",
+                              active ? "text-ink-950" : "text-ink-300 hover:text-ink-50",
+                            )}
+                          >
+                            {active && <motion.span layoutId="practice-seats" className="absolute inset-0 rounded-full bg-ink-50" transition={spring.layout} />}
+                            <span className="relative">{(app.teams ?? 0) >= 2 ? tableSizeLabel({ players: { min: n, max: n }, teams: app.teams }) : n}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <span>{(app.teams ?? 0) >= 2 ? "" : "seats · bots fill the rest"}</span>
+                  </div>
+                )}
+                <p className="mt-3 text-xs text-ink-400">
+                  Modes: {app.modes.map((m) => MODE_LABEL[m]).join(" · ")}
+                </p>
+              </>
             )}
-            <p className="mt-3 text-xs text-ink-400">
-              Modes: {app.modes.map((m) => MODE_LABEL[m]).join(" · ")}
-            </p>
           </div>
           <motion.div
             className={cn("relative", app.coverImage ? "aspect-video self-center overflow-hidden rounded-[1.75rem] border border-white/10 shadow-2xl" : "hidden min-h-72 lg:block")}
@@ -221,10 +252,10 @@ export function AppDetail({ slug }: { slug: string }) {
         </div>
       </section>
 
-      <div className="mt-10 grid grid-cols-1 gap-6 lg:grid-cols-[1.4fr_1fr]">
+      <div className={cn("mt-10 grid grid-cols-1 gap-6", !standalone && "lg:grid-cols-[1.4fr_1fr]")}>
         <div className="space-y-6">
           <section className="rounded-[2rem] glass p-6 sm:p-8">
-            <h2 className="font-display text-2xl font-extrabold">How to play</h2>
+            <h2 className="font-display text-2xl font-extrabold">{standalone ? "How it works" : "How to play"}</h2>
             <Reveal className="mt-5 space-y-4" as="div">
               {app.howTo.map((step, i) => (
                 <RevealItem key={step} className="flex gap-4">
@@ -313,46 +344,48 @@ export function AppDetail({ slug }: { slug: string }) {
           )}
         </div>
 
-        <section className="h-fit rounded-[2rem] glass p-6 sm:p-8">
-          <div className="flex items-center justify-between">
-            <h2 className="font-display text-2xl font-extrabold">Top players</h2>
-            <Link href={`/leaderboard?app=${app.slug}`} className="text-sm text-ink-400 transition hover:text-ink-100">
-              See all
-            </Link>
-          </div>
-          {!leaders ? (
-            <div className="mt-5 space-y-3">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <Skeleton key={i} className="h-12" />
-              ))}
+        {!standalone && (
+          <section className="h-fit rounded-[2rem] glass p-6 sm:p-8">
+            <div className="flex items-center justify-between">
+              <h2 className="font-display text-2xl font-extrabold">Top players</h2>
+              <Link href={`/leaderboard?app=${app.slug}`} className="text-sm text-ink-400 transition hover:text-ink-100">
+                See all
+              </Link>
             </div>
-          ) : leaders.length === 0 ? (
-            <p className="mt-5 text-sm text-ink-400">Nobody has won yet. Be the first name on this board.</p>
-          ) : (
-            <Reveal className="mt-5 space-y-2" as="div">
-              {leaders.slice(0, 6).map((row) => (
-                <RevealItem key={row.profile.id}>
-                  <Link
-                    href={`/u/${row.profile.handle}`}
-                    className={cn(
-                      "flex items-center gap-3 rounded-2xl px-2 py-2 transition hover:bg-white/[0.05]",
-                      row.profile.id === viewer?.id && "bg-white/[0.06]",
-                    )}
-                  >
-                    <span className={cn("w-6 text-center font-mono text-sm font-bold", row.rank === 1 ? "text-gold" : "text-ink-400")}>
-                      {row.rank}
-                    </span>
-                    <Avatar person={row.profile} size={36} />
-                    <span className="min-w-0 flex-1 truncate text-sm font-semibold">@{row.profile.handle}</span>
-                    <span className="text-right text-xs text-ink-400">
-                      <b className="font-mono text-sm text-ink-100">{formatNumber(row.wins)}</b> wins
-                    </span>
-                  </Link>
-                </RevealItem>
-              ))}
-            </Reveal>
-          )}
-        </section>
+            {!leaders ? (
+              <div className="mt-5 space-y-3">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Skeleton key={i} className="h-12" />
+                ))}
+              </div>
+            ) : leaders.length === 0 ? (
+              <p className="mt-5 text-sm text-ink-400">Nobody has won yet. Be the first name on this board.</p>
+            ) : (
+              <Reveal className="mt-5 space-y-2" as="div">
+                {leaders.slice(0, 6).map((row) => (
+                  <RevealItem key={row.profile.id}>
+                    <Link
+                      href={`/u/${row.profile.handle}`}
+                      className={cn(
+                        "flex items-center gap-3 rounded-2xl px-2 py-2 transition hover:bg-white/[0.05]",
+                        row.profile.id === viewer?.id && "bg-white/[0.06]",
+                      )}
+                    >
+                      <span className={cn("w-6 text-center font-mono text-sm font-bold", row.rank === 1 ? "text-gold" : "text-ink-400")}>
+                        {row.rank}
+                      </span>
+                      <Avatar person={row.profile} size={36} />
+                      <span className="min-w-0 flex-1 truncate text-sm font-semibold">@{row.profile.handle}</span>
+                      <span className="text-right text-xs text-ink-400">
+                        <b className="font-mono text-sm text-ink-100">{formatNumber(row.wins)}</b> wins
+                      </span>
+                    </Link>
+                  </RevealItem>
+                ))}
+              </Reveal>
+            )}
+          </section>
+        )}
       </div>
 
       <AppProgress app={app} className="mt-6" />
@@ -370,7 +403,7 @@ export function AppDetail({ slug }: { slug: string }) {
         </Link>
       )}
 
-      <ChallengeSheet app={app} open={sheet} onClose={() => setSheet(false)} />
+      {!standalone && <ChallengeSheet app={app} open={sheet} onClose={() => setSheet(false)} />}
     </div>
   );
 }

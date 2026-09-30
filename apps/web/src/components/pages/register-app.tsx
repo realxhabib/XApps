@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "motion/react";
-import { CheckCircle2, FlaskConical, LayoutDashboard, Rocket } from "lucide-react";
+import { AppWindow, CheckCircle2, FlaskConical, LayoutDashboard, Rocket } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { z } from "zod";
@@ -14,6 +14,7 @@ import { play } from "@/lib/sfx";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { CoverField, IconField } from "@/components/developers/app-images-field";
+import { KindPicker } from "@/components/developers/kind-picker";
 import { useBackend, useViewer } from "@/platform/client";
 import { achievementDefsError, manifestShapeError, statDefsError } from "@/platform/catalog";
 import { useRegisterApp } from "@/platform/queries";
@@ -44,7 +45,8 @@ const schema = z.object({
     .regex(/^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/, "3–40 lowercase letters, numbers or dashes"),
   tagline: z.string().trim().min(8, "Give it a hook (8+ characters)").max(90),
   description: z.string().trim().max(1200),
-  category: z.enum(["games", "contests", "debates", "trivia", "creative", "social"]),
+  category: z.enum(CATEGORIES.map((c) => c.id) as [AppCategory, ...AppCategory[]]),
+  kind: z.enum(["game", "app"]),
   icon: z.string().min(1, "Pick an emoji").max(16),
   iconImage: z.string().nullable(),
   coverImage: z.string().nullable(),
@@ -133,6 +135,7 @@ export function RegisterApp() {
     tagline: "",
     description: "",
     category: "games",
+    kind: "game",
     icon: "🎯",
     iconImage: null,
     coverImage: null,
@@ -162,6 +165,7 @@ export function RegisterApp() {
       tagline: form.tagline || "A one-line hook that makes people tap.",
       description: form.description,
       category: form.category,
+      kind: form.kind,
       icon: form.icon || "✨",
       iconImage: form.iconImage,
       coverImage: form.coverImage,
@@ -238,7 +242,9 @@ export function RegisterApp() {
         <p className="mt-3 text-ink-300">
           {done.status === "published"
             ? "Demo mode auto-approves your first version so you can try it right away. Later versions go through the review queue."
-            : "We'll take a look soon. You can already play it in practice mode and test both seats in the Sandbox."}
+            : done.kind === "app"
+              ? "We'll take a look soon. You can already open it from your console."
+              : "We'll take a look soon. You can already play it in practice mode and test both seats in the Sandbox."}
         </p>
         <VersionState version={firstVersion} live={done.status === "published"} />
         <div className="mx-auto mt-8 max-w-sm">
@@ -251,9 +257,15 @@ export function RegisterApp() {
           <Button size="lg" variant="glass" icon={<LayoutDashboard className="size-4" />} href={`/developers/apps/${done.slug}`}>
             Open app console
           </Button>
-          <Button size="lg" variant="glass" icon={<FlaskConical className="size-4" />} href={`/developers/sandbox?url=${encodeURIComponent(done.url)}&scoring=${done.scoring}`}>
-            Open in Sandbox
-          </Button>
+          {done.kind === "app" ? (
+            <Button size="lg" variant="glass" icon={<AppWindow className="size-4" />} href={`/apps/${done.slug}/open`}>
+              Open it
+            </Button>
+          ) : (
+            <Button size="lg" variant="glass" icon={<FlaskConical className="size-4" />} href={`/developers/sandbox?url=${encodeURIComponent(done.url)}&scoring=${done.scoring}`}>
+              Open in Sandbox
+            </Button>
+          )}
         </div>
       </motion.div>
     );
@@ -278,6 +290,19 @@ export function RegisterApp() {
           }}
           noValidate
         >
+          <KindPicker
+            value={form.kind}
+            idPrefix="register-kind"
+            onChange={(kind) =>
+              setForm((f) => ({
+                ...f,
+                kind,
+                // Apps rarely belong in Games; start them in Tools.
+                category: kind === "app" && f.category === "games" ? "tools" : kind === "game" && ["news", "tools", "finance"].includes(f.category) ? "games" : f.category,
+              }))
+            }
+          />
+
           <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
             <Field label="Name" error={errors.name}>
               <input className={input} value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Tap Race" maxLength={40} />
@@ -371,83 +396,87 @@ export function RegisterApp() {
             idPrefix="register-cover"
           />
 
-          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-            <div>
-              <span className="text-sm font-semibold">Modes</span>
-              <div className="mt-2 space-y-2">
-                {(
-                  [
-                    ["live", "Live", "Both online at once"],
-                    ["async", "Play anytime", "Take turns on your own time"],
-                    ["practice", "Practice", "Your app plays a bot"],
-                  ] as [PlayableMode, string, string][]
-                ).map(([mode, label, sub]) => {
-                  const on = form.modes.includes(mode);
-                  return (
+          {form.kind === "game" && (
+            <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+              <div>
+                <span className="text-sm font-semibold">Modes</span>
+                <div className="mt-2 space-y-2">
+                  {(
+                    [
+                      ["live", "Live", "Both online at once"],
+                      ["async", "Play anytime", "Take turns on your own time"],
+                      ["practice", "Practice", "Your app plays a bot"],
+                    ] as [PlayableMode, string, string][]
+                  ).map(([mode, label, sub]) => {
+                    const on = form.modes.includes(mode);
+                    return (
+                      <button
+                        type="button"
+                        key={mode}
+                        onClick={() => set("modes", on ? form.modes.filter((m) => m !== mode) : [...form.modes, mode])}
+                        className={cn("flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition", on ? "border-white/30 bg-white/[0.07]" : "border-white/10")}
+                      >
+                        <span className={cn("flex size-5 items-center justify-center rounded-md border transition", on ? "border-volt bg-volt text-ink-950" : "border-white/25")}>
+                          {on && "✓"}
+                        </span>
+                        <span>
+                          <span className="block text-sm font-semibold">{label}</span>
+                          <span className="block text-xs text-ink-400">{sub}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {errors.modes && <p className="mt-1 text-xs text-danger">{errors.modes}</p>}
+              </div>
+              <div>
+                <span className="text-sm font-semibold">Who wins?</span>
+                <div className="mt-2 space-y-2">
+                  {(
+                    [
+                      ["high", "Highest score", "Points, rounds, streaks"],
+                      ["low", "Lowest score", "Times, moves, strokes"],
+                      ["votes", "The crowd", "Arena voters judge entries"],
+                    ] as [Scoring, string, string][]
+                  ).map(([scoring, label, sub]) => (
                     <button
                       type="button"
-                      key={mode}
-                      onClick={() => set("modes", on ? form.modes.filter((m) => m !== mode) : [...form.modes, mode])}
-                      className={cn("flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition", on ? "border-white/30 bg-white/[0.07]" : "border-white/10")}
+                      key={scoring}
+                      onClick={() => set("scoring", scoring)}
+                      className={cn(
+                        "relative flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition",
+                        form.scoring === scoring ? "border-white/30" : "border-white/10",
+                      )}
                     >
-                      <span className={cn("flex size-5 items-center justify-center rounded-md border transition", on ? "border-volt bg-volt text-ink-950" : "border-white/25")}>
-                        {on && "✓"}
-                      </span>
-                      <span>
+                      {form.scoring === scoring && <motion.span layoutId="scoring-pick" className="absolute inset-0 rounded-2xl bg-white/[0.07]" transition={spring.layout} />}
+                      <span className={cn("relative size-4 rounded-full border-2 transition", form.scoring === scoring ? "border-volt bg-volt" : "border-white/25")} />
+                      <span className="relative">
                         <span className="block text-sm font-semibold">{label}</span>
                         <span className="block text-xs text-ink-400">{sub}</span>
                       </span>
                     </button>
-                  );
-                })}
-              </div>
-              {errors.modes && <p className="mt-1 text-xs text-danger">{errors.modes}</p>}
-            </div>
-            <div>
-              <span className="text-sm font-semibold">Who wins?</span>
-              <div className="mt-2 space-y-2">
-                {(
-                  [
-                    ["high", "Highest score", "Points, rounds, streaks"],
-                    ["low", "Lowest score", "Times, moves, strokes"],
-                    ["votes", "The crowd", "Arena voters judge entries"],
-                  ] as [Scoring, string, string][]
-                ).map(([scoring, label, sub]) => (
-                  <button
-                    type="button"
-                    key={scoring}
-                    onClick={() => set("scoring", scoring)}
-                    className={cn(
-                      "relative flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition",
-                      form.scoring === scoring ? "border-white/30" : "border-white/10",
-                    )}
-                  >
-                    {form.scoring === scoring && <motion.span layoutId="scoring-pick" className="absolute inset-0 rounded-2xl bg-white/[0.07]" transition={spring.layout} />}
-                    <span className={cn("relative size-4 rounded-full border-2 transition", form.scoring === scoring ? "border-volt bg-volt" : "border-white/25")} />
-                    <span className="relative">
-                      <span className="block text-sm font-semibold">{label}</span>
-                      <span className="block text-xs text-ink-400">{sub}</span>
-                    </span>
-                  </button>
-                ))}
+                  ))}
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
-          <TableSettings
-            value={{ players: form.players, teams: form.teams, spectators: form.spectators, turnBased: form.turnBased, setup: form.setup }}
-            error={errors.players}
-            onChange={(next) => {
-              setForm((f) => ({ ...f, ...next }));
-              setErrors((e) => ({ ...e, players: undefined }));
-            }}
-          />
+          {form.kind === "game" && (
+            <TableSettings
+              value={{ players: form.players, teams: form.teams, spectators: form.spectators, turnBased: form.turnBased, setup: form.setup }}
+              error={errors.players}
+              onChange={(next) => {
+                setForm((f) => ({ ...f, ...next }));
+                setErrors((e) => ({ ...e, players: undefined }));
+              }}
+            />
+          )}
 
           <StatsEditor value={form.stats} error={errors.stats} onChange={(rows) => set("stats", rows)} />
           <AchievementsEditor value={form.achievements} error={errors.achievements} onChange={(rows) => set("achievements", rows)} />
 
           <div>
-            <span className="text-sm font-semibold">How to play (up to 3 steps)</span>
+            <span className="text-sm font-semibold">{form.kind === "app" ? "How it works (up to 3 steps)" : "How to play (up to 3 steps)"}</span>
             <div className="mt-2 space-y-2">
               {form.howTo.map((step, i) => (
                 <div key={i} className="flex items-center gap-2">
@@ -457,7 +486,7 @@ export function RegisterApp() {
                     value={step}
                     maxLength={120}
                     onChange={(e) => set("howTo", form.howTo.map((s, j) => (j === i ? e.target.value : s)))}
-                    placeholder={["Both players see the same…", "Tap / type / drag to…", "Highest score wins."][i]}
+                    placeholder={(form.kind === "app" ? ["Pick the topics you follow…", "We pull the latest from X…", "Save what matters."] : ["Both players see the same…", "Tap / type / drag to…", "Highest score wins."])[i]}
                   />
                 </div>
               ))}

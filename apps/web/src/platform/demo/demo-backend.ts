@@ -29,9 +29,12 @@ import {
   applyVersionToApp,
   cleanManifest,
   isLogLevel,
+  isStandaloneApp,
   levelsFrom,
   manifestOf,
   nextRevisionVersion,
+  notAGameMessage,
+  notAnAppMessage,
   sortVersions,
   versionLabelError,
   versionManifestError,
@@ -39,6 +42,7 @@ import {
 } from "../shipping";
 import type {
   AppAnalytics,
+  AppLaunch,
   AppLogEntry,
   AppVersion,
   DeveloperNotice,
@@ -367,6 +371,11 @@ function testVersionFor(db: DemoDb, appSlug: string, versionId: string | null | 
   return version;
 }
 
+/** Mirrors `require_game`: matches are for games; standalone apps are opened (`openApp`). */
+function requireGame(app: AppManifest): void {
+  if (isStandaloneApp(app)) throw new BackendError(notAGameMessage(app.name), "invalid");
+}
+
 /** Mirrors matches_set_version: non-test matches remember the app's live version. */
 function stampVersion(db: DemoDb, row: MatchRow): void {
   row.publishedVersionId = row.versionId ? null : (db.publishedVersions?.[row.appSlug] ?? null);
@@ -634,9 +643,45 @@ export class DemoBackend implements Backend {
     return appFor(load(), slug);
   }
 
+  /**
+   * Mirrors `open_app`: the live app (published, or the viewer's own) for anyone,
+   * signed in or not, counting the open; a test build (owner/testers, signed in)
+   * as its version describes it, not counted. Games are refused.
+   */
+  async openApp(appSlug: string, versionId?: string | null): Promise<AppLaunch> {
+    const viewerId = getViewerId();
+    if (versionId) {
+      // A test build: read-only (it doesn't count), and not through playable_app, so
+      // testers of an app that isn't published yet can open it.
+      const db = load();
+      if (!viewerId || !db.profiles[viewerId]) throw new BackendError("Sign in to open test builds", "unauthenticated");
+      const version = db.versions?.[versionId];
+      const listed = appFor(db, appSlug);
+      if (!listed || !version || version.appSlug !== appSlug) throw new BackendError("Version not found", "not_found");
+      if (!canTest(db, appSlug, viewerId)) throw new BackendError("Only the developer and testers can open test builds", "forbidden");
+      if (version.status === "published") throw new BackendError("That version is live — open the app itself", "invalid");
+      const app = applyVersionToApp(listed, version);
+      if (!isStandaloneApp(app)) throw new BackendError(notAnAppMessage(app.name), "invalid");
+      return { app, versionId: version.id };
+    }
+    return mutate((db) => {
+      const listed = this.requireApp(db, appSlug);
+      if (!isStandaloneApp(listed)) throw new BackendError(notAnAppMessage(listed.name), "invalid");
+      // Every open counts. Official apps count in playCounts (like settlement), community apps on their row.
+      const community = db.apps[appSlug];
+      if (community) community.playCount = (community.playCount ?? 0) + 1;
+      else db.playCounts[appSlug] = (db.playCounts[appSlug] ?? 0) + 1;
+      return { app: appFor(db, appSlug) ?? listed, versionId: null };
+    });
+  }
+
   async registerApp(input: RegisterAppInput): Promise<AppManifest> {
     const viewer = this.requireViewer();
-    const shapeError = manifestShapeError(input) ?? appImageKeyError(input.iconImage, { demo: true }) ?? appImageKeyError(input.coverImage, { demo: true });
+    const shapeError =
+      manifestShapeError(input) ??
+      appImageKeyError(input.iconImage, { demo: true }) ??
+      appImageKeyError(input.coverImage, { demo: true }) ??
+      (input.kind !== undefined && input.kind !== "game" && input.kind !== "app" ? "Kind must be game or app" : null);
     if (shapeError) throw new BackendError(shapeError, "invalid");
     return mutate((db) => {
       if (getOfficialApp(input.slug) || db.apps[input.slug]) {
@@ -645,6 +690,7 @@ export class DemoBackend implements Backend {
       const now = nowIso();
       const app = withManifestDefaults({
         ...input,
+        kind: input.kind ?? "game",
         players: input.players ? { min: input.players.min, max: input.players.max } : { min: 2, max: 2 },
         stats: toStatDefs(input.stats ?? []),
         achievements: toAchievementDefs(input.achievements ?? []),
@@ -1238,7 +1284,11 @@ export class DemoBackend implements Backend {
           throw new BackendError("Not your match", "forbidden");
         }
         versionId = row.versionId ?? row.publishedVersionId ?? versionId;
-      } else if (!canTest(db, entry.appSlug, viewer.id)) {
+      } else if (
+        !canTest(db, entry.appSlug, viewer.id) &&
+        // A standalone app has no matches: its viewers log outside one (like log_app_event).
+        !(isStandaloneApp(app) && (app.official || app.status === "published" || app.developer.id === viewer.id))
+      ) {
         throw new BackendError("Only the developer and testers can log outside a match", "forbidden");
       }
       const now = Date.now();
@@ -1385,6 +1435,7 @@ export class DemoBackend implements Backend {
       if (!listed) throw new BackendError("App not found", "not_found");
       const version = testVersionFor(db, input.appSlug, input.versionId, viewer.id);
       const app = version ? applyVersionToApp(listed, version) : listed;
+      requireGame(app);
       if (!app.modes.includes(input.mode)) throw new BackendError(`${app.name} doesn't support ${input.mode} play`, "invalid");
       const { min, max } = app.players;
       const teams = app.teams ?? 0;
@@ -1436,10 +1487,11 @@ export class DemoBackend implements Backend {
     return mutate((db) => {
       const listed = appFor(db, appSlug);
       if (!listed) throw new BackendError("App not found", "not_found");
-      // My dead lobbies go first, so a new press doesn't stack another one on top.
-      expireIdleLobbies(db, Date.now(), viewer.id);
       const version = testVersionFor(db, appSlug, versionId, viewer.id);
       const app = version ? applyVersionToApp(listed, version) : listed;
+      requireGame(app);
+      // My dead lobbies go first, so a new press doesn't stack another one on top.
+      expireIdleLobbies(db, Date.now(), viewer.id);
       const cutoff = Date.now() - 10 * 60_000;
       // Test builds only meet the same build.
       const quickLobbies = Object.values(db.matches)
@@ -1494,6 +1546,7 @@ export class DemoBackend implements Backend {
       if (!listed) throw new BackendError("App not found", "not_found");
       const version = testVersionFor(db, appSlug, versionId, viewer.id);
       const app = version ? applyVersionToApp(listed, version) : listed;
+      requireGame(app);
       const teams = app.teams ?? 0;
       const seats = players ?? Math.min(app.players.max, Math.max(app.players.min, teams));
       if (!Number.isInteger(seats) || seats < app.players.min || seats > app.players.max || seats < teams) {

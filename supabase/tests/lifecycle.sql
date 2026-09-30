@@ -2616,7 +2616,7 @@ begin
   assert l->0->>'version' = '1.0.0' and l->0->>'status' = 'in_review' and l->0->>'appSlug' = 'ship-game', l::text;
   assert l->0->>'url' = 'https://ship.example.com/v1' and l->0->>'submittedAt' is not null
          and l->0->'reviewedAt' = 'null' and l->0->'publishedAt' = 'null', l::text;
-  assert l->0->'manifest' = '{"name":"Ship Game","tagline":"Version one","description":"","category":"games","icon":"✨",
+  assert l->0->'manifest' = '{"name":"Ship Game","tagline":"Version one","description":"","category":"games","kind":"game","icon":"✨",
     "iconImage":null,"coverImage":null,
     "accent":["#5b74ff","#a35cff"],"modes":["live","async","practice"],"players":{"min":2,"max":4},"teams":0,
     "spectators":true,"setup":false,"turnBased":false,"scoring":"high","votesToWin":5,"howTo":["Play"],
@@ -2832,7 +2832,7 @@ begin
   -- Defaults: no manifest/url = the app as it is now.
   assert public.create_app_version('ship-game', '1.0.1')->'manifest' = pg_temp.ver('sv1')->'manifest', 'copied from the app';
   assert public.create_app_version('ship-game', '1.0.2', null, '{"name":"Mini","category":"games","howTo":null}')->'manifest'
-         = '{"name":"Mini","tagline":"","description":"","category":"games","icon":"✨","iconImage":null,"coverImage":null,
+         = '{"name":"Mini","tagline":"","description":"","category":"games","kind":"game","icon":"✨","iconImage":null,"coverImage":null,
              "accent":["#5b74ff","#a35cff"],
              "modes":["live","practice"],"players":{"min":2,"max":2},"teams":0,"spectators":true,"setup":false,
              "turnBased":false,"scoring":"high","votesToWin":5,"howTo":[],"stats":[],"achievements":[]}', 'defaults filled';
@@ -3464,5 +3464,171 @@ select pg_temp.expect($q$select public.app_testers_json('ship-game')$q$, '42501'
 select pg_temp.expect($q$select public.app_row_json((select a from public.apps a where slug = 'ship-game'))$q$, '42501');
 select pg_temp.expect(format('select public.managed_version(%L)', pg_temp.mid('sv3')), '42501');
 reset role;
+
+-- ================================================================ Standalone apps (kind = 'app')
+-- A developer registers an app people simply open: version 1.0.0 carries the kind.
+set role authenticated;
+select pg_temp.login('bob');
+insert into public.apps (slug, name, tagline, category, url, kind)
+values ('news-desk', 'News Desk', 'Headlines, fast', 'news', 'https://news.example.com/', 'app');
+select pg_temp.expect($q$insert into public.apps (slug, name, category, url, kind)
+  values ('kind-sneaky', 'Sneaky', 'games', 'https://sneaky.example.com/', 'widget')$q$, '23514');
+insert into ctx values ('nd1', (select public.list_app_versions('news-desk')->0->>'id'));
+reset role;
+do $$
+declare
+  a public.apps;
+  v public.app_versions;
+begin
+  select * into a from public.apps where slug = 'news-desk';
+  select * into v from public.app_versions where app_slug = 'news-desk';
+  assert a.kind = 'app' and a.status = 'pending' and a.category = 'news', 'registered as an app';
+  assert v.version = '1.0.0' and v.status = 'in_review' and v.manifest->>'kind' = 'app', v.manifest::text;
+  assert v.manifest = public.app_version_manifest(public.app_row_manifest(a)), 'registration manifest is normalized';
+  assert (select kind from public.apps where slug = 'quick-draw') = 'game', 'existing apps are games';
+  assert (select kind from public.apps where slug = 'ship-game') = 'game', 'kind defaults to game';
+  -- Manifests from before standalone apps have no kind: they are games.
+  assert public.app_version_manifest_error(v.manifest - 'kind') is null, 'kind is optional';
+  assert (public.app_with_manifest(a, v.manifest - 'kind', null)).kind = 'game', 'absent kind = game';
+  assert public.app_version_manifest(v.manifest - 'kind')->>'kind' = 'game', 'kind defaults to game';
+  assert public.app_version_manifest_error(v.manifest || '{"kind":"widget"}') = 'Kind must be game or app', 'bad kind';
+  assert public.app_version_manifest_error(v.manifest || '{"kind":null}') = 'Kind must be game or app', 'null kind in storage';
+end $$;
+
+-- The new categories.
+set role authenticated;
+select pg_temp.login('carol');
+insert into public.apps (slug, name, category, url, kind) values ('tool-box', 'Tool Box', 'tools', 'https://tools.example.com/', 'app');
+insert into public.apps (slug, name, category, url) values ('fin-duel', 'Fin Duel', 'finance', 'https://fin.example.com/');
+select pg_temp.expect($q$insert into public.apps (slug, name, category, url) values ('food-app', 'Food', 'food', 'https://food.example.com/')$q$, '23514');
+do $$
+begin
+  assert public.list_app_versions('tool-box')->0->'manifest'->>'category' = 'tools', 'tools';
+  assert public.list_app_versions('tool-box')->0->'manifest'->>'kind' = 'app', 'tool box is an app';
+  assert public.list_app_versions('fin-duel')->0->'manifest'->>'category' = 'finance', 'finance';
+  assert public.list_app_versions('fin-duel')->0->'manifest'->>'kind' = 'game', 'fin duel is a game';
+  assert public.create_app_version('tool-box', '1.1.0', null, '{"name":"Tool Box","category":"finance","kind":"app"}')->'manifest'->>'category'
+         = 'finance', 'versions take the new categories';
+end $$;
+select pg_temp.expect($q$select public.create_app_version('tool-box', '1.2.0', null, '{"name":"Tool Box","category":"tools","kind":"widget"}')$q$,
+  '22023', 'Kind must be game or app');
+
+-- Unpublished: only its developer can open it (like playable_app).
+select pg_temp.expect($q$select public.open_app('news-desk')$q$, 'P0002', 'App not found');
+select pg_temp.login('bob');
+do $$
+declare o jsonb := public.open_app('news-desk');
+begin
+  assert o->>'slug' = 'news-desk' and o->>'kind' = 'app' and o->'versionId' = 'null'::jsonb, o::text;
+  assert o->'developer'->>'handle' = 'bob' and (o->>'play_count')::int = 1, o::text;
+end $$;
+select pg_temp.login('rita');
+select public.review_app_version(pg_temp.mid('nd1'), 'approve');
+
+-- Published: anyone opens it, signed in or not, and every open counts.
+select pg_temp.login('carol');
+do $$
+begin
+  assert (public.open_app('news-desk')->>'play_count')::int = 2, 'carol opened it';
+end $$;
+set role anon;
+select set_config('request.jwt.claim.sub', '', false);
+do $$
+declare o jsonb := public.open_app('news-desk');
+begin
+  assert (o->>'play_count')::int = 3 and o->>'status' = 'published' and o->'versionId' = 'null'::jsonb, o::text;
+end $$;
+select pg_temp.expect($q$select public.open_app('no-such-app')$q$, 'P0002');
+-- Games are played through matches.
+select pg_temp.expect($q$select public.open_app('quick-draw')$q$, '22023', '% is a game: play it in a match');
+set role authenticated;
+select pg_temp.login('carol');
+select pg_temp.expect($q$select public.open_app('ship-game')$q$, '22023', '% is a game%');
+
+-- Apps have no matches: everything that creates one refuses.
+select pg_temp.expect($q$select public.quick_match('news-desk')$q$, '22023', 'News Desk is an app you open, not a game: there are no matches');
+select pg_temp.expect($q$select public.create_challenge('news-desk', 'live')$q$, '22023', 'News Desk is an app you open%');
+select pg_temp.expect($q$select public.create_challenge('news-desk', 'async', 'bob')$q$, '22023', 'News Desk is an app you open%');
+select pg_temp.expect($q$select public.start_practice('news-desk')$q$, '22023', 'News Desk is an app you open%');
+select pg_temp.expect($q$select public.start_practice('tool-box')$q$, '22023', 'Tool Box is an app you open%');
+do $$
+begin
+  assert not exists (select 1 from public.matches where app_slug = 'news-desk'), 'no matches';
+end $$;
+
+-- Viewers of a standalone app log outside a match (games still need one).
+do $$
+begin
+  assert public.log_app_event('news-desk', null, 'info', 'opened the front page'), 'viewer logs';
+end $$;
+select pg_temp.expect($q$select public.log_app_event('ship-game', null, 'info', 'x')$q$, '42501', 'Only the developer and testers%');
+
+-- Test builds: developer and testers only, signed in, never counted; a version can switch kind.
+select pg_temp.login('bob');
+insert into ctx values ('nd_app', public.create_app_version('news-desk', '1.1.0', null, null, 'Dark mode')->>'id');
+insert into ctx values ('nd_game', public.create_app_version('news-desk', '2.0.0', null,
+  (public.list_app_versions('news-desk')->0->'manifest') || '{"kind":"game","category":"trivia"}')->>'id');
+select public.add_app_tester('news-desk', 'tess');
+do $$
+declare o jsonb;
+begin
+  assert (select x->'manifest'->>'kind' from jsonb_array_elements(public.list_app_versions('news-desk')) x
+           where x->>'id' = pg_temp.cv('nd_app')) = 'app', 'copied from the app';
+  assert (select x->'manifest'->>'kind' from jsonb_array_elements(public.list_app_versions('news-desk')) x
+           where x->>'id' = pg_temp.cv('nd_game')) = 'game', 'switched';
+  o := public.open_app('news-desk', pg_temp.mid('nd_app'));
+  assert o->>'versionId' = pg_temp.cv('nd_app') and o->>'kind' = 'app' and o->>'slug' = 'news-desk', o::text;
+  assert (o->>'play_count')::int = 3, 'test builds do not count';
+  assert (select play_count from public.apps where slug = 'news-desk') = 3, 'still 3';
+  -- A test build that is a game is played, not opened.
+  perform public.start_practice('news-desk', null, pg_temp.mid('nd_game'));
+end $$;
+select pg_temp.expect(format('select public.open_app(%L, %L)', 'news-desk', pg_temp.mid('nd_game')), '22023', '% is a game%');
+select pg_temp.expect(format('select public.quick_match(%L, %L)', 'news-desk', pg_temp.mid('nd_app')), '22023', 'News Desk is an app you open%');
+select pg_temp.expect(format('select public.open_app(%L, %L)', 'news-desk', pg_temp.mid('nd1')), '22023', 'That version is live%');
+select pg_temp.expect(format('select public.open_app(%L, %L)', 'ship-game', pg_temp.mid('nd_app')), 'P0002', 'Version not found');
+select pg_temp.expect(format('select public.open_app(%L, %L)', 'news-desk', gen_random_uuid()), 'P0002', 'Version not found');
+select pg_temp.login('tess');
+do $$
+begin
+  assert public.open_app('news-desk', pg_temp.mid('nd_app'))->>'versionId' = pg_temp.cv('nd_app'), 'testers open test builds';
+end $$;
+select pg_temp.login('carol');
+select pg_temp.expect(format('select public.open_app(%L, %L)', 'news-desk', pg_temp.mid('nd_app')), '42501', 'Only the developer and testers%');
+set role anon;
+select set_config('request.jwt.claim.sub', '', false);
+select pg_temp.expect(format('select public.open_app(%L, %L)', 'news-desk', pg_temp.mid('nd_app')), '28000', 'Sign in%');
+
+-- Publishing copies the kind onto the app (and back).
+reset role;
+select public.publish_version(pg_temp.mid('nd_game'));
+do $$
+begin
+  assert (select kind = 'game' and category = 'trivia' from public.apps where slug = 'news-desk'), 'now a game';
+end $$;
+set role authenticated;
+select pg_temp.login('carol');
+select pg_temp.expect($q$select public.open_app('news-desk')$q$, '22023', 'News Desk is a game%');
+select public.start_practice('news-desk');
+reset role;
+select public.publish_version(pg_temp.mid('nd_app'));
+do $$
+begin
+  assert (select kind = 'app' and category = 'news' from public.apps where slug = 'news-desk'), 'an app again';
+  assert (select manifest->>'kind' from public.app_versions where id = pg_temp.mid('nd_app')) = 'app', 'version unchanged';
+end $$;
+
+-- Internal helpers stay internal; open_app is for everyone.
+set role authenticated;
+select pg_temp.login('bob');
+select pg_temp.expect($q$select public.require_game((select a from public.apps a where slug = 'news-desk'))$q$, '42501');
+reset role;
+do $$
+begin
+  assert has_function_privilege('anon', 'public.open_app(text, uuid)', 'execute'), 'anon opens apps';
+  assert has_function_privilege('authenticated', 'public.open_app(text, uuid)', 'execute'), 'users open apps';
+  assert not has_function_privilege('anon', 'public.require_game(public.apps)', 'execute'), 'require_game internal';
+  assert not has_function_privilege('anon', 'public.log_app_event(text, uuid, text, text, jsonb, text)', 'execute'), 'logs need sign-in';
+end $$;
 
 \echo 'All database lifecycle checks passed ✔'

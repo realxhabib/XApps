@@ -4,9 +4,12 @@ import {
   applyVersionToApp,
   cleanManifest,
   compareSemver,
+  isStandaloneApp,
   isTestBuild,
   levelsFrom,
   manifestOf,
+  notAGameMessage,
+  notAnAppMessage,
   sortVersions,
   testBuildLabel,
   versionLabelError,
@@ -57,5 +60,41 @@ describe("shipping rules", () => {
     expect(testBuildLabel({ versionId: "v1", versionLabel: "1.1.0" })).toBe("Test build v1.1.0");
     expect(testBuildLabel({ versionId: "v1" })).toBe("Test build");
     expect(levelsFrom("warn")).toEqual(["warn", "error"]);
+  });
+});
+
+describe("standalone apps", () => {
+  const game = getOfficialApp("rps-showdown")!;
+
+  it("manifests carry kind (absent = a game), and the new categories", () => {
+    const manifest = manifestOf(game);
+    expect(manifest.kind).toBe("game");
+    expect(manifestOf({ ...game, kind: "app" }).kind).toBe("app");
+    const legacy = { ...manifest };
+    delete legacy.kind;
+    expect(versionManifestError(legacy)).toBeNull();
+    expect(cleanManifest(legacy).kind).toBe("game");
+    expect(cleanManifest({ ...manifest, kind: "app" }).kind).toBe("app");
+    expect(versionManifestError({ ...manifest, kind: "widget" })).toBe("Kind must be game or app");
+    for (const category of ["news", "tools", "finance"] as const) {
+      expect(versionManifestError({ ...manifest, category, kind: "app" })).toBeNull();
+    }
+  });
+
+  it("publishing a version copies its kind; a manifest without one is a game", () => {
+    const app = { ...game, kind: "app" as const };
+    expect(applyVersionToApp(app, { url: "https://example.com", manifest: { ...manifestOf(app) } }).kind).toBe("app");
+    const legacy = { ...manifestOf(app) };
+    delete legacy.kind;
+    expect(applyVersionToApp(app, { url: "https://example.com", manifest: legacy }).kind).toBe("game");
+    expect(applyVersionToApp(game, { url: "https://example.com", manifest: { ...manifestOf(game), kind: "app" } }).kind).toBe("app");
+  });
+
+  it("tells apps from games and words the refusals like the database", () => {
+    expect(isStandaloneApp(game)).toBe(false);
+    expect(isStandaloneApp({ kind: "app" })).toBe(true);
+    expect(isStandaloneApp(null)).toBe(false);
+    expect(notAGameMessage("Starship")).toBe("Starship is an app you open, not a game: there are no matches");
+    expect(notAnAppMessage("Starship")).toBe("Starship is a game: play it in a match");
   });
 });

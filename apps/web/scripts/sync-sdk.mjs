@@ -1,6 +1,6 @@
 // Builds @xapps/sdk and publishes the browser bundle at /sdk/v1.js so apps
 // hosted anywhere can `import { connect } from "https://<host>/sdk/v1.js"`.
-// Also copies the vanilla example app into /examples.
+// Also copies the example apps (examples/*) into /examples.
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -20,5 +20,5 @@ cpSync(resolve(sdk, "dist/xapps.global.js"), resolve(web, "public/sdk/v1.global.
 cpSync(resolve(sdk, "dist/xapps.global.js.map"), resolve(web, "public/sdk/xapps.global.js.map"));
 
 mkdirSync(resolve(web, "public/examples"), { recursive: true });
-cpSync(resolve(root, "examples/rps"), resolve(web, "public/examples/rps"), { recursive: true });
+cpSync(resolve(root, "examples"), resolve(web, "public/examples"), { recursive: true });
 console.log("SDK synced → public/sdk/v1.js, examples → public/examples/");

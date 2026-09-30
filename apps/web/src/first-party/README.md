@@ -47,3 +47,44 @@ Migrations are only for platform changes. Official apps never get
 Drive the host HUD with `xapps.ui.setStatus`, `setScores` and `setTurn`.
 Use `xapps.random` (seeded per match) for anything both players must agree
 on — prompts, puzzles, delays.
+
+## Standalone apps (purpose `app`)
+
+Apps with `kind: "app"` in their manifest aren't games: people open them
+(news, dashboards, tools, meme makers) at `/apps/<slug>/open`
+(`?version=<id>` opens a test build for the owner and testers). There are no
+challenges, lobbies, scoring or results. The page lives in the `(standalone)`
+route group (no site chrome) and renders `components/play/app-room.tsx`.
+
+What the host does:
+
+1. Signed-out viewers get a "Sign in with X" card (back to this URL after
+   login). Apps are promised a real X identity in `xapps.user`, so nothing
+   runs anonymously, even though `openApp` would allow it for live apps.
+2. `backend.openApp(slug, versionId)` records the open and returns the app to
+   run (a test build's manifest for owners/testers). Games are refused with
+   `invalid` and the page points back to the app page.
+3. The iframe (same `APP_SANDBOX` / `APP_ALLOW` as the play room) fills the
+   screen under a slim top bar: back, glyph, name, "by @developer" (or the
+   app's `ui.status` line), a test-build badge, Share on X and fullscreen.
+4. The bridge launches it with `purpose: "app"` and a one-player stub match
+   (`standaloneMatch(user, { id: "app:<slug>", seed })` from
+   `@xapps/sdk/host`). The cover lifts on connect: `ready()` is optional and
+   answers `{ startedAt: null }`; `match.start` / `match.end` are never sent.
+5. The host core refuses match-only requests for purpose `app` before any
+   handler runs (`room.send`, `match.submit`, `match.forfeit`, `state.*`,
+   `turn.end`, `round.set`, `ui.scores`, `ui.turn`, `setup.*` →
+   `forbidden`). Handled: `storage.*`, `stats.report`, `achievements.unlock`
+   (host achievement moment + `achievement.unlock` event), `media.upload`,
+   `log` (`logAppEvent` with `matchId: null`), `social.share`, `ui.toast`,
+   `ui.celebrate`, `ui.haptic`, `ui.status` (top bar) and `ui.resize`
+   (no-op: the frame always fills the screen).
+6. Test builds echo stats and show achievements (0 XP) without saving them,
+   exactly like test-build matches.
+
+A first-party standalone app would follow the same layout as the games
+(`src/first-party/<slug>` + `src/app/embed/<slug>/page.tsx`, `kind: "app"` in
+`OFFICIAL_APPS`). Its mock should run as a standalone app so opening
+`/embed/<slug>` directly works like the host: pass `purpose: "app"` in
+`EmbedRoot`'s mock options for `kind: "app"` apps (not wired yet, since no
+first-party standalone app exists).

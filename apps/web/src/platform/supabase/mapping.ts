@@ -7,6 +7,8 @@ import { getOfficialApp, toAchievementDefs, toStatDefs, withManifestDefaults } f
 import { CATEGORIES } from "../types";
 import type {
   AppAnalytics,
+  AppKind,
+  AppLaunch,
   AppLogEntry,
   AppVersion,
   AppVersionStatus,
@@ -39,6 +41,8 @@ export interface AppRow {
   tagline: string;
   description: string;
   category: AppCategory;
+  /** `game` or `app` (absent before the standalone apps migration: a game). */
+  kind?: AppKind | null;
   icon: string;
   /** Listing images (absent before the app images migration). */
   icon_image?: string | null;
@@ -72,6 +76,11 @@ export interface AppRow {
   developer?: { handle: string; name: string } | null;
 }
 
+/** `game` unless the row/manifest says `app` (absent or unknown = a game). */
+export function toKind(raw: unknown): AppKind {
+  return raw === "app" ? "app" : "game";
+}
+
 export function toApp(row: AppRow): AppManifest {
   const official = row.official ? getOfficialApp(row.slug) : undefined;
   if (official) {
@@ -92,6 +101,7 @@ export function toApp(row: AppRow): AppManifest {
     tagline: row.tagline,
     description: row.description,
     category: row.category,
+    kind: toKind(row.kind),
     icon: row.icon,
     iconImage: row.icon_image ?? null,
     coverImage: row.cover_image ?? null,
@@ -154,6 +164,8 @@ export function appInsert(input: RegisterAppInput): Record<string, unknown> {
   if (input.achievements?.length) row.achievements = input.achievements;
   if (input.iconImage) row.icon_image = input.iconImage;
   if (input.coverImage) row.cover_image = input.coverImage;
+  // Only sent for standalone apps, so registering a game still works before the migration.
+  if (input.kind === "app") row.kind = "app";
   return row;
 }
 
@@ -508,6 +520,7 @@ export function toVersionManifest(raw: unknown): VersionManifest {
     tagline: str(m.tagline) ?? "",
     description: typeof m.description === "string" ? m.description : "",
     category: category && CATEGORIES.some((c) => c.id === category) ? category : "games",
+    kind: toKind(m.kind),
     icon: str(m.icon) ?? "✨",
     iconImage: str(m.iconImage ?? m.icon_image),
     coverImage: str(m.coverImage ?? m.cover_image),
@@ -601,6 +614,14 @@ export function toAppLoose(raw: unknown): AppManifest | null {
     createdAt: str(pick(r, "createdAt")) ?? new Date(0).toISOString(),
     tags: strings(r.tags),
   });
+}
+
+/** `open_app` → the app to run (an `apps` row + developer) and the test build's id (or null). */
+export function toAppLaunch(data: unknown): AppLaunch | null {
+  const row = firstRow(data);
+  const app = toAppLoose(row);
+  if (!row || !app) return null;
+  return { app, versionId: str(pick(row, "versionId")) };
 }
 
 /** `list_review_queue` → items (oldest first as the RPC orders them). */

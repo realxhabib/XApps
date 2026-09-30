@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OFFICIAL_APPS, achievementDefsError, getOfficialApp, manifestShapeError, statDefsError } from "./catalog";
+import { OFFICIAL_APPS, achievementDefsError, getOfficialApp, manifestShapeError, statDefsError, withManifestDefaults } from "./catalog";
 
 /** First-party apps that declare stats + achievements. The catalog is the source of truth: `npm run sync-apps` writes it to Supabase. */
 const WITH_PROGRESS = ["quick-draw", "four-in-a-row", "trivia-royale", "emoji-decode", "hot-takes"];
@@ -22,5 +22,12 @@ describe("official catalog", () => {
     // A couple of harder ones stay a surprise.
     expect(app?.achievements?.some((a) => a.secret)).toBe(true);
     for (const a of app?.achievements ?? []) expect(a.description.length, a.id).toBeGreaterThan(0);
+  });
+});
+
+describe("app kind", () => {
+  it("defaults to a game, and official apps are games", () => {
+    for (const app of OFFICIAL_APPS) expect(withManifestDefaults(app).kind).toBe("game");
+    expect(withManifestDefaults({ ...OFFICIAL_APPS[0]!, kind: "app" }).kind).toBe("app");
   });
 });

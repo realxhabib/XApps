@@ -4,6 +4,28 @@ All notable changes to `@xapps/sdk`. The wire protocol is still version 1:
 every release is additive, and apps built against an older SDK keep working on
 newer hosts (and the other way round, minus the new features).
 
+## 0.5.0
+
+Standalone apps.
+
+- **Purpose `app`.** XApps now hosts standalone apps (manifest `kind: "app"`)
+  as well as games: something people simply open, like a news reader, a
+  dashboard or a meme maker. The host launches them with `purpose: "app"` and a
+  one-player stub match (the viewer alone in seat 0). `xapps.isStandalone`
+  tells you; `onStart`/`onEnd` never fire and `ready()` is optional.
+- Standalone apps can use storage, stats, achievements, media uploads, logs,
+  `social.share`, `ui.toast`/`celebrate`/`haptic`/`setStatus`/`resize`. Match
+  methods (`room.send`, `submit`, `forfeit`, `state.*`, `turn.end`,
+  `round.set`, `ui.setScores`, `ui.setTurn`) and `setup.*` are refused with
+  `forbidden`, on the client and by the host core.
+- The client keeps `purpose: "app"` (it used to collapse everything but
+  `setup` into `match`); contexts without a purpose (v1 hosts) are still
+  matches.
+- React: `useUser()`, `useStandalone()`.
+- Mock host: `purpose: "app"` option and `?xapps-purpose=app`.
+- Host: `standaloneMatch(user, options)` and `purposeOf(purpose)` are exported
+  from `@xapps/sdk/host`.
+
 ## 0.4.0
 
 Shipping: logs and a publishable package.

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { toAppLaunch, toAppLoose, toKind, toVersionManifest } from "./mapping";
 import type { Match, Profile, RegisterAppInput, StatDef } from "../types";
 import {
   appInsert,
@@ -294,6 +295,7 @@ describe("Stage 4 mapping", () => {
     tagline: "Tap fast",
     description: "",
     category: "games",
+    kind: "game",
     icon: "🎲",
     iconImage: null,
     coverImage: null,
@@ -434,5 +436,58 @@ describe("Stage 4 mapping", () => {
     expect(practiceArgs("gizmo", 3, "v1")).toEqual({ p_app: "gizmo", p_players: 3, p_version: "v1" });
     expect(quickMatchArgs("gizmo", null)).toEqual({ p_app: "gizmo" });
     expect(quickMatchArgs("gizmo", "v1")).toEqual({ p_app: "gizmo", p_version: "v1" });
+  });
+});
+
+describe("standalone apps (kind)", () => {
+  it("reads kind from apps rows: absent or unknown is a game", () => {
+    expect(toApp(appRow).kind).toBe("game");
+    expect(toApp({ ...appRow, kind: "app" }).kind).toBe("app");
+    expect(toApp({ ...appRow, kind: null }).kind).toBe("game");
+    expect(toKind("widget")).toBe("game");
+    expect(toKind("app")).toBe("app");
+  });
+
+  it("official rows stay games", () => {
+    expect(toApp({ ...appRow, slug: "quick-draw", official: true }).kind).toBe("game");
+  });
+
+  it("sends kind on registration only for apps", () => {
+    const input: RegisterAppInput = {
+      slug: "news-desk",
+      name: "News Desk",
+      tagline: "Headlines",
+      description: "",
+      category: "news",
+      icon: "📰",
+      accent: ["#000000", "#ffffff"],
+      url: "https://news.example.com",
+      modes: ["live"],
+      scoring: "high",
+      howTo: [],
+    };
+    expect(appInsert(input)).not.toHaveProperty("kind");
+    expect(appInsert({ ...input, kind: "game" })).not.toHaveProperty("kind");
+    expect(appInsert({ ...input, kind: "app" })).toMatchObject({ kind: "app", category: "news" });
+  });
+
+  it("carries kind and the new categories through version manifests", () => {
+    expect(toVersionManifest({ name: "Old", category: "games" }).kind).toBe("game");
+    expect(toVersionManifest({ name: "Desk", category: "finance", kind: "app" })).toMatchObject({ kind: "app", category: "finance" });
+    expect(toAppLoose({ slug: "camel", name: "Camel", category: "tools", kind: "app", url: "https://c.example" })).toMatchObject({
+      kind: "app",
+      category: "tools",
+    });
+  });
+
+  it("maps open_app results", () => {
+    const row = { ...appRow, slug: "news-desk", kind: "app", category: "news", play_count: 7, developer: { handle: "bob", name: "Bob" } };
+    expect(toAppLaunch({ ...row, versionId: null })).toMatchObject({
+      app: { slug: "news-desk", kind: "app", playCount: 7, developer: { handle: "bob" } },
+      versionId: null,
+    });
+    expect(toAppLaunch([{ ...row, versionId: "v9" }])).toMatchObject({ app: { slug: "news-desk" }, versionId: "v9" });
+    expect(toAppLaunch(null)).toBeNull();
+    expect(toAppLaunch({ versionId: "v9" })).toBeNull();
   });
 });

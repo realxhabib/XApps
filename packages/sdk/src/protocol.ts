@@ -9,7 +9,7 @@
  */
 
 export const PROTOCOL_VERSION = 1 as const;
-export const SDK_VERSION = "0.4.0";
+export const SDK_VERSION = "0.5.0";
 
 export type Json =
   | string
@@ -67,11 +67,18 @@ export interface PlayerInfo {
 
 export type PlayerRole = "player" | "spectator";
 
-/** Why the app was opened: to play a match, or to set up a challenge (`setup: true` apps). */
-export type LaunchPurpose = "match" | "setup";
+/**
+ * Why the host opened your app: `match` to play, `setup` to render your challenge setup screen, or
+ * `app` for a standalone app (no match: the viewer just opened it; `match` is a one-player stub).
+ */
+export type LaunchPurpose = "match" | "setup" | "app";
 
 export interface LaunchContext {
-  /** `setup`: render your challenge setup screen and call `setup.submit`. The match is a stub. */
+  /**
+   * `setup`: render your challenge setup screen and call `setup.submit`. The match is a stub.
+   * `app`: a standalone app. There is no match to play (the match is a one-player stub) and
+   * match-only requests (room, submit, state, turns, rounds, setup) are refused.
+   */
   purpose: LaunchPurpose;
   app: {
     id: string;
@@ -200,7 +207,7 @@ export type ToastTone = "info" | "success" | "warning" | "danger";
 export type HapticStyle = "light" | "medium" | "heavy" | "success" | "error";
 
 export interface RequestMap {
-  /** The app has rendered and is ready for the match to start. */
+  /** The app has rendered and is ready for the match to start (standalone apps: optional, never starts anything). */
   ready: { params: Record<string, never>; result: { startedAt: number | null } };
   /** Broadcast an event to every other player in the room. */
   "room.send": { params: { type: string; payload: Json }; result: null };

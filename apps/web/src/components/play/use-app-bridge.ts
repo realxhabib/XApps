@@ -1,12 +1,13 @@
 "use client";
 
-import type { XAppsError } from "@xapps/sdk";
+import { XAppsError } from "@xapps/sdk";
 import { createHostBridge, type HostBridge, type HostHandlers } from "@xapps/sdk/host";
 import { REQUEST_METHODS, type HostEvent, type HostEventData, type LaunchContext } from "@xapps/sdk/protocol";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { BackendError } from "@/platform/backend";
 import type { Match } from "@/platform/types";
 
-/** Sandbox for every app iframe the host renders (play room and challenge setup). */
+/** Sandbox for every app iframe the host renders (play room, app room and challenge setup). */
 export const APP_SANDBOX = "allow-scripts allow-same-origin allow-popups allow-forms allow-downloads";
 export const APP_ALLOW = "autoplay; clipboard-write; fullscreen; gamepad";
 
@@ -96,6 +97,36 @@ export function emitMatchChanges(emit: Emit, previous: Match | null, next: Match
   if (next.round !== previous.round) {
     emit("round.change", { round: next.round });
   }
+}
+
+/** Where an app is served (`href`) and the origin the bridge pins, or null for an unusable URL. Relative URLs are same-origin. */
+export function resolveAppUrl(url: string, base: string): { href: string; origin: string } | null {
+  try {
+    const resolved = new URL(url, base);
+    if (resolved.protocol !== "https:" && resolved.protocol !== "http:") return null;
+    return { href: resolved.toString(), origin: resolved.origin };
+  } catch {
+    return null;
+  }
+}
+
+/** A backend failure as the SDK error code the app should see. */
+export function toSdkError(error: unknown): XAppsError {
+  if (error instanceof XAppsError) return error;
+  if (error instanceof BackendError) {
+    const code =
+      error.code === "conflict"
+        ? "conflict"
+        : error.code === "forbidden" || error.code === "unauthenticated"
+          ? "forbidden"
+          : error.code === "invalid" || error.code === "not_found"
+            ? "invalid_params"
+            : error.code === "rate_limited"
+              ? "rate_limited"
+              : "internal";
+    return new XAppsError(code, error.message);
+  }
+  return new XAppsError("internal", error instanceof Error ? error.message : "Something went wrong");
 }
 
 /** Serialized size in bytes (UTF-8), for host-side limit checks. */

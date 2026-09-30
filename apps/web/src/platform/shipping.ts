@@ -97,6 +97,7 @@ export function manifestOf(app: AppManifest): VersionManifest {
     tagline: full.tagline,
     description: full.description,
     category: full.category,
+    kind: full.kind ?? "game",
     icon: full.icon,
     iconImage: full.iconImage ?? null,
     coverImage: full.coverImage ?? null,
@@ -126,6 +127,8 @@ export function versionManifestError(manifest: unknown): string | null {
     return "Description is at most 1,200 characters";
   }
   if (!CATEGORIES.some((c) => c.id === m.category)) return "Pick a category";
+  // Optional (absent = a game), like `app_version_manifest_error`.
+  if (m.kind !== undefined && m.kind !== "game" && m.kind !== "app") return "Kind must be game or app";
   if (typeof m.icon !== "string" || !m.icon || m.icon.length > 16) return "Pick an emoji icon";
   const imageError = appImageKeyError(m.iconImage, { demo: true }) ?? appImageKeyError(m.coverImage, { demo: true });
   if (imageError) return imageError;
@@ -150,6 +153,7 @@ export function cleanManifest(manifest: VersionManifest): VersionManifest {
   const out: VersionManifest = {
     ...manifest,
     description: manifest.description ?? "",
+    kind: manifest.kind ?? "game",
     iconImage: manifest.iconImage ?? null,
     coverImage: manifest.coverImage ?? null,
     accent: [manifest.accent[0], manifest.accent[1]],
@@ -169,7 +173,27 @@ export function cleanManifest(manifest: VersionManifest): VersionManifest {
 
 /** Copies a version's url + manifest onto an app (what players see once it's published). */
 export function applyVersionToApp(app: AppManifest, version: Pick<AppVersion, "url" | "manifest">): AppManifest {
-  return withManifestDefaults({ ...app, ...version.manifest, url: version.url });
+  // A manifest from before standalone apps has no kind: it describes a game (like `app_with_manifest`).
+  return withManifestDefaults({ ...app, ...version.manifest, kind: version.manifest.kind ?? "game", url: version.url });
+}
+
+/* ---------------------------------------------------------------------- */
+/* Standalone apps                                                        */
+/* ---------------------------------------------------------------------- */
+
+/** A standalone app (opened, never played in a match). Absent kind = a game. */
+export function isStandaloneApp(app: Pick<AppManifest, "kind"> | null | undefined): boolean {
+  return app?.kind === "app";
+}
+
+/** Why a match can't be created for a standalone app (`require_game`, 22023 → "invalid"). */
+export function notAGameMessage(name: string): string {
+  return `${name} is an app you open, not a game: there are no matches`;
+}
+
+/** Why `openApp` refuses a game (`open_app`, 22023 → "invalid"). */
+export function notAnAppMessage(name: string): string {
+  return `${name} is a game: play it in a match`;
 }
 
 /* ---------------------------------------------------------------------- */

@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "motion/react";
-import { Plus, Search, X } from "lucide-react";
+import { AppWindow, Plus, Search, X } from "lucide-react";
 import Link from "next/link";
 import { useDeferredValue, useMemo, useState } from "react";
 import { AppCard } from "@/components/marketplace/app-card";
@@ -13,7 +13,8 @@ import { spring } from "@/lib/motion";
 import { useApps } from "@/platform/queries";
 import { CATEGORIES, type AppCategory } from "@/platform/types";
 
-type Filter = "all" | AppCategory;
+/** A category, or "apps": everything people open rather than play against each other. */
+type Filter = "all" | "apps" | AppCategory;
 
 export function AppsBrowser() {
   const { data: apps, isPending } = useApps();
@@ -25,11 +26,12 @@ export function AppsBrowser() {
     const present = new Set((apps ?? []).map((a) => a.category));
     return CATEGORIES.filter((c) => present.has(c.id));
   }, [apps]);
+  const hasApps = (apps ?? []).some((a) => a.kind === "app");
 
   const visible = useMemo(
     () =>
       (apps ?? []).filter((app) => {
-        if (filter !== "all" && app.category !== filter) return false;
+        if (filter === "apps" ? app.kind !== "app" : filter !== "all" && app.category !== filter) return false;
         if (!q) return true;
         return `${app.name} ${app.tagline} ${app.tags.join(" ")} ${app.developer.handle}`.toLowerCase().includes(q);
       }),
@@ -44,7 +46,7 @@ export function AppsBrowser() {
           Every way to <span className="text-gradient">settle it</span>.
         </h1>
         <p className="mt-3 max-w-xl text-ink-300">
-          Games, contests, debates and trivia — all head-to-head, all built on the same open SDK.
+          Games, contests, debates and trivia head-to-head, plus apps you simply open. All built on the same open SDK.
         </p>
       </motion.header>
 
@@ -84,6 +86,7 @@ export function AppsBrowser() {
           onChange={setFilter}
           items={[
             { id: "all" as Filter, label: "All" },
+            ...(hasApps ? [{ id: "apps" as Filter, label: "Apps", icon: <AppWindow className="size-3.5" /> }] : []),
             ...categories.map((c) => ({ id: c.id as Filter, label: c.label, icon: <span>{c.emoji}</span> })),
           ]}
         />

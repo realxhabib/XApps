@@ -32,7 +32,7 @@ import { InviteCard, Lobby } from "./lobby";
 import { isMultiplayer, ordinal, seatedPlayers, viewerIsSpectator, viewerOutcome } from "./match-view";
 import { ResultsOverlay } from "./results-overlay";
 import { TurnBanner } from "./turn-banner";
-import { APP_ALLOW, APP_SANDBOX, LOGGED_REFUSALS, createLogThrottle, emitMatchChanges, useAppBridge, type Emit } from "./use-app-bridge";
+import { APP_ALLOW, APP_SANDBOX, LOGGED_REFUSALS, createLogThrottle, emitMatchChanges, toSdkError, useAppBridge, type Emit } from "./use-app-bridge";
 import { VersusIntro } from "./versus-intro";
 import { VotingOverlay } from "./voting-overlay";
 
@@ -357,24 +357,6 @@ function readIntroSeen(matchId: string): boolean {
   } catch {
     return false;
   }
-}
-
-function toSdkError(error: unknown): XAppsError {
-  if (error instanceof XAppsError) return error;
-  if (error instanceof BackendError) {
-    const code =
-      error.code === "conflict"
-        ? "conflict"
-        : error.code === "forbidden" || error.code === "unauthenticated"
-          ? "forbidden"
-          : error.code === "invalid" || error.code === "not_found"
-            ? "invalid_params"
-            : error.code === "rate_limited"
-              ? "rate_limited"
-              : "internal";
-    return new XAppsError(code, error.message);
-  }
-  return new XAppsError("internal", errorMessage(error));
 }
 
 /** The live stage: HUD + sandboxed app iframe + intro/voting/results overlays. */

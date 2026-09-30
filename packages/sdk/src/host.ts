@@ -39,6 +39,8 @@ import {
 
 export {
   accessProblem,
+  purposeOf,
+  standaloneMatch,
   aggregateStat,
   baseMime,
   displayProblem,
@@ -159,8 +161,10 @@ export interface HostCoreOptions {
    * submit, send, write state, end turns, set rounds, upload media, report
    * stats, unlock achievements or write storage; setup-purpose apps can only
    * use `setup.*` (plus ready/ui/storage/social/media.upload/log), and match apps
-   * can't use `setup.*`. `log` and `ui.resize` are allowed everywhere,
-   * spectators included.
+   * can't use `setup.*`. Standalone apps (purpose `app`) have no match: they
+   * can't use room, submit/forfeit, `state.*`, `turn.end`, `round.set`,
+   * `ui.scores`, `ui.turn` or `setup.*`, and roles don't apply to them.
+   * `log` and `ui.resize` are allowed everywhere, spectators included.
    * Defaults to reading `context()` on each request.
    */
   access?: () => { purpose?: LaunchContext["purpose"]; role?: LaunchContext["match"]["role"] };

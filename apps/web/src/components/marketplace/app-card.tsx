@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUpRight, Clock3, Users } from "lucide-react";
+import { AppWindow, ArrowUpRight, Clock3, Users } from "lucide-react";
 import Link from "next/link";
 import { TiltCard } from "@/components/motion/tilt-card";
 import { Badge } from "@/components/ui/badge";
@@ -70,13 +70,25 @@ export function AppCard({
                   {cat.emoji} {cat.label}
                 </Badge>
               )}
-              <span className="flex items-center gap-1">
-                <Users className="size-3.5" /> {tableSizeLabel(app)}
-              </span>
-              <span className="flex items-center gap-1">
-                <Clock3 className="size-3.5" /> {app.durationLabel}
-              </span>
-              {app.playCount > 0 && <span className="ml-auto tabular">{formatCompact(app.playCount)} plays</span>}
+              {app.kind === "app" ? (
+                <span className="flex items-center gap-1">
+                  <AppWindow className="size-3.5" /> App
+                </span>
+              ) : (
+                <>
+                  <span className="flex items-center gap-1">
+                    <Users className="size-3.5" /> {tableSizeLabel(app)}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <Clock3 className="size-3.5" /> {app.durationLabel}
+                  </span>
+                </>
+              )}
+              {app.playCount > 0 && (
+                <span className="ml-auto tabular">
+                  {formatCompact(app.playCount)} {app.kind === "app" ? "opens" : "plays"}
+                </span>
+              )}
             </div>
           </div>
         </div>

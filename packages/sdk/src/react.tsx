@@ -11,6 +11,12 @@
  *   const started = useMatchStarted();
  *   useRoomEvent("move", (move, from) => apply(move, from));
  * }
+ *
+ * // A standalone app (purpose "app") skips the match hooks:
+ * function Notes() {
+ *   const user = useUser();          // the signed-in viewer
+ *   const standalone = useStandalone(); // true inside XApps' app room
+ * }
  * ```
  */
 import {
@@ -88,6 +94,19 @@ export function useXApps(): XAppsClient {
   return client;
 }
 
+/** The person using this copy of your app (signed in with X). */
+export function useUser(): LaunchContext["user"] {
+  return useXApps().user;
+}
+
+/**
+ * True when the host opened a standalone app (purpose `app`): no match, so
+ * `useMatchStarted()` stays false and match-only calls are refused.
+ */
+export function useStandalone(): boolean {
+  return useXApps().isStandalone;
+}
+
 /** Keeps the latest handler without re-subscribing on every render. */
 function useLatest<T>(value: T) {
   const ref = useRef(value);
@@ -115,7 +134,7 @@ export function usePresence(): string[] {
   return online;
 }
 
-/** `true` once the host fires `match.start`. */
+/** `true` once the host fires `match.start` (never for setup screens or standalone apps). */
 export function useMatchStarted(): boolean {
   const client = useXApps();
   return useSyncExternalStore(
