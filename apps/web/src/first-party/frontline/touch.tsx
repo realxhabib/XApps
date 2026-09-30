@@ -10,7 +10,7 @@
 
 import { useGestureLock } from "@xapps/sdk/react";
 import { ArrowUpFromLine, ChevronsDown, Crosshair, RotateCw, Scan } from "lucide-react";
-import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import type { Engine } from "./engine";
 import type { HudState } from "./game";
@@ -29,6 +29,27 @@ export function TouchControls({ engine, hud }: { engine: Engine; hud: HudState }
   const me = hud.me;
   const active = !!me && me.alive && hud.phase === "live";
   const input = engine.input;
+
+  // A finger can still be down when the controls go away (death, round end,
+  // pause): the browser never sends its pointerup here, so drop everything it
+  // held. They remount fresh on every death, respawn and phase (see the key in hud.tsx).
+  useEffect(() => {
+    if (active) return;
+    stickId.current = null;
+    input.release();
+  }, [active, input]);
+  useEffect(
+    () => () => {
+      stickId.current = null;
+      input.release();
+    },
+    [input],
+  );
+  const endStick = () => {
+    stickId.current = null;
+    setStick(null);
+    input.setTouch({ mx: 0, my: 0 });
+  };
 
   const capture = (e: ReactPointerEvent) => {
     try {
@@ -96,7 +117,7 @@ export function TouchControls({ engine, hud }: { engine: Engine; hud: HudState }
       <div
         className="absolute inset-y-0 left-0 w-[42%]"
         onPointerDown={(e) => {
-          if (stickId.current !== null) return;
+          // A new thumb always takes the stick (never locked out by a lost touch).
           stickId.current = e.pointerId;
           capture(e);
           setStick({ ox: e.clientX, oy: e.clientY, x: 0, y: 0 });
@@ -107,15 +128,13 @@ export function TouchControls({ engine, hud }: { engine: Engine; hud: HudState }
           stickMove(e, stick);
         }}
         onPointerUp={(e) => {
-          if (e.pointerId !== stickId.current) return;
-          stickId.current = null;
-          setStick(null);
-          input.setTouch({ mx: 0, my: 0 });
+          if (e.pointerId === stickId.current) endStick();
         }}
-        onPointerCancel={() => {
-          stickId.current = null;
-          setStick(null);
-          input.setTouch({ mx: 0, my: 0 });
+        onPointerCancel={(e) => {
+          if (e.pointerId === stickId.current) endStick();
+        }}
+        onLostPointerCapture={(e) => {
+          if (e.pointerId === stickId.current) endStick();
         }}
       />
       {stick ? (

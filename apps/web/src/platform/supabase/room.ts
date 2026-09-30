@@ -20,6 +20,8 @@ export function createSupabaseRoom(supabase: SupabaseClient, matchId: string, vi
   let closed = false;
   let peers: RoomPeer[] = [];
   let channel: RealtimeChannel | null = null;
+  let retries = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   const emitPresence = () => presenceHandlers.forEach((h) => h(peers.slice()));
 
@@ -27,14 +29,15 @@ export function createSupabaseRoom(supabase: SupabaseClient, matchId: string, vi
     // Private channels authorize with the user's JWT.
     await supabase.realtime.setAuth();
     if (closed) return;
-    channel = supabase.channel(`match:${matchId}`, {
+    const ch = supabase.channel(`match:${matchId}`, {
       config: {
         private: true,
         broadcast: { self: false, ack: false },
         presence: { key: viewerId, enabled: true },
       },
     });
-    channel
+    channel = ch;
+    ch
       .on("broadcast", { event: "room" }, ({ payload }) => {
         const wire = payload as Wire;
         if (!wire || typeof wire !== "object" || !wire.event) return;
@@ -49,14 +52,32 @@ export function createSupabaseRoom(supabase: SupabaseClient, matchId: string, vi
         emitPresence();
       })
       .subscribe((status) => {
+        if (channel !== ch) return; // an old channel we already replaced
         if (status === "SUBSCRIBED") {
           subscribed = true;
-          if (tracked) void channel?.track(tracked);
-        } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          retries = 0;
+          if (tracked) void ch.track(tracked);
+        } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
           subscribed = false;
-          console.warn(`[xapps] realtime room ${status.toLowerCase()} for match ${matchId}`);
+          if (closed) return;
+          console.warn(`[xapps] realtime room ${status.toLowerCase()} for match ${matchId}, reconnecting`);
+          reconnect();
         }
       });
+  };
+
+  // A dropped or refused channel (network change, a rate limit, a timed-out
+  // join) used to leave the room silent until a refresh: rejoin with backoff.
+  const reconnect = () => {
+    if (closed || retryTimer) return;
+    const old = channel;
+    channel = null;
+    if (old) void supabase.removeChannel(old);
+    const delay = Math.min(10_000, 500 * 2 ** retries++);
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void connect();
+    }, delay);
   };
   void connect();
 
@@ -80,6 +101,7 @@ export function createSupabaseRoom(supabase: SupabaseClient, matchId: string, vi
     },
     close() {
       closed = true;
+      if (retryTimer) clearTimeout(retryTimer);
       eventHandlers.clear();
       presenceHandlers.clear();
       if (channel) void supabase.removeChannel(channel);

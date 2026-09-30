@@ -537,25 +537,17 @@ export class Engine {
   }
 
   private aimAssist(me: Soldier, w: WeaponDef, d: { dYaw: number; dPitch: number }, intent: Intent, dt: number): void {
-    const t = this.nearestToCrosshair(me, 7 * DEG);
+    // Light friction only: your look slows a little while the crosshair is on or
+    // right next to an enemy. No pull toward them and no auto-fire: you aim and
+    // you shoot.
+    void w;
+    void intent;
+    void dt;
+    const t = this.nearestToCrosshair(me, 2.5 * DEG);
     if (!t) return;
-    // Friction: look slows down over a target.
-    const near = t.angle < 4 * DEG;
-    if (near) {
-      d.dYaw *= 0.62;
-      d.dPitch *= 0.62;
-    }
-    // A gentle pull while you move or look, never a snap.
-    const moving = Math.abs(intent.forward) + Math.abs(intent.strafe) > 0.2 || Math.abs(d.dYaw) > 0.0005;
-    if (moving) {
-      const pull = 0.35 * dt;
-      d.dYaw += Math.max(-pull, Math.min(pull, t.yawOff * 0.5));
-      d.dPitch += Math.max(-pull, Math.min(pull, t.pitchOff * 0.3));
-    }
-    // Auto-fire when the crosshair is on them and they're in the gun's useful range.
-    const useful = w.id === "shotgun" ? 16 : w.id === "smg" ? 35 : w.id === "pistol" ? 35 : 70;
-    // Semi-automatic guns need the trigger released between shots: pulse it.
-    if (t.onTarget && t.dist < useful && !me.sprinting) intent.fire = w.auto || !me.triggerHeld;
+    const k = t.onTarget ? 0.72 : 0.85;
+    d.dYaw *= k;
+    d.dPitch *= k;
   }
 
   /* ---------------------------------------------------------------------- */

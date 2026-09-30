@@ -251,7 +251,7 @@ export function Hud({
         </div>
       )}
 
-      {touch && !spectating && !paused && <TouchControls engine={engine} hud={hud} />}
+      {touch && !spectating && !paused && <TouchControls key={`${hud.me?.alive ? "alive" : "down"}:${hud.phase}`} engine={engine} hud={hud} />}
 
       {/* Death screen. */}
       <AnimatePresence>
@@ -609,7 +609,7 @@ function SettingsPanel({ settings, onSettings, touch, tier }: { settings: Settin
         <input type="range" min={0.3} max={8} step={0.1} value={settings.sensitivity} onChange={(e) => set({ sensitivity: Number(e.target.value) })} className="accent-[var(--accent-from)]" aria-label="Sensitivity" />
       </label>
       <Toggle label="Invert look up/down" on={settings.invert} onChange={(invert) => set({ invert })} />
-      {touch && <Toggle label="Aim assist (slows your aim on targets and fires when you're on them)" on={settings.aimAssist} onChange={(aimAssist) => set({ aimAssist })} />}
+      {touch && <Toggle label="Aim assist (slows your aim a little over enemies)" on={settings.aimAssist} onChange={(aimAssist) => set({ aimAssist })} />}
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-semibold text-ink-300">Graphics</span>
         <div className="flex gap-1" role="radiogroup" aria-label="Graphics quality">

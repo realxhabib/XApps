@@ -263,6 +263,7 @@ export class Input {
 
   /** Drops held buttons (menus opening, death). */
   release(): void {
+    this.drags.clear();
     this.mouseFire = false;
     this.mouseAds = false;
     this.keys.clear();
