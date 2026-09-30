@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toAppLaunch, toAppLoose, toKind, toVersionManifest } from "./mapping";
+import { toAppLaunch, toAppLoose, toKind, toUpvoteResult, toVersionManifest, withViewerUpvotes } from "./mapping";
 import type { Match, Profile, RegisterAppInput, StatDef } from "../types";
 import {
   appInsert,
@@ -146,6 +146,31 @@ describe("apps", () => {
       setup: true,
       turnBased: true,
     });
+  });
+
+  it("reads upvotes and whether the viewer upvoted (zero and false before the migration)", () => {
+    expect(toApp(appRow)).toMatchObject({ upvotes: 0, upvoted: false });
+    expect(toApp({ ...appRow, upvotes: 12, viewer_upvoted: true })).toMatchObject({ upvotes: 12, upvoted: true });
+    expect(toApp({ ...appRow, slug: "meme-duel", official: true, upvotes: 5, viewer_upvoted: false })).toMatchObject({ name: "Meme Duel", upvotes: 5, upvoted: false });
+    // app_row_json (open_app, the review queue) carries both.
+    expect(toAppLoose({ ...appRow, upvotes: 3, viewer_upvoted: true })).toMatchObject({ upvotes: 3, upvoted: true });
+    expect(toAppLoose({ slug: "x", name: "X", upvotes: "4", viewerUpvoted: true })).toMatchObject({ upvotes: 4, upvoted: true });
+    expect(toAppLoose({ slug: "x", name: "X" })).toMatchObject({ upvotes: 0, upvoted: false });
+  });
+
+  it("marks the rows the viewer upvoted", () => {
+    const rows = withViewerUpvotes([appRow, { ...appRow, slug: "other" }], new Set(["other"]));
+    expect(rows.map((r) => [r.slug, r.viewer_upvoted])).toEqual([
+      [appRow.slug, false],
+      ["other", true],
+    ]);
+  });
+
+  it("reads set_app_upvote", () => {
+    expect(toUpvoteResult({ upvotes: 7, upvoted: true }, true)).toEqual({ upvotes: 7, upvoted: true });
+    expect(toUpvoteResult([{ upvotes: "2", upvoted: false }], true)).toEqual({ upvotes: 2, upvoted: false });
+    expect(toUpvoteResult({ upvotes: -1 }, false)).toEqual({ upvotes: 0, upvoted: false });
+    expect(toUpvoteResult(null, true)).toEqual({ upvotes: 0, upvoted: true });
   });
 
   it("gives official apps their catalog manifest with defaults", () => {

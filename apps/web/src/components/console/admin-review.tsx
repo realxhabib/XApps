@@ -312,7 +312,7 @@ function ReviewDetail({ item, onBack, onDecided }: { item: ReviewItem; onBack: (
         <div>
           <p className="mb-2 text-xs font-bold uppercase tracking-[0.18em] text-ink-400">Listing card</p>
           <div onClickCapture={(e) => e.preventDefault()}>
-            <AppCard app={preview} morph={false} />
+            <AppCard app={preview} morph={false} upvote={false} />
           </div>
         </div>
       </div>

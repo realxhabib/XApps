@@ -68,18 +68,18 @@ $$;
 grant execute on function pg_temp.sync_drift() to service_role;
 
 create temp table before_sync as
-  select slug, play_count, created_at, developer_id, authority, published_version_id, official from public.apps;
--- A player has already played one of them: the sync must not reset it
--- (restored below; lifecycle.sql counts plays from zero).
-update public.apps set play_count = 42 where slug = 'quick-draw';
-update before_sync set play_count = 42 where slug = 'quick-draw';
+  select slug, play_count, upvotes, created_at, developer_id, authority, published_version_id, official from public.apps;
+-- A player has already played (and upvoted) one of them: the sync must not
+-- reset it (restored below; lifecycle.sql counts plays from zero).
+update public.apps set play_count = 42, upvotes = 7 where slug = 'quick-draw';
+update before_sync set play_count = 42, upvotes = 7 where slug = 'quick-draw';
 
 do $$
 begin
   assert jsonb_array_length((select rows from sync_rows)) >= 1, 'the dry run produced rows';
   assert not exists (
     select 1 from sync_rows, jsonb_array_elements(rows) e
-     where e ?| array['play_count', 'created_at', 'developer_id', 'authority', 'published_version_id', 'updated_at']
+     where e ?| array['play_count', 'upvotes', 'created_at', 'developer_id', 'authority', 'published_version_id', 'updated_at']
   ), 'the sync never sends platform-owned columns';
   assert (select bool_and((e->>'official')::boolean) from sync_rows, jsonb_array_elements(rows) e), 'only official apps';
 end $$;
@@ -93,10 +93,13 @@ begin
   assert pg_temp.sync_drift() is null, 'rows differ from the catalog after the sync: ' || pg_temp.sync_drift();
   assert not exists (
     select 1 from public.apps a join before_sync b using (slug)
-     where (a.play_count, a.created_at, a.developer_id, a.authority, a.published_version_id, a.official)
-           is distinct from (b.play_count, b.created_at, b.developer_id, b.authority, b.published_version_id, b.official)
-  ), 'the sync kept play counts, created_at, developer, authority and published version';
-  assert (select count(*) from public.apps) = (select count(*) from before_sync), 'no rows added or lost';
+     where (a.play_count, a.upvotes, a.created_at, a.developer_id, a.authority, a.published_version_id, a.official)
+           is distinct from (b.play_count, b.upvotes, b.created_at, b.developer_id, b.authority, b.published_version_id, b.official)
+  ), 'the sync kept play counts, upvotes, created_at, developer, authority and published version';
+  -- Catalog apps no migration seeded (first-party apps added since) are inserted; nothing else changes.
+  assert (select count(*) from public.apps) = (select count(*) from before_sync)
+         + (select count(*) from sync_rows, jsonb_array_elements(rows) e where not exists (select 1 from before_sync b where b.slug = e->>'slug')),
+         'no rows lost, and only unseeded catalog apps added';
 end $$;
 
 -- 2. Idempotent: a second sync changes nothing.
@@ -121,7 +124,7 @@ begin
   select * into a from public.apps where slug = 'wedge-wars';
   assert found, 'inserted';
   assert a.official and a.status = 'published', 'official + published';
-  assert a.developer_id is null and a.play_count = 0 and a.authority = 'client', 'platform defaults';
+  assert a.developer_id is null and a.play_count = 0 and a.upvotes = 0 and a.authority = 'client', 'platform defaults';
   assert a.published_version_id is null, 'no published version';
   assert pg_temp.sync_drift() is null, 'inserted row matches the catalog';
 end $$;
@@ -135,7 +138,7 @@ begin
   assert (select official from public.apps where slug = 'rps-showdown'), 'apps outside the sync are left alone';
 end $$;
 
-update public.apps set play_count = 0 where slug = 'quick-draw';
+update public.apps set play_count = 0, upvotes = 0 where slug = 'quick-draw';
 drop function pg_temp.sync_upsert();
 drop function pg_temp.sync_drift();
 drop table before_sync;

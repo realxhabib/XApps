@@ -30,6 +30,7 @@ import type {
   Scoring,
   StatLeaderRow,
   UserAchievement,
+  UpvoteResult,
   UserStat,
   WebhookDelivery,
 } from "../types";
@@ -72,6 +73,13 @@ export interface AppRow {
   developer_id: string | null;
   status: AppStatus;
   play_count: number;
+  /** Upvote count (absent before the app upvotes migration). */
+  upvotes?: number | null;
+  /**
+   * Whether the viewer upvoted it: `app_row_json` includes it; for table reads the backend
+   * sets it from the viewer's own `app_upvotes` rows.
+   */
+  viewer_upvoted?: boolean | null;
   created_at: string;
   developer?: { handle: string; name: string } | null;
 }
@@ -89,6 +97,8 @@ export function toApp(row: AppRow): AppManifest {
     return withManifestDefaults({
       ...official,
       playCount: row.play_count,
+      upvotes: row.upvotes ?? 0,
+      upvoted: row.viewer_upvoted === true,
       authority: toAuthority(row.authority),
       // The catalog wins; the row fills in what the catalog doesn't declare.
       stats: official.stats?.length ? official.stats : stats,
@@ -128,6 +138,8 @@ export function toApp(row: AppRow): AppManifest {
     },
     status: row.status,
     playCount: row.play_count,
+    upvotes: row.upvotes ?? 0,
+    upvoted: row.viewer_upvoted === true,
     createdAt: row.created_at,
     tags: row.tags,
   });
@@ -483,6 +495,20 @@ export function toUnlocked(data: unknown): { unlocked: boolean } {
   return { unlocked: raw?.unlocked === true };
 }
 
+/** `set_app_upvote` → `{ upvotes, upvoted }` (`on` is what was asked, if the answer lacks it). */
+export function toUpvoteResult(data: unknown, on: boolean): UpvoteResult {
+  const raw = firstRow(data);
+  return {
+    upvotes: Math.max(0, num(raw?.upvotes) ?? 0),
+    upvoted: typeof raw?.upvoted === "boolean" ? raw.upvoted : on,
+  };
+}
+
+/** `apps` rows with `viewer_upvoted` from the viewer's upvoted slugs. */
+export function withViewerUpvotes<T extends AppRow>(rows: T[], upvoted: ReadonlySet<string>): T[] {
+  return rows.map((row) => ({ ...row, viewer_upvoted: row.viewer_upvoted === true || upvoted.has(row.slug) }));
+}
+
 /** `storage_list` (text[] or rows) → sorted keys. */
 export function toStorageKeys(data: unknown): string[] {
   if (!Array.isArray(data)) return [];
@@ -611,6 +637,8 @@ export function toAppLoose(raw: unknown): AppManifest | null {
     },
     status,
     playCount: num(pick(r, "playCount")) ?? 0,
+    upvotes: num(r.upvotes) ?? 0,
+    upvoted: pick(r, "viewerUpvoted") === true || r.upvoted === true,
     createdAt: str(pick(r, "createdAt")) ?? new Date(0).toISOString(),
     tags: strings(r.tags),
   });

@@ -5,7 +5,9 @@ import { useEffect, useMemo } from "react";
 import { getOfficialApp } from "./catalog";
 import { useBackend, useViewer } from "./client";
 import { isYourTurn, needsAttention } from "./match-utils";
+import { withUpvote, withUpvoteResult } from "./upvotes";
 import type {
+  AppManifest,
   AppAuthority,
   AppLogEntry,
   AppServerConfig,
@@ -46,6 +48,41 @@ export function useMyApps() {
     queryKey: ["my-apps", viewer?.id],
     queryFn: () => backend.listMyApps(),
     enabled: !!viewer,
+  });
+}
+
+/**
+ * Upvote an app (`on`) or take the upvote back. Optimistic: the apps list and the app's page
+ * flip right away (count ±1) and take the backend's count when it answers; on error just that
+ * toggle is undone (so quick re-clicks don't clobber each other) and both are refetched.
+ */
+export function useSetUpvote() {
+  const backend = useBackend();
+  const queryClient = useQueryClient();
+  const patch = (slug: string, update: (app: AppManifest) => AppManifest) => {
+    queryClient.setQueryData<AppManifest[]>(["apps"], (old) => old?.map((app) => (app.slug === slug ? update(app) : app)));
+    queryClient.setQueryData<AppManifest | null>(["app", slug], (old) => (old ? update(old) : old));
+  };
+  return useMutation({
+    mutationKey: ["upvote"],
+    mutationFn: ({ slug, on }: { slug: string; on: boolean }) => backend.setUpvote(slug, on),
+    onMutate: async ({ slug, on }) => {
+      await Promise.all([queryClient.cancelQueries({ queryKey: ["apps"] }), queryClient.cancelQueries({ queryKey: ["app", slug] })]);
+      patch(slug, (app) => withUpvote(app, on));
+    },
+    onSuccess: (result, { slug }) => {
+      // A later toggle of the same app is still on its way: its answer is the one to keep.
+      const inFlight = queryClient.isMutating({
+        mutationKey: ["upvote"],
+        predicate: (m) => (m.state.variables as { slug?: string } | undefined)?.slug === slug,
+      });
+      if (inFlight <= 1) patch(slug, (app) => withUpvoteResult(app, result));
+    },
+    onError: (_error, { slug, on }) => {
+      patch(slug, (app) => withUpvote(app, !on));
+      void queryClient.invalidateQueries({ queryKey: ["apps"] });
+      void queryClient.invalidateQueries({ queryKey: ["app", slug] });
+    },
   });
 }
 

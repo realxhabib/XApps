@@ -160,6 +160,14 @@ export interface DemoDb {
   logs?: AppLogEntry[];
   /** Review decisions for developers (`developer_notices`). */
   notices?: (DeveloperNotice & { userId: string })[];
+  /** App upvotes by app slug (optional too; official and showcase apps have seeded ones until changed). */
+  upvotes?: Record<string, UpvoteRow>;
+}
+
+/** An app's upvotes (`app_upvotes` + `apps.upvotes`): a seeded crowd count plus who upvoted (personas and people). */
+export interface UpvoteRow {
+  crowd: number;
+  userIds: string[];
 }
 
 export const DB_VERSION = 4 as const;

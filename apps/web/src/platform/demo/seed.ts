@@ -202,6 +202,8 @@ export function buildSeed(): DemoDb {
       if (app.slug === "quick-draw") return rng.int(0, 3);
       if (app.slug === "four-in-a-row") return rng.pick([0, 1]);
       if (app.slug === "emoji-decode") return rng.int(3, 15) * 100;
+      if (app.slug === "perfect-circle") return rng.int(780, 975) / 10;
+      if (app.slug === "gregs-face") return rng.int(640, 985) / 10;
       return rng.int(0, 2);
     };
     let sa = scoreFor();

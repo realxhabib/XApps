@@ -1917,12 +1917,12 @@ begin
             'audio/webm', 'audio/wav', 'video/mp4', 'video/webm', 'video/quicktime']
             from storage.buckets where id = 'app-media'), 'app-media bucket';
   assert (select bool_and(stats = '[]'::jsonb and achievements = '[]'::jsonb) from public.apps
-           where slug not in ('quick-draw', 'four-in-a-row', 'trivia-royale', 'emoji-decode', 'hot-takes', 'wedge-wars')),
+           where slug not in ('quick-draw', 'four-in-a-row', 'trivia-royale', 'emoji-decode', 'hot-takes', 'wedge-wars', 'gregs-face', 'perfect-circle')),
     'other existing apps declare nothing';
   -- First-party progress (20261002000200): valid lists, matching the web catalog (its test compares them).
   assert (select jsonb_object_agg(slug, jsonb_build_array(jsonb_array_length(stats), jsonb_array_length(achievements)))
             from public.apps where official and stats <> '[]'::jsonb)
-       = '{"quick-draw":[4,8],"four-in-a-row":[3,9],"trivia-royale":[4,9],"emoji-decode":[4,8],"hot-takes":[3,8],"wedge-wars":[4,9]}'::jsonb,
+       = '{"quick-draw":[4,8],"four-in-a-row":[3,9],"trivia-royale":[4,9],"emoji-decode":[4,8],"hot-takes":[3,8],"wedge-wars":[4,9],"gregs-face":[4,10],"perfect-circle":[4,9]}'::jsonb,
     'first-party stats + achievements';
   assert (select bool_and(public.app_stats_error(stats) is null and public.app_achievements_error(achievements) is null
                           and (select sum((e->>'xp')::int) from jsonb_array_elements(achievements) e) <= 500

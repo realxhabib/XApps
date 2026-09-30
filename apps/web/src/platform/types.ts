@@ -44,6 +44,12 @@ export interface AppLaunch {
 
 export type AppStatus = "published" | "pending" | "rejected";
 
+/** An app's upvote count after the viewer upvoted it or took the upvote back. */
+export interface UpvoteResult {
+  upvotes: number;
+  upvoted: boolean;
+}
+
 export type AppAuthority = "client" | "server";
 
 /** Owner-only view of an app's server settings (Stage 2). Secrets are never readable after creation. */
@@ -114,6 +120,13 @@ export interface AppManifest {
   developer: { id: string | null; handle: string; name: string };
   status: AppStatus;
   playCount: number;
+  /**
+   * How many people upvoted the app (the marketplace sorts by it). The backends always set it;
+   * optional so catalog entries don't have to declare it (read it as `app.upvotes ?? 0`).
+   */
+  upvotes?: number;
+  /** Whether the signed-in viewer upvoted it (false or absent when signed out). */
+  upvoted?: boolean;
   createdAt: string;
   tags: string[];
 }

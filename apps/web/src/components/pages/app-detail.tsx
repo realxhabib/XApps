@@ -11,6 +11,7 @@ import { AppGlyph } from "@/components/marketplace/app-glyph";
 import { useIsAppOwner } from "@/components/developers/server-panel";
 import { AppProgress } from "./app-progress";
 import { ChallengeSheet } from "@/components/marketplace/challenge-sheet";
+import { UpvoteButton } from "@/components/marketplace/upvote-button";
 import { ActivityPill } from "@/components/marketplace/match-card";
 import { Reveal, RevealItem } from "@/components/motion/reveal";
 import { Avatar } from "@/components/ui/avatar";
@@ -203,6 +204,7 @@ export function AppDetail({ slug }: { slug: string }) {
                   </Button>
                 </>
               )}
+              <UpvoteButton app={app} size="lg" />
             </motion.div>
             {!standalone && (
               <>

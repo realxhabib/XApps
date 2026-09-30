@@ -103,7 +103,7 @@ describe("officialAppRow", () => {
 
   it("never sends platform-owned columns", () => {
     const row = officialAppRow(base) as unknown as Record<string, unknown>;
-    for (const col of ["play_count", "created_at", "updated_at", "developer_id", "authority", "published_version_id"]) {
+    for (const col of ["play_count", "upvotes", "created_at", "updated_at", "developer_id", "authority", "published_version_id"]) {
       expect(row, col).not.toHaveProperty(col);
     }
   });

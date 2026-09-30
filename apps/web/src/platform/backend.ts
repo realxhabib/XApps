@@ -24,6 +24,7 @@ import type {
   Profile,
   RegisterAppInput,
   SubmitInput,
+  UpvoteResult,
 } from "./types";
 
 /* ---------------------------------------------------------------------- */
@@ -80,6 +81,12 @@ export interface Backend {
   openApp(appSlug: string, versionId?: string | null): Promise<AppLaunch>;
   registerApp(input: RegisterAppInput): Promise<AppManifest>;
   listMyApps(): Promise<AppManifest[]>;
+  /**
+   * Upvotes (`on`) or takes back the viewer's upvote on an app; idempotent. Resolves with the
+   * app's new count. Signed in only; only published apps can be upvoted, never your own
+   * (taking an upvote back always works). Rate limited (`UPVOTES_PER_MINUTE`).
+   */
+  setUpvote(appSlug: string, on: boolean): Promise<UpvoteResult>;
 
   // App server settings (owner only, Stage 2) ---------------------------
   /** False when the backend has no server API or webhooks (demo mode). */

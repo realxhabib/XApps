@@ -28,6 +28,7 @@ import type {
   StatLeaderRow,
   StorageScope,
   SubmitInput,
+  UpvoteResult,
   UserAchievement,
   UserStat,
   WebhookDelivery,
@@ -55,11 +56,13 @@ import {
   toStatValues,
   toStorageKeys,
   toUnlocked,
+  toUpvoteResult,
   toUserAchievements,
   toUserStats,
   toSecret,
   toServerConfig,
   toWebhookDeliveries,
+  withViewerUpvotes,
   type AppRow,
 } from "./mapping";
 import { createSupabaseRoom } from "./room";
@@ -196,28 +199,53 @@ export class SupabaseBackend implements Backend {
   /* Catalog                                                          */
   /* ---------------------------------------------------------------- */
 
+  /**
+   * The slugs the viewer upvoted (their own `app_upvotes` rows; RLS shows nobody else's), all
+   * or just `slug`. Empty when signed out or before the upvotes migration.
+   */
+  private async viewerUpvotes(slug?: string): Promise<Set<string>> {
+    const id = await this.userId();
+    if (!id) return new Set();
+    let query = this.sb.from("app_upvotes").select("app_slug").eq("user_id", id);
+    if (slug) query = query.eq("app_slug", slug);
+    const { data, error } = await query;
+    if (error) {
+      if (isSchemaMissing(error.code)) return new Set();
+      fail(error);
+    }
+    return new Set(((data ?? []) as { app_slug: string }[]).map((r) => r.app_slug));
+  }
+
   async listApps(): Promise<AppManifest[]> {
-    const { data, error } = await this.sb.from("apps").select(APP_COLUMNS).order("created_at");
+    const [{ data, error }, upvoted] = await Promise.all([this.sb.from("apps").select(APP_COLUMNS).order("created_at"), this.viewerUpvotes()]);
     if (error) fail(error);
-    const rows = (data ?? []) as AppRow[];
+    const rows = withViewerUpvotes((data ?? []) as AppRow[], upvoted);
     const bySlug = new Map(rows.map((r) => [r.slug, r]));
     // Keep the official order from the catalog, then community apps.
     const official = OFFICIAL_APPS.map((app) => {
       const row = bySlug.get(app.slug);
-      return withManifestDefaults({ ...app, playCount: row?.play_count ?? 0 });
+      return withManifestDefaults({ ...app, playCount: row?.play_count ?? 0, upvotes: row?.upvotes ?? 0, upvoted: row?.viewer_upvoted === true });
     });
     const community = rows.filter((r) => !getOfficialApp(r.slug)).map(toApp);
     return [...official, ...community];
   }
 
   async getApp(slug: string): Promise<AppManifest | null> {
-    const { data, error } = await this.sb.from("apps").select(APP_COLUMNS).eq("slug", slug).maybeSingle<AppRow>();
+    const [{ data, error }, upvoted] = await Promise.all([
+      this.sb.from("apps").select(APP_COLUMNS).eq("slug", slug).maybeSingle<AppRow>(),
+      this.viewerUpvotes(slug),
+    ]);
     if (error) fail(error);
     if (!data) {
       const official = getOfficialApp(slug);
-      return official ? withManifestDefaults(official) : null;
+      return official ? withManifestDefaults({ ...official, upvotes: 0, upvoted: false }) : null;
     }
-    return toApp(data);
+    return toApp(withViewerUpvotes([data], upvoted)[0]);
+  }
+
+  async setUpvote(appSlug: string, on: boolean): Promise<UpvoteResult> {
+    await this.requireUserId();
+    return toUpvoteResult(await this.rpc("set_app_upvote", { p_app: appSlug, p_on: on }), on);
   }
 
   async openApp(appSlug: string, versionId?: string | null): Promise<AppLaunch> {

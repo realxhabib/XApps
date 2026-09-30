@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "motion/react";
-import { AppWindow, Plus, Search, X } from "lucide-react";
+import { AppWindow, ArrowBigUp, Plus, Search, Sparkles, X } from "lucide-react";
 import Link from "next/link";
 import { useDeferredValue, useMemo, useState } from "react";
 import { AppCard } from "@/components/marketplace/app-card";
@@ -11,7 +11,8 @@ import { Segmented } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
 import { spring } from "@/lib/motion";
 import { useApps } from "@/platform/queries";
-import { CATEGORIES, type AppCategory } from "@/platform/types";
+import { CATEGORIES, type AppCategory, type AppManifest } from "@/platform/types";
+import { sortApps, type AppSort } from "@/platform/upvotes";
 
 /** A category, or "apps": everything people open rather than play against each other. */
 type Filter = "all" | "apps" | AppCategory;
@@ -19,8 +20,20 @@ type Filter = "all" | "apps" | AppCategory;
 export function AppsBrowser() {
   const { data: apps, isPending } = useApps();
   const [filter, setFilter] = useState<Filter>("all");
+  const [sort, setSort] = useState<AppSort>("top");
   const [query, setQuery] = useState("");
   const q = useDeferredValue(query.trim().toLowerCase());
+
+  // The order is worked out when the list (or the sort) changes, not on every upvote, so a
+  // card doesn't jump out from under the pointer the moment you upvote it.
+  const orderKey = `${sort}|${(apps ?? []).map((a) => a.slug).join(" ")}`;
+  const [order, setOrder] = useState<{ key: string; slugs: string[] } | null>(null);
+  if (apps && order?.key !== orderKey) setOrder({ key: orderKey, slugs: sortApps(apps, sort).map((a) => a.slug) });
+  const sorted = useMemo(() => {
+    const bySlug = new Map((apps ?? []).map((a) => [a.slug, a]));
+    const ranked = order?.key === orderKey ? order.slugs : sortApps(apps ?? [], sort).map((a) => a.slug);
+    return ranked.map((slug) => bySlug.get(slug)).filter((a): a is AppManifest => !!a);
+  }, [apps, order, orderKey, sort]);
 
   const categories = useMemo(() => {
     const present = new Set((apps ?? []).map((a) => a.category));
@@ -30,12 +43,12 @@ export function AppsBrowser() {
 
   const visible = useMemo(
     () =>
-      (apps ?? []).filter((app) => {
+      sorted.filter((app) => {
         if (filter === "apps" ? app.kind !== "app" : filter !== "all" && app.category !== filter) return false;
         if (!q) return true;
         return `${app.name} ${app.tagline} ${app.tags.join(" ")} ${app.developer.handle}`.toLowerCase().includes(q);
       }),
-    [apps, filter, q],
+    [sorted, filter, q],
   );
 
   return (
@@ -88,6 +101,16 @@ export function AppsBrowser() {
             { id: "all" as Filter, label: "All" },
             ...(hasApps ? [{ id: "apps" as Filter, label: "Apps", icon: <AppWindow className="size-3.5" /> }] : []),
             ...categories.map((c) => ({ id: c.id as Filter, label: c.label, icon: <span>{c.emoji}</span> })),
+          ]}
+        />
+        <Segmented
+          layoutId="apps-sort"
+          value={sort}
+          onChange={setSort}
+          className="shrink-0 self-start sm:ml-auto sm:self-auto"
+          items={[
+            { id: "top" as AppSort, label: "Top", icon: <ArrowBigUp className="size-3.5" /> },
+            { id: "new" as AppSort, label: "New", icon: <Sparkles className="size-3.5" /> },
           ]}
         />
       </motion.div>

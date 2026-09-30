@@ -248,7 +248,7 @@ export function RegisterApp() {
         </p>
         <VersionState version={firstVersion} live={done.status === "published"} />
         <div className="mx-auto mt-8 max-w-sm">
-          <AppCard app={done} morph={false} />
+          <AppCard app={done} morph={false} upvote={false} />
         </div>
         <div className="mt-8 flex flex-wrap justify-center gap-3">
           <Button size="lg" variant="accent" icon={<Rocket className="size-4" />} onClick={() => router.push(`/apps/${done.slug}`)}>
@@ -501,7 +501,7 @@ export function RegisterApp() {
         <div className="lg:sticky lg:top-28 lg:h-fit">
           <p className="mb-3 text-xs font-bold uppercase tracking-[0.22em] text-ink-400">Live preview</p>
           <motion.div layout transition={spring.soft} onClickCapture={(e) => e.preventDefault()}>
-            <AppCard app={preview} morph={false} />
+            <AppCard app={preview} morph={false} upvote={false} />
           </motion.div>
           <p className="mt-4 text-xs text-ink-500">This is exactly how your card appears in the marketplace.</p>
         </div>

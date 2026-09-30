@@ -23,3 +23,4 @@ else
   echo "Skipping the official app sync check: needs node and npm install (for esbuild)." >&2
 fi
 "${psql_cmd[@]}" -d "$db" -f "$here/lifecycle.sql"
+"${psql_cmd[@]}" -d "$db" -f "$here/upvotes.sql"

@@ -10,7 +10,7 @@
  * `kind` (20261006000100_standalone_apps.sql: official apps are games unless the
  * catalog says otherwise, so a first-party standalone app would sync as one).
  * Everything else on the row is platform-owned and never sent: `play_count`,
- * `created_at`, `developer_id` (null for official apps), `authority` (only
+ * `upvotes` (20261006000200_app_upvotes.sql), `created_at`, `developer_id` (null for official apps), `authority` (only
  * set_app_authority moves it) and `published_version_id` (official apps have no
  * `app_versions`; apps_register_version skips them).
  */

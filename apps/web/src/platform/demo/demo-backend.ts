@@ -64,9 +64,11 @@ import type {
   StorageScope,
   SubmitInput,
   UserAchievement,
+  UpvoteResult,
   UserStat,
   WebhookDelivery,
 } from "../types";
+import { UPVOTES_PER_MINUTE } from "../upvotes";
 import { computeAnalytics } from "./analytics";
 import { createDemoRoom } from "./room";
 import { addPersonaContest, applySettlement, buildSeed, ensureShowcase, isPracticeBot, newMatchId, PRACTICE_BOTS, upgradeDb } from "./seed";
@@ -100,6 +102,7 @@ import {
   type PlayerRow,
   type VersionRow,
 } from "./store";
+import { setUpvote as applyUpvote, withUpvotes } from "./upvotes";
 
 setSeeder(buildSeed, upgradeDb);
 
@@ -308,11 +311,11 @@ function isSeatedIn(row: MatchRow, userId: string): boolean {
   return row.players.some((p) => p.userId === userId && p.role === "player");
 }
 
-function appFor(db: DemoDb, slug: string): AppManifest | null {
+function appFor(db: DemoDb, slug: string, viewerId = getViewerId()): AppManifest | null {
   const official = getOfficialApp(slug);
-  if (official) return withManifestDefaults({ ...official, playCount: db.playCounts[slug] ?? 0 });
+  if (official) return withUpvotes(db, withManifestDefaults({ ...official, playCount: db.playCounts[slug] ?? 0 }), viewerId);
   const community = db.apps[slug];
-  return community ? withManifestDefaults(community) : null;
+  return community ? withUpvotes(db, withManifestDefaults(community), viewerId) : null;
 }
 
 /** The rules a match plays by: the app, or for a test build the version's manifest and url. */
@@ -636,7 +639,9 @@ export class DemoBackend implements Backend {
     const community = Object.values(db.apps)
       .filter((app) => app.status === "published" || app.developer.id === viewerId)
       .map(withManifestDefaults);
-    return [...OFFICIAL_APPS.map((a) => withManifestDefaults({ ...a, playCount: db.playCounts[a.slug] ?? 0 })), ...community];
+    return [...OFFICIAL_APPS.map((a) => withManifestDefaults({ ...a, playCount: db.playCounts[a.slug] ?? 0 })), ...community].map((app) =>
+      withUpvotes(db, app, viewerId),
+    );
   }
 
   async getApp(slug: string): Promise<AppManifest | null> {
@@ -725,16 +730,34 @@ export class DemoBackend implements Backend {
       };
       (db.versions ??= {})[version.id] = version;
       (db.publishedVersions ??= {})[app.slug] = version.id;
-      return app;
+      return withUpvotes(db, app, viewer.id);
     });
   }
 
   async listMyApps(): Promise<AppManifest[]> {
     const viewerId = getViewerId();
     if (!viewerId) return [];
-    return Object.values(load().apps)
+    const db = load();
+    return Object.values(db.apps)
       .filter((a) => a.developer.id === viewerId)
-      .map(withManifestDefaults);
+      .map((a) => withUpvotes(db, withManifestDefaults(a), viewerId));
+  }
+
+  private upvoteHits: number[] = [];
+
+  /** Mirrors `set_app_upvote` (including its per-minute limit, kept per tab here). */
+  async setUpvote(appSlug: string, on: boolean): Promise<UpvoteResult> {
+    const viewer = this.requireViewer();
+    const now = Date.now();
+    this.upvoteHits = this.upvoteHits.filter((at) => now - at < 60_000);
+    if (this.upvoteHits.length >= UPVOTES_PER_MINUTE) throw new BackendError("Too many upvotes — slow down", "rate_limited");
+    const result = mutate((db) => {
+      const app = appFor(db, appSlug, viewer.id);
+      const canSee = !!app && (app.status === "published" || canTest(db, appSlug, viewer.id));
+      return applyUpvote(db, app, viewer.id, on, canSee);
+    });
+    this.upvoteHits.push(now);
+    return result;
   }
 
   /* ---------------------------------------------------------------- */

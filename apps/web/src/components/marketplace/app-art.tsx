@@ -104,6 +104,41 @@ function DrawnArt({ app, className }: { app: AppManifest; className?: string }) 
         </div>
       );
     }
+    case "perfect-circle":
+      return (
+        <div className={className} aria-hidden>
+          <div className="relative flex size-full items-center justify-center py-3">
+            <svg viewBox="0 0 100 100" className="h-full -rotate-90 overflow-visible">
+              <defs>
+                <linearGradient id="art-perfect-circle" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stopColor="#ff4d5e" />
+                  <stop offset="0.5" stopColor={a} />
+                  <stop offset="1" stopColor={b} />
+                </linearGradient>
+              </defs>
+              <motion.path
+                d="M 90 50 C 90 73 72 90.5 50 90 C 27 89.5 10 72 9.5 50.5 C 9 28 27.5 10 50.5 9.5 C 73 9 90.2 27 90 49"
+                fill="none"
+                stroke="url(#art-perfect-circle)"
+                strokeWidth="5"
+                strokeLinecap="round"
+                initial={{ pathLength: reduced ? 1 : 0 }}
+                animate={reduced ? { pathLength: 1 } : { pathLength: [0, 1, 1, 0], opacity: [1, 1, 1, 0] }}
+                transition={reduced ? { duration: 0 } : { duration: 3.4, times: [0, 0.45, 0.85, 1], repeat: Infinity, ease: "easeInOut" }}
+              />
+              <circle cx="50" cy="50" r="3.5" fill="#f6f7fb" />
+            </svg>
+            <motion.span
+              className="absolute inset-x-0 top-[58%] text-center font-display text-xl font-extrabold tabular"
+              style={{ color: b, textShadow: `0 0 18px ${b}88` }}
+              animate={{ opacity: [0, 0, 1, 1, 0], scale: [0.6, 0.6, 1.1, 1, 0.9] }}
+              transition={loop(3.4)}
+            >
+              97.3%
+            </motion.span>
+          </div>
+        </div>
+      );
     case "emoji-decode":
       return (
         <div className={className} aria-hidden>
@@ -265,6 +300,34 @@ function DrawnArt({ app, className }: { app: AppManifest; className?: string }) 
             <span className="relative mb-[22%] rounded-2xl bg-ink-950/80 px-3 py-2 text-center font-display text-sm font-bold leading-tight backdrop-blur">
               “Cereal is a soup.”
             </span>
+          </div>
+        </div>
+      );
+    case "gregs-face":
+      return (
+        <div className={className} aria-hidden>
+          <div className="relative flex size-full items-center justify-center py-3">
+            <svg viewBox="0 0 120 120" className="h-full overflow-visible">
+              <ellipse cx="60" cy="66" rx="38" ry="44" fill="#f5d2bb" />
+              <path d="M22 62 C18 30 40 14 62 14 C88 14 104 34 98 60 C94 46 84 40 70 40 C56 40 46 36 40 30 C32 40 26 50 22 62 Z" fill={a} />
+              <path d="M54 76 Q60 88 66 76" stroke="#d4967c" strokeWidth="3" fill="none" strokeLinecap="round" transform="translate(9 0)" />
+              <path d="M48 96 Q60 102 72 96" stroke="#c46e67" strokeWidth="4" fill="none" strokeLinecap="round" transform="translate(-6 0)" />
+              <line x1="4" x2="116" y1="62" y2="62" stroke="#ffffff" strokeOpacity="0.35" strokeDasharray="4 4" />
+              <motion.g
+                animate={{ x: [-34, 34, -34] }}
+                transition={reduced ? { duration: 0 } : { duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
+              >
+                <g style={{ filter: "drop-shadow(0 4px 3px rgb(0 0 0 / 0.35))" }}>
+                  {[46, 74].map((cx) => (
+                    <g key={cx}>
+                      <ellipse cx={cx} cy="56" rx="9" ry="6" fill="#fff" />
+                      <circle cx={cx + 1} cy="56.5" r="4" fill={b} />
+                      <circle cx={cx + 1} cy="56.5" r="1.8" fill="#1b2129" />
+                    </g>
+                  ))}
+                </g>
+              </motion.g>
+            </svg>
           </div>
         </div>
       );
