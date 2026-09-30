@@ -1,7 +1,8 @@
 // Challenge a rival to Starship League: app page → challenge sheet → VS intro → the match (keyboard autopilot)
-// → our goal → Victory. Staging, harness-only (the game is untouched): the game's own All-Star AI flies our ship,
-// the opponent flies at Rookie, the clock starts at 75 s, and once we lead it jumps to the last few seconds so
-// the match ends on our goal.
+// → our goal → Victory, as one continuous take. Staging, harness-only (the game is untouched): the game's own
+// All-Star AI flies our ship, the opponent flies at Rookie, the in-game kickoff countdown is shortened (XApps has
+// just counted down), and our first goal ends the match (regulation is marked over, so the goal celebration
+// leads straight into the results).
 // node sl-challenge.mjs <width> <height> <scale> <dir> [rival handle] [seed]
 import { launch, Recorder, BASE, sleep, signIn, center, cursorAt } from "./rec.mjs";
 import { slFrame, slState } from "./sl.mjs";
@@ -46,7 +47,7 @@ p = await center(go);
 await rec.glide(p.x, p.y, 24, { click: true });
 mark("challenge sent");
 
-let hidden = false, focused = false, eased = false, clockCut = false, kick = -1, done = -1;
+let hidden = false, focused = false, eased = false, ended = false, kick = -1, done = -1;
 let lastScore = "0-0";
 for (let i = 0; i < 9000; i++) {
   if (!hidden && page.url().includes("/play/")) { await cursorAt(page, -50, -50, false); hidden = true; mark("play room"); }
@@ -57,10 +58,10 @@ for (let i = 0; i < 9000; i++) {
       const SL = window.SL, G = SL.Game;
       for (const b of G.bots) b.skill = SL.SKILLS[0];
       G.bots.push(new SL.Bot(G.humans[0], 2)); // runs after input is read each tick, so it owns our controls
-      G.clock = Math.min(G.clock, 75);
+      if (G.state === "countdown") G.countdown = Math.min(G.countdown, 0.99);
     }).catch(() => {});
     eased = true;
-    mark("in match (autopilot on, rival eased, 75 s clock)");
+    mark("in match (autopilot on, rival eased, short countdown)");
   }
   if (st && st.inMatch && !focused) {
     const box = await (await f.frameElement()).boundingBox();
@@ -73,11 +74,13 @@ for (let i = 0; i < 9000; i++) {
     const sc = st.score.join("-");
     if (sc !== lastScore) { mark(`GOAL ${sc}`); lastScore = sc; }
     const mine = st.me ? st.score[st.me.team] : 0, theirs = st.me ? st.score[1 - st.me.team] : 0;
-    if (!clockCut && mine > theirs && st.state === "play") {
-      await f.evaluate(() => { const G = window.SL.Game; G.clock = Math.min(G.clock, 4); }).catch(() => {});
-      clockCut = true;
-      mark("clock cut to 4 s");
+    if (!ended && mine > theirs) {
+      // The clock stops where it is; after the celebration the game sees regulation over with a lead and ends.
+      await f.evaluate(() => { window.SL.Game.zero = true; }).catch(() => {});
+      ended = true;
+      mark("match ends on this goal");
     }
+    if (!ended && theirs > mine) { console.log("rival scored first: try another seed"); break; }
     if (i % 150 === 0) console.log(`i${i} n${rec.n} ${st.state} ${sc} clock ${st.time.toFixed(0)}`);
   }
   const dlg = page.getByRole("dialog", { name: /Victory|Defeat|Draw/ });
