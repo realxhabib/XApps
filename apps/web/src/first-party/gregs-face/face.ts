@@ -74,16 +74,16 @@ export const DEFAULT_FACE: FaceConfig = {
   skin: "#f5d2bb",
 };
 
-/** Greg himself: the meme photo (200×188 original, upscaled 3× so it draws smoothly). */
+/** Greg himself: the meme photo (400×400 original, super-resolved 4× with EDSR, saved at 1200×1200). */
 export const PHOTO_FACE: FaceConfig = {
   src: "/first-party/gregs-face/greg.jpg",
-  width: 600,
-  height: 564,
+  width: 1200,
+  height: 1200,
   name: "Greg",
   parts: {
-    eyes: { x: 188, y: 266, w: 200, h: 42 },
-    nose: { x: 238, y: 310, w: 90, h: 114 },
-    mouth: { x: 214, y: 432, w: 142, h: 36 },
+    eyes: { x: 380, y: 574, w: 416, h: 80 },
+    nose: { x: 476, y: 660, w: 172, h: 228 },
+    mouth: { x: 432, y: 896, w: 262, h: 80 },
   },
   skin: "#e7b49b",
 };

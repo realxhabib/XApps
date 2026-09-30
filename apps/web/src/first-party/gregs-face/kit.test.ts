@@ -95,7 +95,7 @@ describe("kit geometry", () => {
     expect(kitScale({ width: 3000 })).toBe(1);
     expect(scaleRect({ x: 10, y: 20, w: 30, h: 40 }, 2, 1000, 1000)).toEqual({ x: 20, y: 40, w: 60, h: 80 });
     expect(scaleRect({ x: 90, y: 90, w: 30, h: 30 }, 1, 100, 100)).toEqual({ x: 90, y: 90, w: 10, h: 10 });
-    expect(patchPad({ x: 0, y: 0, w: 264, h: 64 }, 2)).toBe(10);
+    expect(patchPad({ x: 0, y: 0, w: 264, h: 64 }, 2)).toBe(22);
     expect(patchPad({ x: 0, y: 0, w: 10, h: 10 }, 2)).toBe(6);
   });
 });

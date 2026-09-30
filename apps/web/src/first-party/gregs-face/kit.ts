@@ -56,7 +56,7 @@ export function scaleRect(r: FaceRect, scale: number, width: number, height: num
 
 /** Margin between a part rect and its patch, where the patch fades into the photo. */
 export function patchPad(rect: FaceRect, scale: number): number {
-  return Math.max(Math.round(3 * scale), Math.round(0.16 * Math.min(rect.w, rect.h)));
+  return Math.max(Math.round(3 * scale), Math.round(0.35 * Math.min(rect.w, rect.h)));
 }
 
 function median(values: number[]): number {
