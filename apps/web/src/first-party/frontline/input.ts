@@ -5,7 +5,8 @@
  *
  * Desktop: WASD / arrows move, Shift sprints, C or Ctrl crouches (hold),
  * Space jumps, left mouse fires, right mouse aims, R reloads, 1/2 or the
- * wheel (or Q) swaps, Tab holds the scoreboard, Esc releases the mouse.
+ * wheel (or Q) swaps, G (hold to aim, release to throw) throws a grenade,
+ * Tab holds the scoreboard, Esc releases the mouse.
  */
 
 import type { Intent } from "./game";
@@ -23,6 +24,8 @@ export interface TouchState {
   jump: boolean;
   reload: boolean;
   swap: boolean;
+  /** Grenade button held (throws on release). */
+  grenade: boolean;
 }
 
 const GAME_KEYS = new Set([
@@ -43,6 +46,7 @@ const GAME_KEYS = new Set([
   "Digit1",
   "Digit2",
   "KeyQ",
+  "KeyG",
   "Tab",
   "Digit3",
   "Digit4",
@@ -60,7 +64,7 @@ export class Input {
   private swapEdge = false;
   private detach: (() => void) | null = null;
   private target: HTMLElement | null = null;
-  readonly touch: TouchState = { mx: 0, my: 0, lookX: 0, lookY: 0, fire: false, ads: false, crouch: false, jump: false, reload: false, swap: false };
+  readonly touch: TouchState = { mx: 0, my: 0, lookX: 0, lookY: 0, fire: false, ads: false, crouch: false, jump: false, reload: false, swap: false, grenade: false };
   locked = false;
   /** Pressed anything yet (hides hints). */
   used = false;
@@ -215,6 +219,7 @@ export class Input {
     intent.fire = this.mouseFire || t.fire;
     intent.ads = this.mouseAds || t.ads;
     intent.reload = this.reloadEdge || t.reload;
+    intent.grenade = k.has("KeyG") || t.grenade;
     const swap = this.swapEdge || t.swap;
     intent.slot = this.slotEdge >= 0 ? this.slotEdge : swap ? 1 - currentSlot : -1;
     this.jumpEdge = false;
@@ -269,6 +274,7 @@ export class Input {
     this.keys.clear();
     const t = this.touch;
     t.fire = false;
+    t.grenade = false;
     t.mx = 0;
     t.my = 0;
     t.lookX = 0;

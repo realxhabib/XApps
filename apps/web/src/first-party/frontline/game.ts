@@ -13,11 +13,14 @@
  */
 
 import { BotBrain, botLevel, botSkill, botWeapon, type BotEnemy } from "./bots";
+import { GRENADE_WEAPON, NADES_PER_LIFE, NADE_FUSE_MS, aimNade, blastOn, simulateNade, throwStart, validateBlast, type NadeFlight } from "./grenade";
 import type { MapDef } from "./map";
 import { buildNav, type NavGraph } from "./nav";
 import {
+  EV_BLAST,
   EV_HIT,
   EV_KILL,
+  EV_NADE,
   F_ADS,
   F_CROUCH,
   F_DEAD,
@@ -132,9 +135,11 @@ export interface Intent {
   reload: boolean;
   /** Switch to slot 0/1, or -1. */
   slot: number;
+  /** Grenade button held: the throw happens on release (the arc shows while held). */
+  grenade: boolean;
 }
 
-export const idleIntent = (): Intent => ({ forward: 0, strafe: 0, sprint: false, crouch: false, jump: false, fire: false, ads: false, reload: false, slot: -1 });
+export const idleIntent = (): Intent => ({ forward: 0, strafe: 0, sprint: false, crouch: false, jump: false, fire: false, ads: false, reload: false, slot: -1, grenade: false });
 
 export interface Soldier {
   id: string;
@@ -181,8 +186,9 @@ export interface Soldier {
   streak: number;
   radarUntil: number;
   lastShotAirborne: boolean;
-  /** For effects: when they last fired / stepped / moved. */
+  /** For effects: when they last fired / threw / stepped / moved. */
   lastShotFx: number;
+  lastThrowFx: number;
   walkPhase: number;
   speed: number;
   stepAt: number;
@@ -200,6 +206,11 @@ export interface Soldier {
   // Validation (as a victim).
   recent: { x: number; y: number; z: number; at: number }[];
   hitsFrom: Map<number, { t: number; weapon: number }>;
+  // Grenades: left this life, throws so far (ids), held for a throw, blasts already taken (per thrower).
+  nades: number;
+  nadeSeq: number;
+  nadeHeld: boolean;
+  blastsFrom: Map<number, Set<number>>;
   hurtBy: Map<number, number>;
   // Bots.
   brain: BotBrain | null;
@@ -239,6 +250,23 @@ export interface GameFx {
   swap(s: Soldier): void;
   dry(s: Soldier): void;
   streak(kind: "radar"): void;
+  /** A grenade left the thrower's hand (any client's). */
+  nade(n: LiveNade): void;
+  /** It went off. */
+  explosion(n: LiveNade): void;
+}
+
+/** A grenade in flight (ours, our bots', or someone else's from their throw event). */
+export interface LiveNade {
+  thrower: number;
+  n: number;
+  flight: NadeFlight;
+  /** Local clock (performance.now) at release and detonation. */
+  releasedAt: number;
+  explodeAt: number;
+  exploded: boolean;
+  /** This client decides who the blast hits. */
+  authority: boolean;
 }
 
 export interface GameTransport {
@@ -432,6 +460,7 @@ export class Game {
       radarUntil: 0,
       lastShotAirborne: false,
       lastShotFx: -1e9,
+      lastThrowFx: -1e9,
       walkPhase: 0,
       speed: 0,
       stepAt: 0,
@@ -446,6 +475,10 @@ export class Game {
       shotQueue: [],
       recent: [],
       hitsFrom: new Map(),
+      nades: NADES_PER_LIFE,
+      nadeSeq: 0,
+      nadeHeld: false,
+      blastsFrom: new Map(),
       hurtBy: new Map(),
       brain: null,
       killedBy: null,
@@ -642,6 +675,7 @@ export class Game {
       // No shared state at all (it failed): end on our own clock, a little late.
       if (!this.docShared && Date.now() >= this.doc.t0 + this.doc.dur + 8000) this.finish(now);
     }
+    this.updateNades(now);
     this.flushDoc();
     this.netTick(now);
     // Presence only reports changes; re-check the bot driver now and then (silence counts too).
@@ -798,6 +832,13 @@ export class Game {
     // Aim down sights.
     const adsWant = it.ads && !s.sprinting && !swapping && !(cur.scope && reloading) ? 1 : 0;
     s.ads += Math.sign(adsWant - s.ads) * Math.min(Math.abs(adsWant - s.ads), dt / cur.adsS);
+
+    // Grenade: hold to see the arc, release to throw.
+    if (it.grenade) s.nadeHeld = true;
+    else if (s.nadeHeld) {
+      s.nadeHeld = false;
+      if (s.nades > 0 && !swapping) this.throwNade(s, s.yaw, s.pitch, now);
+    }
 
     // Fire.
     const canFire = !reloading && !swapping && !s.sprinting && now >= s.sprintOutAt && now >= s.nextFireAt;
@@ -1082,6 +1123,8 @@ export class Game {
     s.hurtBy.clear();
     s.hitsFrom.clear();
     s.streak = 0;
+    s.nades = NADES_PER_LIFE;
+    s.nadeHeld = false;
     s.brain?.reset();
     this.fx?.spawned(s);
     this.bump();
@@ -1092,6 +1135,105 @@ export class Game {
     if (!this.me) return;
     this.me.loadout = l;
     this.bump();
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Grenades                                                               */
+  /* ---------------------------------------------------------------------- */
+
+  /** Grenades in flight (and ones that went off in the last few seconds, for blast checks). */
+  readonly nades: LiveNade[] = [];
+  private readonly nadeLog: LiveNade[] = [];
+  private nadeThinkAt = new Map<number, number>();
+
+  private addNade(n: LiveNade): void {
+    this.nades.push(n);
+    this.nadeLog.push(n);
+    if (this.nadeLog.length > 24) this.nadeLog.shift();
+    this.fx?.nade(n);
+  }
+
+  /** Throws `s`'s grenade along (yaw, pitch). */
+  private throwNade(s: Soldier, yaw: number, pitch: number, now: number): void {
+    if (s.nades <= 0 || !s.alive || this.phase !== "live") return;
+    s.nades--;
+    s.nadeSeq++;
+    s.lastThrowFx = now;
+    s.nextFireAt = Math.max(s.nextFireAt, now + 420);
+    s.reloadUntil = 0;
+    const eye = { x: s.body.x, y: s.body.y + this.eyeHeight(s), z: s.body.z };
+    const { origin, vel } = throwStart(eye, yaw, pitch, { x: s.body.vx, z: s.body.vz });
+    const n: LiveNade = { thrower: s.seat, n: s.nadeSeq + s.life * 16, flight: simulateNade(this.world, origin, vel), releasedAt: now, explodeAt: now + NADE_FUSE_MS, exploded: false, authority: true };
+    this.addNade(n);
+    if (!this.simAll && !this.spectator) {
+      this.out.push({ kind: EV_NADE, thrower: s.seat, n: n.n, origin: [origin.x, origin.y, origin.z], vel: [vel.x, vel.y, vel.z], t: now }, now);
+    }
+    this.bump();
+  }
+
+  /** Where the grenade `n` is now (along its simulated path). */
+  nadePos(n: LiveNade, now: number): Vec3 {
+    const p = n.flight.path;
+    const f = Math.max(0, (now - n.releasedAt) / (1000 / 30));
+    const i = Math.min(p.length - 1, Math.floor(f));
+    const a = p[i]!;
+    const b = p[Math.min(p.length - 1, i + 1)]!;
+    const k = Math.min(1, f - i);
+    return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, z: a.z + (b.z - a.z) * k };
+  }
+
+  /** Where a throw from `s` right now would land (for the arc preview). */
+  previewNade(s: Soldier): NadeFlight {
+    const eye = { x: s.body.x, y: s.body.y + this.eyeHeight(s), z: s.body.z };
+    const { origin, vel } = throwStart(eye, s.yaw, s.pitch, { x: s.body.vx, z: s.body.vz });
+    return simulateNade(this.world, origin, vel);
+  }
+
+  private updateNades(now: number): void {
+    for (let i = this.nades.length - 1; i >= 0; i--) {
+      const n = this.nades[i]!;
+      if (now < n.explodeAt) continue;
+      this.nades.splice(i, 1);
+      n.exploded = true;
+      this.fx?.explosion(n);
+      if (!n.authority || this.phase !== "live") continue;
+      // The thrower's client decides who it reached; victims we don't own re-check the claim.
+      const thrower = this.bySeat.get(n.thrower);
+      const point = n.flight.end;
+      for (const o of this.soldiers) {
+        if (o.seat === n.thrower || !this.targetable(o)) continue;
+        if (this.teams && thrower && o.team === thrower.team) continue;
+        const p = this.posOf(o);
+        const damage = blastOn(this.world, point, p);
+        if (damage <= 0) continue;
+        if (thrower?.isMe) this.fx?.hitMarker("hit");
+        if (o.local) {
+          const dist = Math.hypot(p.x - point.x, p.z - point.z);
+          this.applyDamage(o, damage, n.thrower, GRENADE_WEAPON, false, dist, point, now);
+        } else if (!this.simAll && !this.spectator) {
+          this.out.push({ kind: EV_BLAST, thrower: n.thrower, n: n.n, victim: o.seat, life: o.buf.latest?.life ?? o.life, point: [point.x, point.y, point.z] }, now);
+        }
+      }
+    }
+  }
+
+  /** Bots lob their grenade now and then at an enemy they're fighting at mid range. */
+  private botNade(s: Soldier, now: number): void {
+    if (s.nades <= 0 || !s.brain || s.brain.target === null) return;
+    const at = this.nadeThinkAt.get(s.seat) ?? 0;
+    if (now < at) return;
+    this.nadeThinkAt.set(s.seat, now + 1200);
+    const t = this.bySeat.get(s.brain.target);
+    if (!t || !this.targetable(t)) return;
+    const p = this.posOf(t);
+    const dx = p.x - s.body.x;
+    const dz = p.z - s.body.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist < 9 || dist > 26 || this.rand() > 0.14) return;
+    const yaw = Math.atan2(-dx, -dz);
+    const pitch = aimNade(this.world, { x: s.body.x, y: s.body.y + this.eyeHeight(s), z: s.body.z }, yaw, p);
+    if (pitch === null) return;
+    this.throwNade(s, yaw, pitch, now);
   }
 
   /* ---------------------------------------------------------------------- */
@@ -1141,7 +1283,8 @@ export class Game {
     s.pitch += Math.max(-turn, Math.min(turn, bi.pitch - s.pitch));
     // Pistol when the primary is empty and the fight is on.
     const slot = s.mag[0] === 0 && s.slot === 0 && bi.fire && s.reserve[0] >= 0 && s.mag[1] > 0 ? 1 : s.slot === 1 && s.mag[0] > 0 && !bi.fire ? 0 : -1;
-    return { forward: bi.forward, strafe: bi.strafe, sprint: bi.sprint, crouch: bi.crouch, jump: bi.jump, fire: bi.fire, ads: bi.ads, reload: bi.reload || (s.slot === 0 && s.mag[0] === 0 && !bi.fire), slot };
+    this.botNade(s, now);
+    return { forward: bi.forward, strafe: bi.strafe, sprint: bi.sprint, crouch: bi.crouch, jump: bi.jump, fire: bi.fire, ads: bi.ads, reload: bi.reload || (s.slot === 0 && s.mag[0] === 0 && !bi.fire), slot, grenade: false };
   }
 
   /* ---------------------------------------------------------------------- */
@@ -1328,6 +1471,42 @@ export class Game {
       this.applyDamage(victim, verdict.damage, shooter.seat, ev.weapon, verdict.headshot, verdict.dist, { x: ev.origin[0], y: ev.origin[1], z: ev.origin[2] }, now);
       return;
     }
+    if (ev.kind === EV_NADE) {
+      const thrower = this.speaksFor(from, ev.thrower);
+      if (!thrower || thrower.local) return;
+      // Their clock → ours: how long ago it left the hand.
+      const remoteNow = this.clocks.get(from.id)?.toRemote(now);
+      const age = remoteNow === null || remoteNow === undefined ? 0 : Math.max(0, Math.min(NADE_FUSE_MS, remoteNow - ev.t));
+      const o = { x: ev.origin[0], y: ev.origin[1], z: ev.origin[2] };
+      const v = { x: ev.vel[0], y: ev.vel[1], z: ev.vel[2] };
+      thrower.lastThrowFx = now;
+      this.addNade({ thrower: thrower.seat, n: ev.n, flight: simulateNade(this.world, o, v), releasedAt: now - age, explodeAt: now - age + NADE_FUSE_MS, exploded: false, authority: false });
+      return;
+    }
+    if (ev.kind === EV_BLAST) {
+      const thrower = this.speaksFor(from, ev.thrower);
+      const victim = this.bySeat.get(ev.victim);
+      if (!thrower || !victim || !victim.local || thrower.local) return;
+      let applied = victim.blastsFrom.get(thrower.seat);
+      if (!applied) {
+        applied = new Set();
+        victim.blastsFrom.set(thrower.seat, applied);
+      }
+      const known = this.nadeLog.find((x) => x.thrower === thrower.seat && x.n === ev.n);
+      const verdict = validateBlast(
+        { thrower: thrower.seat, n: ev.n, victim: victim.seat, life: ev.life, point: { x: ev.point[0], y: ev.point[1], z: ev.point[2] } },
+        { life: victim.life, alive: victim.alive, recent: victim.recent.length ? victim.recent : [victim.body], sameTeam: !!this.teams && victim.team === thrower.team, applied },
+        known ? known.flight.end : null,
+        this.world,
+      );
+      if (!verdict.ok) {
+        if (verdict.reason !== "stale") console.debug("[frontline] rejected blast", verdict.reason);
+        return;
+      }
+      applied.add(ev.n);
+      this.applyDamage(victim, verdict.damage, thrower.seat, GRENADE_WEAPON, false, verdict.dist, { x: ev.point[0], y: ev.point[1], z: ev.point[2] }, now);
+      return;
+    }
     // A kill, announced by the victim's owner.
     const victim = this.speaksFor(from, ev.rec[0]);
     if (!victim || victim.local) return;
@@ -1502,6 +1681,7 @@ export class Game {
             streak: me.streak,
             radar: me.radarUntil > now ? me.radarUntil - now : 0,
             loadout: me.loadout,
+            nades: me.nades,
             kills: t.kills.get(me.seat) ?? 0,
             team: me.team,
             seat: me.seat,
@@ -1540,6 +1720,10 @@ export class Game {
       s.lastHurtAt += ms;
       if (s.radarUntil) s.radarUntil += ms;
     }
+    for (const n of this.nades) {
+      n.releasedAt += ms;
+      n.explodeAt += ms;
+    }
     // The shared doc keeps the original t0; solo practice only reads ours.
     this.pausedShift += ms;
   }
@@ -1572,6 +1756,7 @@ export interface HudState {
     streak: number;
     radar: number;
     loadout: Loadout;
+    nades: number;
     kills: number;
     team: number | null;
     seat: number;

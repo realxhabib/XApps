@@ -15,24 +15,35 @@ import {
   ACESFilmicToneMapping,
   Color,
   DirectionalLight,
+  EquirectangularReflectionMapping,
   Fog,
+  FogExp2,
   HemisphereLight,
-  PCFSoftShadowMap,
+  Matrix4,
+  NoToneMapping,
+  PCFShadowMap,
   PerspectiveCamera,
+  PMREMGenerator,
   Scene,
   SRGBColorSpace,
   Vector3,
   WebGLRenderer,
   type Texture,
+  type WebGLRenderTarget,
 } from "three";
+import type { AssetPack } from "./assets";
 import { FrontAudio } from "./audio";
 import { AvatarKit, SEAT_COLORS, SoldierRig, TEAM_COLORS } from "./avatars";
+import { PostFx } from "./post";
+import { SkinnedSoldier, SoldierKit } from "./soldier";
 import { RUN_SPEED, idleIntent, type FeedEntry, type Game, type GameFx, type Impact, type Intent, type Soldier } from "./game";
+import { F_RELOAD } from "./net";
 import { Input } from "./input";
 import { lineOfSight, raycastMap, rayPlayer, viewDir, type Vec3 } from "./physics";
 import { FrameGovernor, TIERS, type Tier } from "./quality";
 import type { Settings } from "./settings";
-import { flashTexture, holeTexture, softDot, streakTexture } from "./textures";
+import { NadeFx } from "./nadefx";
+import { fireTexture, flashTexture, holeTexture, scorchTexture, smokeTexture, softDot, streakTexture } from "./textures";
 import { Vfx } from "./vfx";
 import { ViewModel } from "./viewmodel";
 import { BASE_FOV, spreadDeg, type WeaponDef } from "./weapons";
@@ -63,6 +74,8 @@ export interface EngineOptions {
   host: HTMLElement;
   game: Game;
   tier: Tier;
+  /** Downloaded textures / sky / soldier for the tier's asset level (see assets.ts). */
+  pack: AssetPack;
   reduceMotion: boolean;
   touch: boolean;
   settings: () => Settings;
@@ -80,6 +93,9 @@ interface DamageArrow {
 const _v = new Vector3();
 const _w = new Vector3();
 
+/** A soldier's third-person body: the animated one (medium/high) or the blocky one (low). */
+type Rig = { kind: "skinned"; rig: SkinnedSoldier } | { kind: "blocky"; rig: SoldierRig };
+
 export class Engine {
   readonly game: Game;
   readonly input = new Input();
@@ -89,9 +105,17 @@ export class Engine {
   readonly camera = new PerspectiveCamera(BASE_FOV, 1, 0.05, 600);
   private readonly world: WorldView;
   private readonly sun: DirectionalLight;
+  private readonly hemi: HemisphereLight;
   private readonly kit: AvatarKit;
-  private readonly rigs = new Map<string, SoldierRig>();
+  private readonly skinKit: SoldierKit | null;
+  private readonly rigs = new Map<string, Rig>();
+  private readonly pack: AssetPack;
+  private envTarget: WebGLRenderTarget | null = null;
+  private post: PostFx | null = null;
+  /** Brief whiteout (close explosions), fed to the grade. */
+  flashAmount = 0;
   private readonly vm: ViewModel;
+  private readonly nadeFx: NadeFx;
   private readonly vfx: Vfx;
   private readonly textures: Texture[];
   private readonly governor: FrameGovernor;
@@ -136,45 +160,69 @@ export class Engine {
     this.game = o.game;
     this.tier = o.tier;
     const t = TIERS[o.tier];
+    this.pack = o.pack;
+    const pbr = o.pack.level !== "lo";
     this.renderer = new WebGLRenderer({ canvas: o.canvas, antialias: t.antialias, powerPreference: "high-performance", stencil: false });
     this.renderer.outputColorSpace = SRGBColorSpace;
-    this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.18;
+    this.renderer.toneMapping = t.post ? NoToneMapping : ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = pbr ? 1.0 : 1.18;
     this.renderer.autoClear = false;
     // Count draw calls over the whole frame (world + weapon passes), not per pass.
     this.renderer.info.autoReset = false;
     this.renderer.shadowMap.enabled = t.shadows;
-    this.renderer.shadowMap.type = PCFSoftShadowMap;
+    this.renderer.shadowMap.type = PCFShadowMap;
     const dpr = Math.min(window.devicePixelRatio || 1, t.dpr);
     this.governor = new FrameGovernor(dpr, Math.min(dpr, t.minDpr));
     this.governor.onGiveUp = () => this.opts.onGiveUp();
     this.renderer.setPixelRatio(dpr);
+    const aniso = this.renderer.capabilities.getMaxAnisotropy();
+    for (const m of Object.values(o.pack.mats)) for (const tex of [m.albedo, m.normal, m.arm]) if (tex) tex.anisotropy = Math.min(aniso, pbr ? 8 : 2);
 
     const map = this.game.map;
-    this.scene.background = new Color(map.sky.horizon);
-    this.scene.fog = new Fog(map.sky.fog, 35, t.far);
-    this.scene.add(new HemisphereLight(0xe2ecff, 0xc9b08a, 2.1));
-    this.sun = new DirectionalLight(0xfff1da, 2.5);
     const [sx, sy, sz] = map.sun;
-    this.sun.position.set(sx * 60, sy * 60, sz * 60);
+    this.sunDir.set(sx, sy, sz).normalize();
+    if (pbr && o.pack.sky) {
+      // The HDRI: background, and (prefiltered) image-based light for every PBR material.
+      const sky = o.pack.sky;
+      sky.mapping = EquirectangularReflectionMapping;
+      const pmrem = new PMREMGenerator(this.renderer);
+      this.envTarget = pmrem.fromEquirectangular(sky);
+      pmrem.dispose();
+      this.scene.background = sky;
+      this.scene.environment = this.envTarget.texture;
+      this.scene.environmentIntensity = 0.6;
+      this.scene.backgroundIntensity = 0.95;
+      this.scene.fog = new FogExp2(0xc4c2bb, 0.0085);
+      this.hemi = new HemisphereLight(0xd6e2f2, 0x5a5146, 0.25);
+      this.sun = new DirectionalLight(0xffd3a0, 4.3);
+    } else {
+      this.scene.background = new Color(map.sky.horizon);
+      this.scene.fog = new Fog(map.sky.fog, 35, t.far);
+      this.hemi = new HemisphereLight(0xe2ecff, 0xc9b08a, 2.1);
+      this.sun = new DirectionalLight(0xfff1da, 2.5);
+    }
+    this.scene.add(this.hemi);
+    this.sun.position.copy(this.sunDir).multiplyScalar(80);
     this.sun.target.position.set(0, 0, 0);
     this.scene.add(this.sun, this.sun.target);
-    this.configureShadows(t.shadows, t.shadowMapSize);
-    this.world = buildWorld(map, { shadows: t.shadows, groundPx: o.touch || o.tier === "low" ? 12 : 22, skyline: t.skyline });
+    this.configureShadows(t.shadows, t.shadowMapSize, t.shadowSoftness);
+    this.world = buildWorld(map, o.pack, { shadows: t.shadows, groundPx: o.touch || o.tier === "low" ? 12 : 22, skyline: t.skyline });
     this.scene.add(this.world.group);
 
     const flash = flashTexture();
     const blob = softDot(0.3, "0,0,0");
-    const fxTex = { streak: streakTexture(), dot: softDot(0.15), hole: holeTexture() };
-    this.textures = [flash, blob, fxTex.streak, fxTex.dot, fxTex.hole];
+    const fxTex = { streak: streakTexture(), dot: softDot(0.15), hole: holeTexture(), smoke: smokeTexture(), fire: fireTexture(), scorch: scorchTexture() };
+    this.textures = [flash, blob, ...Object.values(fxTex)];
     this.kit = new AvatarKit(blob, flash);
-    for (const s of this.game.soldiers) {
-      const rig = new SoldierRig(this.kit, this.colorOf(s), t.shadows);
-      this.rigs.set(s.id, rig);
-      this.scene.add(rig.group);
-    }
-    this.vm = new ViewModel(flash);
-    this.vfx = new Vfx(this.scene, fxTex, { decals: t.decals, particles: t.particles });
+    this.skinKit = pbr && o.pack.soldier ? new SoldierKit(o.pack.soldier, o.pack.fabric, flash) : null;
+    for (const s of this.game.soldiers) this.addRig(s, t.shadows);
+    this.vm = new ViewModel(flash, pbr);
+    if (pbr && this.envTarget) this.vm.scene.environment = this.envTarget.texture;
+    if (t.post) this.post = new PostFx(this.renderer, this.scene, this.camera, { scene: this.vm.scene, camera: this.vm.camera, visible: () => this.vmVisible });
+    this.vfx = new Vfx(this.scene, fxTex, { decals: t.decals, particles: t.particles, lights: t.flashLights, ambience: t.ambience, lite: !pbr });
+    if (t.ambience) this.vfx.setAmbient(map.plumes, map.fires);
+    this.vfx.onDistant = () => this.audio.distant();
+    this.nadeFx = new NadeFx(this.scene);
     this.game.fx = this.fx;
     this.input.attach(o.host);
     // Desktop spectators lock the mouse to look around in free camera.
@@ -188,6 +236,20 @@ export class Engine {
     }
   }
 
+  private readonly sunDir = new Vector3();
+
+  private addRig(s: Soldier, shadows: boolean): void {
+    let rig: Rig;
+    if (this.skinKit) {
+      const team = this.game.teams ? (s.team ?? 0) % 2 : s.seat % 2;
+      rig = { kind: "skinned", rig: new SkinnedSoldier(this.skinKit, team, this.colorOf(s), shadows) };
+    } else {
+      rig = { kind: "blocky", rig: new SoldierRig(this.kit, this.colorOf(s), shadows) };
+    }
+    this.rigs.set(s.id, rig);
+    this.scene.add(rig.rig.group);
+  }
+
   private colorOf(s: Soldier): string {
     const g = this.game;
     if (g.teams) {
@@ -197,19 +259,54 @@ export class Engine {
     return SEAT_COLORS[s.seat % SEAT_COLORS.length]!;
   }
 
-  private configureShadows(on: boolean, size: number): void {
+  /**
+   * One sun shadow map fitted tightly around the playable yard (plus the
+   * height of what stands in it) in the light's own frame, so every texel
+   * lands on the map: ~2 cm texels at 4096 on high, ~4 cm at 2048.
+   */
+  private configureShadows(on: boolean, size: number, softness = 1): void {
     this.sun.castShadow = on;
     if (!on) return;
+    const b = this.game.map.bounds;
+    const center = new Vector3((b.x0 + b.x1) / 2, 0, (b.z0 + b.z1) / 2);
+    this.sun.target.position.copy(center);
+    this.sun.position.copy(center).addScaledVector(this.sunDir, 90);
+    this.sun.target.updateMatrixWorld();
+    this.sun.updateMatrixWorld();
+    const view = new Matrix4().lookAt(this.sun.position, center, new Vector3(0, 1, 0));
+    view.setPosition(this.sun.position);
+    view.invert();
+    let x0 = Infinity;
+    let x1 = -Infinity;
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    let z0 = Infinity;
+    let z1 = -Infinity;
+    const p = new Vector3();
+    for (const x of [b.x0 - 1.5, b.x1 + 1.5]) {
+      for (const z of [b.z0 - 1.5, b.z1 + 1.5]) {
+        for (const y of [0, 17.5]) {
+          p.set(x, y, z).applyMatrix4(view);
+          x0 = Math.min(x0, p.x);
+          x1 = Math.max(x1, p.x);
+          y0 = Math.min(y0, p.y);
+          y1 = Math.max(y1, p.y);
+          z0 = Math.min(z0, p.z);
+          z1 = Math.max(z1, p.z);
+        }
+      }
+    }
     const cam = this.sun.shadow.camera;
-    cam.left = -44;
-    cam.right = 44;
-    cam.top = 44;
-    cam.bottom = -44;
-    cam.near = 1;
-    cam.far = 160;
+    cam.left = x0;
+    cam.right = x1;
+    cam.top = y1;
+    cam.bottom = y0;
+    cam.near = Math.max(0.5, -z1 - 5);
+    cam.far = -z0 + 5;
     this.sun.shadow.mapSize.set(size, size);
-    this.sun.shadow.bias = -0.0006;
-    this.sun.shadow.normalBias = 0.03;
+    this.sun.shadow.bias = -0.00025;
+    this.sun.shadow.normalBias = 0.025;
+    this.sun.shadow.radius = softness;
     this.sun.shadow.map?.dispose();
     this.sun.shadow.map = null;
     cam.updateProjectionMatrix();
@@ -238,14 +335,22 @@ export class Engine {
     this.governor.setRange(dpr, Math.min(dpr, t.minDpr));
     this.renderer.setPixelRatio(this.governor.ratio);
     this.renderer.setSize(this.width, this.height, false);
-    (this.scene.fog as Fog).far = t.far;
+    if (this.scene.fog instanceof Fog) this.scene.fog.far = t.far;
     this.world.setSkyline(t.skyline);
     this.vfx.setBudget(t.particles);
+    if (t.post && !this.post) {
+      this.post = new PostFx(this.renderer, this.scene, this.camera, { scene: this.vm.scene, camera: this.vm.camera, visible: () => this.vmVisible });
+      this.post.setSize(this.width, this.height);
+    } else if (!t.post && this.post) {
+      this.post.dispose();
+      this.post = null;
+    }
+    this.renderer.toneMapping = this.post ? NoToneMapping : ACESFilmicToneMapping;
     if (prev.shadows !== t.shadows || prev.shadowMapSize !== t.shadowMapSize) {
       this.renderer.shadowMap.enabled = t.shadows;
-      this.configureShadows(t.shadows, t.shadowMapSize);
+      this.configureShadows(t.shadows, t.shadowMapSize, t.shadowSoftness);
       this.world.setShadows(t.shadows);
-      this.rigs.forEach((r) => r.setShadows(t.shadows));
+      this.rigs.forEach((r) => r.rig.setShadows(t.shadows));
       this.scene.traverse((o) => {
         const m = (o as { material?: { needsUpdate: boolean } }).material;
         if (m) m.needsUpdate = true;
@@ -257,6 +362,7 @@ export class Engine {
     this.width = Math.max(1, w);
     this.height = Math.max(1, h);
     this.renderer.setSize(this.width, this.height, false);
+    this.post?.setSize(this.width, this.height);
     const aspect = this.width / this.height;
     const need = (2 * Math.atan(Math.tan(27 * DEG) / aspect)) / DEG;
     this.fovScale = Math.tan((Math.max(BASE_FOV, need) * DEG) / 2) / Math.tan((BASE_FOV * DEG) / 2);
@@ -341,25 +447,35 @@ export class Engine {
     if (ratio !== null) {
       this.renderer.setPixelRatio(ratio);
       this.renderer.setSize(this.width, this.height, false);
+      this.post?.setSize(this.width, this.height);
     }
     this.placeCamera(now, dt);
     for (const s of g.soldiers) {
-      const rig = this.rigs.get(s.id);
-      if (!rig) continue;
+      const r = this.rigs.get(s.id);
+      if (!r) continue;
       const firstPerson = s.isMe && !this.spectating() && (s.alive || !this.deathCam);
-      rig.update(s, now, dt, firstPerson);
+      if (r.kind === "skinned") r.rig.update(s, now, frozen ? 0 : dt, firstPerson, g.weapon(s).id, s.local ? g.isReloading(s, now) : !!(s.view.flags & F_RELOAD));
+      else r.rig.update(s, now, dt, firstPerson);
     }
     this.vfx.update(frozen ? 0 : dt, this.camera);
+    this.updateNades(now);
+    this.world.update(now / 1000);
     this.updateViewModel(now, dt);
     if (me && me.alive) this.audio.setListener(me.body.x, me.body.z, me.yaw);
     else this.audio.setListener(this.camera.position.x, this.camera.position.z, this.cameraYaw());
 
     this.renderer.info.reset();
-    this.renderer.clear();
-    this.renderer.render(this.scene, this.camera);
-    if (this.vmVisible) {
-      this.renderer.clearDepth();
-      this.renderer.render(this.vm.scene, this.vm.camera);
+    this.flashAmount = Math.max(0, this.flashAmount - dt * 4);
+    if (this.post) {
+      this.post.render(dt, now / 1000, this.flashAmount);
+    } else {
+      this.renderer.setRenderTarget(null);
+      this.renderer.clear();
+      this.renderer.render(this.scene, this.camera);
+      if (this.vmVisible) {
+        this.renderer.clearDepth();
+        this.renderer.render(this.vm.scene, this.vm.camera);
+      }
     }
     this.drawOverlays(now);
   }
@@ -497,6 +613,8 @@ export class Engine {
       lookY: this.lookY,
       reload,
       swap,
+      strafe: this.intent.strafe,
+      nadeHeld: me.nadeHeld && me.nades > 0,
       hideScoped: scoped,
       reduceMotion: this.opts.reduceMotion,
     });
@@ -565,10 +683,53 @@ export class Engine {
     return { x: origin.x + f.x * 0.85 + rx * 0.08, y: origin.y + f.y * 0.85 - 0.28, z: origin.z + f.z * 0.85 + rz * 0.08 };
   }
 
+  /** Live grenades (meshes, bounce clinks) and, while you hold G, the throw arc. */
+  private updateNades(now: number): void {
+    const g = this.game;
+    const me = g.me;
+    const aiming = !!me && me.alive && me.nadeHeld && me.nades > 0 && g.phase === "live";
+    this.nadeFx.update(g, now, aiming && me ? g.previewNade(me) : null, (x, z) => this.audio.clink(x, z));
+  }
+
   private readonly fx: GameFx = {
+    nade: (n) => {
+      const s = this.game.bySeat.get(n.thrower);
+      const mine = !!s?.isMe && !this.spectating();
+      if (s) this.audio.throwNade(s.body.x, s.body.z, mine);
+      if (mine) this.vm.throwNade(performance.now());
+    },
+    explosion: (n) => {
+      const p = n.flight.end;
+      this.vfx.explosion(p.x, p.y, p.z);
+      this.audio.explosion(p.x, p.z);
+      const d = this.camera.position.distanceTo(_v.set(p.x, p.y, p.z));
+      this.trauma = Math.min(1, this.trauma + Math.max(0, 1.1 - d / 18));
+      this.flashAmount = Math.max(this.flashAmount, Math.max(0, 0.5 - d / 30));
+      if (d < 9) this.audio.muffle(0.7 * (1 - d / 9), 1.2);
+      if (d < 12) this.opts.haptic(d < 6 ? "heavy" : "medium");
+    },
     shot: (s: Soldier, w: WeaponDef, origin: Vec3, ends: readonly Vec3[], impacts: readonly Impact[]) => {
       const mine = s.isMe && !this.spectating();
-      const muzzle = this.muzzleOf(s, origin);
+      const r = this.rigs.get(s.id);
+      const muzzle = !mine && r?.kind === "skinned" && r.rig.group.visible ? r.rig.muzzleWorld(_w) : this.muzzleOf(s, origin);
+      const mx = muzzle.x;
+      const my = muzzle.y;
+      const mz = muzzle.z;
+      // Muzzle light, a wisp of smoke, and a spent case (not for the shotgun's pump, not every SMG round).
+      const camD = Math.hypot(mx - this.camera.position.x, mz - this.camera.position.z);
+      if (camD < 45) {
+        this.vfx.flash(mx, my, mz, mine ? 3.5 : 5, 55, 0xffb266);
+        this.vfx.muzzleSmoke(mx, my, mz, w.id === "shotgun" || w.id === "sniper");
+        if (w.id !== "shotgun" && (w.id !== "smg" || s.shotSeq % 2 === 0)) {
+          const rx = Math.cos(s.yaw);
+          const rz = -Math.sin(s.yaw);
+          const f = viewDir(s.yaw, s.pitch);
+          const ex = mine ? this.camera.position.x + rx * 0.16 + f.x * 0.35 : mx - f.x * 0.45;
+          const ey = mine ? this.camera.position.y - 0.1 : my;
+          const ez = mine ? this.camera.position.z + rz * 0.16 + f.z * 0.35 : mz - f.z * 0.45;
+          this.vfx.casing(ex, ey, ez, rx, rz, w.id === "sniper");
+        }
+      }
       const every = mine ? (w.pellets > 1 ? 3 : 2) : w.pellets > 1 ? 3 : 1;
       ends.forEach((e, i) => {
         if (i % every === 0 && (!mine || s.shotSeq % 2 === 0 || w.pellets > 1)) this.vfx.tracer(muzzle, e, w.id === "sniper" ? 0.06 : 0.035);
@@ -865,10 +1026,14 @@ export class Engine {
     this.input.dispose();
     this.audio.dispose();
     this.vfx.dispose();
+    this.nadeFx.dispose();
     this.vm.dispose();
     this.world.dispose();
     this.kit.dispose();
-    this.rigs.forEach((r) => r.dispose());
+    this.rigs.forEach((r) => r.rig.dispose());
+    this.skinKit?.dispose();
+    this.post?.dispose();
+    this.envTarget?.dispose();
     this.sun.shadow.map?.dispose();
     this.textures.forEach((t) => t.dispose());
     this.renderer.dispose();

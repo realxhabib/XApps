@@ -289,6 +289,47 @@ export class FrontAudio {
     for (let i = 0; i < 3; i++) this.tone(out, { freq: 880 + i * 220, type: "sine", gain: 0.16, decay: 0.3, start: i * 0.16 });
   }
 
+  /** Pin out and a throw grunt of cloth (your own), or a faint one nearby. */
+  throwNade(x: number, z: number, mine: boolean): void {
+    if (!this.enabled || !this.ensure()) return;
+    const spot = mine ? this.spot(null, null) : this.spot(x, z, 5);
+    if (!spot || spot.gain < 0.05) return;
+    const g = spot.gain * (mine ? 1 : 0.6);
+    this.tone(spot.out, { freq: 3200, type: "triangle", gain: 0.06 * g, decay: 0.05 });
+    this.noiseBurst(spot.out, { gain: 0.14 * g, decay: 0.16, freq: 900, q: 0.5, start: 0.04, attack: 0.04 });
+  }
+
+  /** A grenade clinking off the ground or a container. */
+  clink(x: number, z: number): void {
+    if (!this.enabled || !this.ensure() || !this.budget("clink", 2, 120)) return;
+    const spot = this.spot(x, z, 6);
+    if (!spot || spot.gain < 0.04) return;
+    this.tone(spot.out, { freq: 2600 + Math.random() * 900, to: 2000, type: "triangle", gain: 0.12 * spot.gain, decay: 0.09 });
+    this.noiseBurst(spot.out, { gain: 0.08 * spot.gain, decay: 0.04, freq: 4200, q: 1 });
+  }
+
+  /** A frag going off: a sharp crack, a deep body, debris and a long rolling tail. */
+  explosion(x: number, z: number): void {
+    if (!this.enabled || !this.ensure()) return;
+    const spot = this.spot(x, z, 22);
+    if (!spot) return;
+    const g = Math.min(1.4, spot.gain * 1.6);
+    this.noiseBurst(spot.out, { gain: 0.9 * g, decay: 0.08, freq: 2400, q: 0.5, type: "highpass" });
+    this.noiseBurst(spot.out, { gain: 1.2 * g, decay: 0.55, freq: 380, q: 0.6, type: "lowpass" });
+    this.tone(spot.out, { freq: 110, to: 32, gain: 1.1 * g, decay: 0.7 });
+    this.tone(spot.out, { freq: 60, to: 24, gain: 0.8 * g, decay: 1.1, start: 0.02 });
+    for (let i = 0; i < 5; i++) this.noiseBurst(spot.out, { gain: 0.08 * g, decay: 0.05, freq: 2500 + Math.random() * 2500, q: 2, start: 0.25 + Math.random() * 0.6 });
+    this.noiseBurst(spot.out, { gain: 0.45 * g, decay: 1.8, freq: 220, q: 0.4, type: "lowpass", start: 0.09, attack: 0.08 });
+  }
+
+  /** Far-off artillery / a distant blast (the scenery). */
+  distant(): void {
+    if (!this.enabled || !this.ensure()) return;
+    const out = this.spot(null, null)!.out;
+    this.tone(out, { freq: 70, to: 30, gain: 0.12, decay: 1.4 });
+    this.noiseBurst(out, { gain: 0.1, decay: 2.2, freq: 160, q: 0.4, type: "lowpass", attack: 0.2 });
+  }
+
   spawn(): void {
     if (!this.enabled || !this.ensure()) return;
     const out = this.spot(null, null)!.out;

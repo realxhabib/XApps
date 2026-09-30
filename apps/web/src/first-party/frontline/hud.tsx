@@ -11,7 +11,7 @@
  */
 
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Camera, ChevronRight, Crosshair, MousePointer2, Pause, Radar, Skull, Volume2, VolumeX } from "lucide-react";
+import { Bomb, Camera, ChevronRight, Crosshair, MousePointer2, Pause, Radar, Skull, Volume2, VolumeX } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Avatar } from "@/components/ui/avatar";
 import { isSoundEnabled, onSoundChange, setSoundEnabled } from "@/lib/sfx";
@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils";
 import { SEAT_COLORS, TEAM_COLORS } from "./avatars";
 import type { Callout, Engine } from "./engine";
 import type { Game, HudState } from "./game";
+import { GRENADE_WEAPON } from "./grenade";
 import { GunGlyph, LoadoutPicker } from "./loadout";
 import { TouchControls } from "./touch";
 import type { PeerLink } from "./net";
@@ -293,7 +294,7 @@ export function Hud({
                   </>
                 )}
               </button>
-              {!touch && <p className="mt-2 text-center text-[11px] text-ink-400">WASD move · Shift sprint · C crouch · Space jump · Right mouse aim · R reload · 1/2 swap · Tab scores · Esc menu</p>}
+              {!touch && <p className="mt-2 text-center text-[11px] text-ink-400">WASD move · Shift sprint · C crouch · Space jump · Right mouse aim · R reload · 1/2 swap · G grenade (hold, release to throw) · Tab scores · Esc menu</p>}
               {game.solo && <p className="mt-1 text-center text-[11px] font-semibold text-ink-300">Practice is paused</p>}
               <Connections hud={hud} />
               <SettingsPanel settings={settings} onSettings={onSettings} touch={touch} tier={tier} />
@@ -420,6 +421,7 @@ function KillFeed({ hud, compact }: { hud: HudState; compact: boolean }) {
                 {name(f.killer)}
               </span>
               {w && <GunGlyph id={w.id} className="h-3 w-8 shrink-0 text-white/85" />}
+              {f.weapon === GRENADE_WEAPON && <Bomb className="size-3.5 shrink-0 text-white/85" aria-label="grenade" />}
               {f.headshot && <Crosshair className="size-3 shrink-0 text-[#ffc23d]" aria-label="headshot" />}
               <span className="max-w-20 truncate sm:max-w-28" style={{ color: color(f.victim) }}>
                 {name(f.victim)}
@@ -470,6 +472,10 @@ function Ammo({ me, touch }: { me: NonNullable<HudState["me"]>; touch: boolean }
         ) : (
           <span>{w.name}</span>
         )}
+        <span className={cn("flex items-center gap-0.5", me.nades > 0 ? "text-white" : "text-white/30")} aria-label={`${me.nades} grenade${me.nades === 1 ? "" : "s"}`}>
+          <Bomb className="size-3.5" />
+          {!touch && <span className="text-[9px]">G</span>}
+        </span>
         {!touch && (
           <span className="flex gap-1">
             {me.weapons.map((id: WeaponId, i) => (
@@ -515,7 +521,8 @@ function DeathPanel({ hud, game, settings, onSettings, engine, touch }: { hud: H
           <p className="truncate text-lg font-extrabold">{killer ? (killer.isBot ? killer.name : `@${killer.handle}`) : "Someone"}</p>
           <p className="flex items-center gap-1.5 text-xs text-ink-300">
             {w && <GunGlyph id={w.id} className="h-3 w-8 text-ink-200" />}
-            {w?.name}
+            {me.killedBy?.weapon === GRENADE_WEAPON && <Bomb className="size-3.5 text-ink-200" />}
+            {w?.name ?? (me.killedBy?.weapon === GRENADE_WEAPON ? "Frag grenade" : null)}
             {me.killedBy?.headshot && <span className="rounded bg-[#ffc23d] px-1 text-[10px] font-bold text-ink-950">Headshot</span>}
           </p>
         </div>

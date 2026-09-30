@@ -27,6 +27,11 @@ export interface Box {
   ghost?: boolean;
   /** Ribbed container walls run along x or z. */
   ribs?: "x" | "z";
+  /**
+   * Render hint only (collision ignores it): how the renderer dresses the box.
+   * `drums` / `pallets` / `wreck` draw props filling the box's volume.
+   */
+  look?: "cladding" | "plate" | "drums" | "pallets" | "wreck";
 }
 
 export interface Vec3 {

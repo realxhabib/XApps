@@ -86,6 +86,10 @@ export type ShotRow = [number, number, number, number, number, number];
 
 export const EV_HIT = 0;
 export const EV_KILL = 1;
+/** A grenade left someone's hand (everyone simulates the same flight). */
+export const EV_NADE = 2;
+/** A grenade blast claim: thrower → the victim's owner (like EV_HIT). */
+export const EV_BLAST = 3;
 
 /** A hit claim: shooter → the victim's owner. */
 export interface HitEvent {
@@ -106,7 +110,27 @@ export interface KillEvent {
   rec: KillRec;
 }
 
-export type NetEvent = HitEvent | KillEvent;
+export interface NadeEvent {
+  kind: typeof EV_NADE;
+  thrower: number;
+  /** Thrower's throw number. */
+  n: number;
+  origin: [number, number, number];
+  vel: [number, number, number];
+  /** Thrower's clock at release (ms). */
+  t: number;
+}
+
+export interface BlastEvent {
+  kind: typeof EV_BLAST;
+  thrower: number;
+  n: number;
+  victim: number;
+  life: number;
+  point: [number, number, number];
+}
+
+export type NetEvent = HitEvent | KillEvent | NadeEvent | BlastEvent;
 
 const cm = (v: number) => Math.round(v * 100);
 
@@ -114,6 +138,8 @@ export function encodeEvent(id: number, ev: NetEvent): number[] {
   if (ev.kind === EV_HIT) {
     return [id, EV_HIT, ev.shooter, ev.victim, ev.life, ev.weapon, ...ev.counts, ...ev.origin.map(cm), ...ev.point.map(cm), Math.round(ev.t)];
   }
+  if (ev.kind === EV_NADE) return [id, EV_NADE, ev.thrower, ev.n, ...ev.origin.map(cm), ...ev.vel.map(cm), Math.round(ev.t)];
+  if (ev.kind === EV_BLAST) return [id, EV_BLAST, ev.thrower, ev.n, ev.victim, ev.life, ...ev.point.map(cm)];
   return [id, EV_KILL, ...ev.rec];
 }
 
@@ -137,6 +163,12 @@ export function decodeEvent(row: unknown): { id: number; ev: NetEvent } | null {
         t: r[15]!,
       },
     };
+  }
+  if (r[1] === EV_NADE && r.length === 11) {
+    return { id, ev: { kind: EV_NADE, thrower: r[2]!, n: r[3]!, origin: [r[4]! / 100, r[5]! / 100, r[6]! / 100], vel: [r[7]! / 100, r[8]! / 100, r[9]! / 100], t: r[10]! } };
+  }
+  if (r[1] === EV_BLAST && r.length === 9) {
+    return { id, ev: { kind: EV_BLAST, thrower: r[2]!, n: r[3]!, victim: r[4]!, life: r[5]!, point: [r[6]! / 100, r[7]! / 100, r[8]! / 100] } };
   }
   if (r[1] === EV_KILL && r.length === 8) {
     return { id, ev: { kind: EV_KILL, rec: [r[2]!, r[3]!, r[4]!, r[5]!, r[6]!, r[7]!] } };

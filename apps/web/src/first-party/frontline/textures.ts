@@ -1,8 +1,8 @@
 /**
- * Procedural textures (canvas, no assets): container corrugation,
- * weathered concrete, planks, brushed metal, the yard's ground with slab
- * seams, painted lines, baked contact shadows (and sun shadows when the
- * tier has no shadow map), plus the soft sprites for flashes, smoke, sparks
+ * Canvas-made textures: the low tier's baked yard floor (over the asphalt
+ * photo, with painted lines and baked contact / sun shadows), the PBR
+ * ground's overlay and wetness layers, invented container liveries, chain
+ * link, and the soft sprites for flashes, smoke, fire, sparks, scorch marks
  * and bullet holes.
  */
 
@@ -41,124 +41,13 @@ function finish(c: HTMLCanvasElement, repeat = true, srgb = true): Texture {
   return t;
 }
 
-/** Speckle noise over a base gray. */
-function grain(ctx: CanvasRenderingContext2D, w: number, h: number, r: () => number, amount: number, count: number) {
-  for (let i = 0; i < count; i++) {
-    const v = Math.floor(128 + (r() - 0.5) * 255 * amount);
-    ctx.fillStyle = `rgba(${v},${v},${v},${0.08 + r() * 0.12})`;
-    const s = 1 + r() * 2.5;
-    ctx.fillRect(r() * w, r() * h, s, s);
-  }
-}
-
-/** Grayscale corrugation (tinted by vertex color): one texture repeat = 1 m. */
-export function containerTexture(): Texture {
-  const [c, ctx] = canvas(128);
-  const r = rng(7);
-  ctx.fillStyle = "#d8d8d8";
-  ctx.fillRect(0, 0, 128, 128);
-  // Ribs every 1/4 m: light crest, dark trough.
-  for (let i = 0; i < 4; i++) {
-    const x = i * 32;
-    const g = ctx.createLinearGradient(x, 0, x + 32, 0);
-    g.addColorStop(0, "#9a9a9a");
-    g.addColorStop(0.25, "#f2f2f2");
-    g.addColorStop(0.55, "#dadada");
-    g.addColorStop(0.8, "#a8a8a8");
-    g.addColorStop(1, "#9a9a9a");
-    ctx.fillStyle = g;
-    ctx.fillRect(x, 0, 32, 128);
-  }
-  // Rust streaks and scuffs.
-  for (let i = 0; i < 14; i++) {
-    ctx.fillStyle = `rgba(90,50,30,${0.05 + r() * 0.1})`;
-    ctx.fillRect(r() * 128, r() * 128, 1 + r() * 3, 8 + r() * 40);
-  }
-  grain(ctx, 128, 128, r, 0.6, 500);
-  return finish(c);
-}
-
-/** Weathered concrete, 1 repeat = 2 m. */
-export function concreteTexture(): Texture {
-  const [c, ctx] = canvas(256);
-  const r = rng(11);
-  ctx.fillStyle = "#d0d0d0";
-  ctx.fillRect(0, 0, 256, 256);
-  for (let i = 0; i < 40; i++) {
-    const x = r() * 256;
-    const y = r() * 256;
-    const g = ctx.createRadialGradient(x, y, 0, x, y, 10 + r() * 40);
-    const v = r() < 0.5 ? "90,90,90" : "250,250,250";
-    g.addColorStop(0, `rgba(${v},${0.06 + r() * 0.08})`);
-    g.addColorStop(1, `rgba(${v},0)`);
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, 256, 256);
-  }
-  grain(ctx, 256, 256, r, 0.7, 2600);
-  // Form-tie holes and a horizontal pour line.
-  ctx.fillStyle = "rgba(60,60,60,0.35)";
-  for (const [x, y] of [
-    [40, 60],
-    [168, 60],
-    [40, 188],
-    [168, 188],
-  ] as const) {
-    ctx.beginPath();
-    ctx.arc(x, y, 2.5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.fillStyle = "rgba(80,80,80,0.18)";
-  ctx.fillRect(0, 127, 256, 2);
-  return finish(c);
-}
-
-/** Planks, 1 repeat = 1 m. */
-export function woodTexture(): Texture {
-  const [c, ctx] = canvas(128);
-  const r = rng(3);
-  for (let i = 0; i < 6; i++) {
-    const v = 190 + Math.floor(r() * 40);
-    ctx.fillStyle = `rgb(${v},${v},${v})`;
-    ctx.fillRect(0, i * 21.33, 128, 21.33);
-    ctx.fillStyle = "rgba(40,40,40,0.35)";
-    ctx.fillRect(0, i * 21.33, 128, 1.5);
-    for (let k = 0; k < 10; k++) {
-      ctx.fillStyle = `rgba(80,80,80,${0.05 + r() * 0.08})`;
-      ctx.fillRect(r() * 128, i * 21.33 + r() * 20, 20 + r() * 50, 1);
-    }
-  }
-  ctx.strokeStyle = "rgba(50,50,50,0.4)";
-  ctx.lineWidth = 3;
-  ctx.strokeRect(1.5, 1.5, 125, 125);
-  return finish(c);
-}
-
-/** Painted metal with scratches, 1 repeat = 1 m. */
-export function metalTexture(): Texture {
-  const [c, ctx] = canvas(128);
-  const r = rng(5);
-  ctx.fillStyle = "#e0e0e0";
-  ctx.fillRect(0, 0, 128, 128);
-  for (let i = 0; i < 60; i++) {
-    ctx.strokeStyle = `rgba(${r() < 0.5 ? "255,255,255" : "70,70,70"},${0.08 + r() * 0.1})`;
-    ctx.beginPath();
-    const x = r() * 128;
-    const y = r() * 128;
-    ctx.moveTo(x, y);
-    ctx.lineTo(x + (r() - 0.5) * 30, y + (r() - 0.5) * 6);
-    ctx.stroke();
-  }
-  grain(ctx, 128, 128, r, 0.4, 400);
-  return finish(c);
-}
-
 /**
  * The whole yard floor as one texture: sun-bleached concrete slabs with
  * seams, oil stains, painted lane lines and bay numbers, and baked contact
  * shadows around everything standing on it (plus sun shadows when there is
  * no real shadow map).
  */
-export function groundTexture(map: MapDef, pxPerM: number, sunShadows: boolean): Texture {
+export function groundTexture(map: MapDef, pxPerM: number, sunShadows: boolean, asphalt: CanvasImageSource | null = null): Texture {
   const { bounds } = map;
   const W = bounds.x1 - bounds.x0;
   const H = bounds.z1 - bounds.z0;
@@ -168,8 +57,15 @@ export function groundTexture(map: MapDef, pxPerM: number, sunShadows: boolean):
   const Z = (z: number) => (z - bounds.z0) * pxPerM;
   ctx.fillStyle = "#cbbfa8";
   ctx.fillRect(0, 0, c.width, c.height);
+  if (asphalt) {
+    // The real asphalt photo, tiled every 4 m (one texture for the whole floor keeps it one draw).
+    const tile = Math.round(4 * pxPerM);
+    for (let x = 0; x < c.width; x += tile) for (let y = 0; y < c.height; y += tile) ctx.drawImage(asphalt, x, y, tile, tile);
+    ctx.fillStyle = "rgba(40,38,36,0.18)";
+    ctx.fillRect(0, 0, c.width, c.height);
+  }
   // Slabs (4 m), each a slightly different shade.
-  for (let x = bounds.x0; x < bounds.x1; x += 4) {
+  for (let x = bounds.x0; x < bounds.x1 && !asphalt; x += 4) {
     for (let z = bounds.z0; z < bounds.z1; z += 4) {
       const v = Math.floor((r() - 0.5) * 16);
       ctx.fillStyle = `rgba(${v > 0 ? "255,250,240" : "80,70,60"},${Math.abs(v) / 90})`;
@@ -177,7 +73,7 @@ export function groundTexture(map: MapDef, pxPerM: number, sunShadows: boolean):
     }
   }
   // Grain.
-  const specks = Math.round(W * H * 6);
+  const specks = asphalt ? 0 : Math.round(W * H * 6);
   for (let i = 0; i < specks; i++) {
     const v = Math.floor(100 + r() * 120);
     ctx.fillStyle = `rgba(${v},${v - 6},${v - 14},${0.12 + r() * 0.15})`;
@@ -195,8 +91,8 @@ export function groundTexture(map: MapDef, pxPerM: number, sunShadows: boolean):
     ctx.fillStyle = g;
     ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
   }
-  // Seams.
-  ctx.strokeStyle = "rgba(70,62,52,0.45)";
+  // Seams (concrete slabs only).
+  ctx.strokeStyle = asphalt ? "rgba(0,0,0,0)" : "rgba(70,62,52,0.45)";
   ctx.lineWidth = Math.max(1, pxPerM * 0.04);
   ctx.beginPath();
   for (let x = bounds.x0; x <= bounds.x1; x += 4) {
@@ -312,6 +208,445 @@ function convexHull(points: [number, number][]): [number, number][] {
   upper.pop();
   lower.pop();
   return lower.concat(upper);
+}
+
+/* ---------------------------------------------------------------------- */
+/* PBR tiers: canvas-made extras                                          */
+/* ---------------------------------------------------------------------- */
+
+/** Invented shipping lines (never real brands). Cell i of the logo atlas. */
+export const BRANDS = ["HALCYON", "TASMAN LINE", "ORBIS", "KORVAX", "MERIDIAN", "NORDWAVE", "ANCHORA", "ID"] as const;
+export const LOGO_COLS = 2;
+export const LOGO_ROWS = 4;
+
+/**
+ * 1024² atlas of container livery (2 × 4 cells of 512 × 256): wordmarks and
+ * emblems for invented shipping lines, plus an ID/weights stencil, with
+ * chipped paint (random erasure) so they read as painted-on and weathered.
+ */
+export function logoAtlas(): Texture {
+  const [c, ctx] = canvas(1024);
+  const r = rng(41);
+  const W = 512;
+  const H = 256;
+  const cell = (i: number, draw: () => void) => {
+    ctx.save();
+    ctx.translate((i % LOGO_COLS) * W, Math.floor(i / LOGO_COLS) * H);
+    ctx.beginPath();
+    ctx.rect(0, 0, W, H);
+    ctx.clip();
+    draw();
+    ctx.restore();
+  };
+  const font = (weight: number, size: number, family = "ui-sans-serif, system-ui, Arial, sans-serif", style = "") => `${style} ${weight} ${size}px ${family}`;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+  // HALCYON: sun disc over waves, wide wordmark.
+  cell(0, () => {
+    ctx.fillStyle = "#f4f1ea";
+    ctx.beginPath();
+    ctx.arc(96, 128, 62, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(0,0,0,0)";
+    ctx.globalCompositeOperation = "destination-out";
+    for (let k = 0; k < 3; k++) {
+      ctx.beginPath();
+      ctx.lineWidth = 9;
+      ctx.moveTo(30, 140 + k * 20);
+      for (let x = 30; x <= 162; x += 8) ctx.lineTo(x, 140 + k * 20 + Math.sin(x / 12) * 5);
+      ctx.stroke();
+    }
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "#f4f1ea";
+    ctx.font = font(900, 78);
+    ctx.textAlign = "left";
+    ctx.fillText("HALCYON", 176, 124);
+  });
+  // TASMAN LINE: italic, orange slash.
+  cell(1, () => {
+    ctx.fillStyle = "#ff8a2a";
+    ctx.beginPath();
+    ctx.moveTo(40, 200);
+    ctx.lineTo(110, 50);
+    ctx.lineTo(150, 50);
+    ctx.lineTo(80, 200);
+    ctx.fill();
+    ctx.fillStyle = "#f7f4ee";
+    ctx.font = font(900, 84, undefined, "italic");
+    ctx.textAlign = "left";
+    ctx.fillText("TASMAN", 160, 108);
+    ctx.font = font(700, 40, undefined, "italic");
+    ctx.fillText("LINE  •  FREIGHT", 166, 178);
+  });
+  // ORBIS: globe rings.
+  cell(2, () => {
+    ctx.strokeStyle = "#f2f2f2";
+    ctx.lineWidth = 12;
+    ctx.beginPath();
+    ctx.arc(256, 128, 96, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.lineWidth = 8;
+    ctx.beginPath();
+    ctx.ellipse(256, 128, 44, 96, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(160, 128);
+    ctx.lineTo(352, 128);
+    ctx.stroke();
+    ctx.fillStyle = "#f2f2f2";
+    ctx.font = font(900, 64);
+    ctx.fillText("ORBIS", 256, 128);
+  });
+  // KORVAX: heavy stencil with chevrons.
+  cell(3, () => {
+    ctx.fillStyle = "#ffd23a";
+    for (let k = 0; k < 3; k++) {
+      ctx.beginPath();
+      const x = 28 + k * 34;
+      ctx.moveTo(x, 60);
+      ctx.lineTo(x + 26, 128);
+      ctx.lineTo(x, 196);
+      ctx.lineTo(x + 16, 196);
+      ctx.lineTo(x + 42, 128);
+      ctx.lineTo(x + 16, 60);
+      ctx.fill();
+    }
+    ctx.fillStyle = "#f5f5f5";
+    ctx.font = font(900, 96, "Impact, 'Arial Black', sans-serif");
+    ctx.textAlign = "left";
+    ctx.fillText("KORVAX", 150, 132);
+  });
+  // MERIDIAN: boxed wordmark.
+  cell(4, () => {
+    ctx.strokeStyle = "#eef3f7";
+    ctx.lineWidth = 10;
+    ctx.strokeRect(40, 54, 432, 148);
+    ctx.fillStyle = "#eef3f7";
+    ctx.font = font(800, 70);
+    ctx.fillText("MERIDIAN", 256, 116);
+    ctx.font = font(600, 26);
+    ctx.fillText("CONTAINER SHIPPING", 256, 172);
+  });
+  // NORDWAVE: blue-white wave mark.
+  cell(5, () => {
+    ctx.fillStyle = "#e9f2ff";
+    ctx.beginPath();
+    ctx.moveTo(30, 180);
+    ctx.bezierCurveTo(80, 40, 140, 40, 170, 120);
+    ctx.bezierCurveTo(150, 90, 110, 100, 90, 180);
+    ctx.fill();
+    ctx.font = font(900, 70);
+    ctx.textAlign = "left";
+    ctx.fillText("NORDWAVE", 170, 132);
+  });
+  // ANCHORA: anchor glyph.
+  cell(6, () => {
+    ctx.strokeStyle = "#f6f3ec";
+    ctx.fillStyle = "#f6f3ec";
+    ctx.lineWidth = 12;
+    ctx.beginPath();
+    ctx.moveTo(90, 60);
+    ctx.lineTo(90, 196);
+    ctx.moveTo(56, 92);
+    ctx.lineTo(124, 92);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(90, 150, 48, 0.1 * Math.PI, 0.9 * Math.PI);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(90, 52, 12, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.font = font(800, 74, "Georgia, 'Times New Roman', serif");
+    ctx.textAlign = "left";
+    ctx.fillText("ANCHORA", 162, 130);
+  });
+  // ID stencil + weights panel.
+  cell(7, () => {
+    ctx.fillStyle = "#f2f2ee";
+    ctx.textAlign = "left";
+    ctx.font = font(800, 54, "ui-monospace, 'Courier New', monospace");
+    ctx.fillText("HLXU 482913", 24, 58);
+    ctx.strokeStyle = "#f2f2ee";
+    ctx.lineWidth = 5;
+    ctx.strokeRect(392, 30, 56, 56);
+    ctx.fillText("4", 406, 58);
+    ctx.font = font(700, 40, "ui-monospace, 'Courier New', monospace");
+    ctx.fillText("22G1", 24, 116);
+    ctx.font = font(600, 22, "ui-monospace, 'Courier New', monospace");
+    const rows = ["MAX.GROSS  30.480 KG", "TARE        2.230 KG", "NET        28.250 KG", "CU.CAP     33.2 CU.M"];
+    rows.forEach((t, i) => ctx.fillText(t, 24, 160 + i * 26));
+  });
+  // Chipped paint: erase speckles and a few scratches everywhere.
+  ctx.globalCompositeOperation = "destination-out";
+  for (let i = 0; i < 2600; i++) {
+    ctx.fillStyle = `rgba(0,0,0,${0.35 + r() * 0.65})`;
+    const s = 1 + r() * r() * 7;
+    ctx.fillRect(r() * 1024, r() * 1024, s, s * (0.5 + r()));
+  }
+  ctx.strokeStyle = "rgba(0,0,0,0.9)";
+  for (let i = 0; i < 90; i++) {
+    ctx.lineWidth = 1 + r() * 2;
+    const x = r() * 1024;
+    const y = r() * 1024;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + (r() - 0.5) * 80, y + (r() - 0.5) * 20);
+    ctx.stroke();
+  }
+  ctx.globalCompositeOperation = "source-over";
+  return finish(c, false);
+}
+
+/** Chain-link mesh with a little rust: alpha-tested. One repeat = 1 m. */
+export function fenceTexture(): Texture {
+  const [c, ctx] = canvas(256);
+  ctx.clearRect(0, 0, 256, 256);
+  ctx.strokeStyle = "#c9ccd0";
+  ctx.lineWidth = 3.2;
+  const step = 32;
+  ctx.beginPath();
+  for (let i = -256; i <= 512; i += step) {
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i + 256, 256);
+    ctx.moveTo(i, 256);
+    ctx.lineTo(i + 256, 0);
+  }
+  ctx.stroke();
+  const r = rng(77);
+  ctx.fillStyle = "rgba(120,70,40,0.8)";
+  for (let i = 0; i < 60; i++) ctx.fillRect(r() * 256, r() * 256, 3, 3);
+  return finish(c);
+}
+
+/** Noise blobs in [0,1] on a w×h canvas (for puddles and stains). */
+function blobField(w: number, h: number, count: number, r: () => number, minR: number, maxR: number, alpha: [number, number]): HTMLCanvasElement {
+  const [c, ctx] = canvas(w, h);
+  for (let i = 0; i < count; i++) {
+    const x = r() * w;
+    const y = r() * h;
+    const rad = minR + r() * (maxR - minR);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, rad);
+    const a = alpha[0] + r() * (alpha[1] - alpha[0]);
+    g.addColorStop(0, `rgba(255,255,255,${a})`);
+    g.addColorStop(0.6, `rgba(255,255,255,${a * 0.6})`);
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = g;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(1, 0.5 + r() * 0.9);
+    ctx.translate(-x, -y);
+    ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+    ctx.restore();
+  }
+  return c;
+}
+
+/**
+ * The yard floor's baked layers for the PBR ground (over tiled asphalt):
+ * an overlay (faded lane paint, hatching, bay numbers, oil, tire marks) and
+ * a mask (r = contact shadow around everything standing on the ground,
+ * g = wetness: puddles in the open, damp strips along walls).
+ */
+export function groundLayers(map: MapDef, pxPerM: number): { overlay: Texture; mask: Texture } {
+  const { bounds } = map;
+  const W = bounds.x1 - bounds.x0;
+  const H = bounds.z1 - bounds.z0;
+  const cw = Math.round(W * pxPerM);
+  const ch = Math.round(H * pxPerM);
+  const X = (x: number) => (x - bounds.x0) * pxPerM;
+  const Z = (z: number) => (z - bounds.z0) * pxPerM;
+  const r = rng(23);
+  const [oc, o] = canvas(cw, ch);
+  o.clearRect(0, 0, cw, ch);
+  // Oil stains and tire marks.
+  for (let i = 0; i < 70; i++) {
+    const x = r() * cw;
+    const y = r() * ch;
+    const rad = pxPerM * (0.4 + r() * 1.8);
+    const g = o.createRadialGradient(x, y, 0, x, y, rad);
+    g.addColorStop(0, `rgba(12,10,9,${0.25 + r() * 0.3})`);
+    g.addColorStop(1, "rgba(12,10,9,0)");
+    o.fillStyle = g;
+    o.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+  }
+  o.strokeStyle = "rgba(10,10,10,0.22)";
+  o.lineWidth = pxPerM * 0.28;
+  for (let i = 0; i < 14; i++) {
+    const x = r() * cw;
+    const y = r() * ch;
+    const a = r() * Math.PI * 2;
+    const len = pxPerM * (6 + r() * 14);
+    for (const off of [-0.9, 0.9]) {
+      o.beginPath();
+      o.moveTo(x + Math.cos(a + Math.PI / 2) * off * pxPerM, y + Math.sin(a + Math.PI / 2) * off * pxPerM);
+      o.quadraticCurveTo(x + Math.cos(a) * len * 0.5 + (r() - 0.5) * pxPerM * 3, y + Math.sin(a) * len * 0.5, x + Math.cos(a) * len + Math.cos(a + Math.PI / 2) * off * pxPerM, y + Math.sin(a) * len + Math.sin(a + Math.PI / 2) * off * pxPerM);
+      o.stroke();
+    }
+  }
+  // Lane paint (faded yellow, dashed) and loading zones, as before.
+  o.strokeStyle = "rgba(214,168,52,0.78)";
+  o.lineWidth = pxPerM * 0.14;
+  o.setLineDash([pxPerM * 2, pxPerM * 1.2]);
+  o.beginPath();
+  for (const x of [19.5, 26.5, 33.2]) {
+    o.moveTo(X(x), Z(-28));
+    o.lineTo(X(x), Z(28));
+  }
+  o.moveTo(X(-34), Z(-17));
+  o.lineTo(X(12), Z(-17));
+  o.moveTo(X(-16), Z(17.5));
+  o.lineTo(X(34), Z(17.5));
+  o.stroke();
+  o.setLineDash([]);
+  o.fillStyle = "rgba(214,168,52,0.62)";
+  for (const [x0, z0] of [
+    [-2, -3],
+    [-30, -26],
+    [26, 23],
+  ] as const) {
+    for (let i = 0; i < 6; i++) {
+      o.save();
+      o.translate(X(x0 + i * 0.8), Z(z0));
+      o.rotate(-0.6);
+      o.fillRect(0, 0, pxPerM * 0.25, pxPerM * 3.2);
+      o.restore();
+    }
+  }
+  o.fillStyle = "rgba(235,232,222,0.7)";
+  o.font = `800 ${Math.round(pxPerM * 1.6)}px ui-sans-serif, system-ui, sans-serif`;
+  o.textAlign = "center";
+  for (const [t, x, z] of [
+    ["A1", 19.5, -24],
+    ["B2", 26.5, 20],
+    ["C3", 33.2, -24],
+    ["07", -12, -23.5],
+    ["12", 12, 23.5],
+  ] as [string, number, number][])
+    o.fillText(t, X(x), Z(z));
+  // Worn paint: erase speckles.
+  o.globalCompositeOperation = "destination-out";
+  for (let i = 0; i < cw * ch * 0.02; i++) {
+    o.fillStyle = `rgba(0,0,0,${0.3 + r() * 0.6})`;
+    o.fillRect(r() * cw, r() * ch, 1 + r() * 2, 1 + r() * 2);
+  }
+  o.globalCompositeOperation = "source-over";
+
+  // Mask: r = contact AO, g = wetness (drawn as two grayscale layers, then packed).
+  const grounded = map.boxes.filter((b) => !b.ghost && b.y0 < 0.05 && b.y1 > 0.3);
+  const [, a] = canvas(cw, ch);
+  a.fillStyle = "#fff";
+  a.fillRect(0, 0, cw, ch);
+  a.filter = `blur(${Math.max(1, 0.45 * pxPerM)}px)`;
+  a.fillStyle = "rgba(0,0,0,0.5)";
+  for (const b of grounded) a.fillRect(X(b.x0 - 0.3), Z(b.z0 - 0.3), (b.x1 - b.x0 + 0.6) * pxPerM, (b.z1 - b.z0 + 0.6) * pxPerM);
+  const [, w] = canvas(cw, ch);
+  w.fillStyle = "#000";
+  w.fillRect(0, 0, cw, ch);
+  w.drawImage(blobField(cw, ch, Math.round(W * H * 0.016), r, pxPerM * 0.8, pxPerM * 4.2, [0.55, 1]), 0, 0);
+  // Damp margins along tall things (runoff).
+  w.filter = `blur(${Math.max(1, 0.5 * pxPerM)}px)`;
+  w.fillStyle = "rgba(255,255,255,0.35)";
+  for (const b of grounded) if (b.y1 >= 2) w.fillRect(X(b.x0 - 0.5), Z(b.z0 - 0.5), (b.x1 - b.x0 + 1) * pxPerM, (b.z1 - b.z0 + 1) * pxPerM);
+  w.filter = "none";
+  const ad = a.getImageData(0, 0, cw, ch).data;
+  const wd = w.getImageData(0, 0, cw, ch).data;
+  const [mc, m] = canvas(cw, ch);
+  const out = m.createImageData(cw, ch);
+  for (let i = 0; i < ad.length; i += 4) {
+    out.data[i] = ad[i]!;
+    // A soft threshold turns blobs into puddles with a damp rim.
+    const v = wd[i]! / 255;
+    out.data[i + 1] = Math.round(255 * Math.min(1, Math.max(0, (v - 0.18) * 1.6)));
+    out.data[i + 2] = 0;
+    out.data[i + 3] = 255;
+  }
+  m.putImageData(out, 0, 0);
+  const overlay = finish(oc, false);
+  const mask = finish(mc, false, false);
+  return { overlay, mask };
+}
+
+/** A billowy smoke puff (white, alpha = density): noise-carved soft disc. */
+export function smokeTexture(): Texture {
+  const S = 128;
+  const [c, ctx] = canvas(S);
+  const r = rng(61);
+  ctx.clearRect(0, 0, S, S);
+  // Many soft lumps of varying density, denser toward the middle.
+  for (let i = 0; i < 70; i++) {
+    const a = r() * Math.PI * 2;
+    const d = Math.sqrt(r()) * S * 0.3;
+    const x = S / 2 + Math.cos(a) * d;
+    const y = S / 2 + Math.sin(a) * d;
+    const rad = S * (0.05 + r() * 0.14);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, rad);
+    const v = 170 + Math.floor(r() * 85);
+    g.addColorStop(0, `rgba(${v},${v},${v},${0.12 + r() * 0.16})`);
+    g.addColorStop(1, `rgba(${v},${v},${v},0)`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, S, S);
+  }
+  // Wispy holes, then fade the edge out entirely.
+  ctx.globalCompositeOperation = "destination-out";
+  for (let i = 0; i < 16; i++) {
+    const x = r() * S;
+    const y = r() * S;
+    const rad = S * (0.03 + r() * 0.07);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, rad);
+    g.addColorStop(0, `rgba(0,0,0,${0.3 + r() * 0.4})`);
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, S, S);
+  }
+  ctx.globalCompositeOperation = "destination-in";
+  const m = ctx.createRadialGradient(S / 2, S / 2, S * 0.12, S / 2, S / 2, S / 2);
+  m.addColorStop(0, "rgba(0,0,0,1)");
+  m.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = m;
+  ctx.fillRect(0, 0, S, S);
+  return finish(c, false, false);
+}
+
+/** A licking flame / fireball blob (additive; the shader tints it by age). */
+export function fireTexture(): Texture {
+  const S = 128;
+  const [c, ctx] = canvas(S);
+  const r = rng(71);
+  for (let i = 0; i < 18; i++) {
+    const x = S / 2 + (r() - 0.5) * S * 0.35;
+    const y = S / 2 + (r() - 0.5) * S * 0.35 + S * 0.05;
+    const rad = S * (0.1 + r() * 0.18);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, rad);
+    g.addColorStop(0, "rgba(255,255,255,0.55)");
+    g.addColorStop(0.5, "rgba(255,255,255,0.25)");
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, S, S);
+  }
+  return finish(c, false, false);
+}
+
+/** A scorch mark for the ground under a blast. */
+export function scorchTexture(): Texture {
+  const S = 128;
+  const [c, ctx] = canvas(S);
+  const r = rng(83);
+  const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  g.addColorStop(0, "rgba(8,6,5,0.95)");
+  g.addColorStop(0.45, "rgba(14,11,9,0.7)");
+  g.addColorStop(1, "rgba(20,16,12,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, S, S);
+  ctx.strokeStyle = "rgba(6,5,4,0.7)";
+  for (let i = 0; i < 22; i++) {
+    const a = r() * Math.PI * 2;
+    ctx.lineWidth = 1 + r() * 3;
+    ctx.beginPath();
+    ctx.moveTo(S / 2 + Math.cos(a) * S * 0.12, S / 2 + Math.sin(a) * S * 0.12);
+    ctx.lineTo(S / 2 + Math.cos(a) * S * (0.3 + r() * 0.18), S / 2 + Math.sin(a) * S * (0.3 + r() * 0.18));
+    ctx.stroke();
+  }
+  return finish(c, false, false);
 }
 
 /** Soft round dot (blob shadows, sparks, smoke). */

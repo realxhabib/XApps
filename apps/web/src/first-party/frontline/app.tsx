@@ -19,6 +19,8 @@ import { LoadoutPicker } from "./loadout";
 import { MAPS, DEFAULT_MAP } from "./map";
 import { MatchView } from "./match";
 import { FFA_LIMIT, newDoc } from "./rules";
+import { loadAssets } from "./assets";
+import { TIERS, tierFor } from "./quality";
 import { loadLocal, loadRemote, saveSettings, type Settings } from "./settings";
 import { TEAM_COLORS } from "./avatars";
 
@@ -41,6 +43,12 @@ export function FrontlineApp() {
   const readyRef = useRef(false);
   const touchedRef = useRef(false);
   const teams = xapps.match.teams >= 2 ? xapps.match.teams : 0;
+
+  // Start downloading this device's textures, sky and soldier while players pick loadouts.
+  const level = TIERS[tierFor(settings.quality)].assets;
+  useEffect(() => {
+    loadAssets(level).catch(() => {});
+  }, [level]);
 
   // The synced copy wins unless the player already changed something here.
   useEffect(() => {

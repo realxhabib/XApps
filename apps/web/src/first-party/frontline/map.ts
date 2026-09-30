@@ -33,6 +33,10 @@ export interface MapDef {
   skyline: Box[];
   /** Sun direction (toward the sun), sky + fog colors. */
   sun: [number, number, number];
+  /** Where a fire burns (the wreck), for flames, smoke and its light. */
+  fires: { x: number; y: number; z: number }[];
+  /** Distant smoke columns beyond the walls (scenery). */
+  plumes: { x: number; z: number; h: number }[];
   sky: { top: number; horizon: number; ground: number; fog: number };
 }
 
@@ -53,6 +57,7 @@ const PALETTE = {
   wood: 0xa57b4f,
   metal: 0x6f757c,
   yellow: 0xe0b440,
+  drum: 0x2f5f9e,
 };
 
 class Builder {
@@ -83,15 +88,33 @@ class Builder {
       const top = rise * (i + 1);
       const a = run * i;
       const b = run * (i + 1);
-      if (dir === "+x") this.box(x + a, 0, z - width / 2, x + b, top, z + width / 2, "metal", color);
-      if (dir === "-x") this.box(x - b, 0, z - width / 2, x - a, top, z + width / 2, "metal", color);
-      if (dir === "+z") this.box(x - width / 2, 0, z + a, x + width / 2, top, z + b, "metal", color);
-      if (dir === "-z") this.box(x - width / 2, 0, z - b, x + width / 2, top, z - a, "metal", color);
+      const plate = { look: "plate" } as const;
+      if (dir === "+x") this.box(x + a, 0, z - width / 2, x + b, top, z + width / 2, "metal", color, plate);
+      if (dir === "-x") this.box(x - b, 0, z - width / 2, x - a, top, z + width / 2, "metal", color, plate);
+      if (dir === "+z") this.box(x - width / 2, 0, z + a, x + width / 2, top, z + b, "metal", color, plate);
+      if (dir === "-z") this.box(x - width / 2, 0, z - b, x + width / 2, top, z - a, "metal", color, plate);
     }
   }
 
   crate(cx: number, cz: number, size = 1.1, y = 0, color = PALETTE.wood): Box {
     return this.block(cx, cz, size, size, size, "wood", color, y);
+  }
+
+  /** A cluster of oil drums (four on a 1.3 m square), cover to the waist. */
+  drums(cx: number, cz: number, w = 1.3, d = 1.3): Box {
+    return this.box(cx - w / 2, 0, cz - d / 2, cx + w / 2, 0.9, cz + d / 2, "metal", PALETTE.drum, { look: "drums" });
+  }
+
+  /** A stack of wooden pallets (1.2 × 1.0 m, `n` high). */
+  pallets(cx: number, cz: number, n: number, along: "x" | "z" = "x"): Box {
+    const w = along === "x" ? 1.2 : 1.0;
+    const d = along === "x" ? 1.0 : 1.2;
+    return this.box(cx - w / 2, 0, cz - d / 2, cx + w / 2, n * 0.15, cz + d / 2, "wood", PALETTE.wood, { look: "pallets", ribs: along });
+  }
+
+  /** A thin light pole (collides as a 0.3 m post). */
+  pole(cx: number, cz: number): Box {
+    return this.box(cx - 0.15, 0, cz - 0.15, cx + 0.15, 9, cz + 0.15, "metal", 0x6c7176);
   }
 
   /** Concrete road barrier. */
@@ -116,22 +139,23 @@ function saltyard(): MapDef {
   const WX1 = -18;
   const WH = 5;
   const wall = PALETTE.brick;
+  const clad = { look: "cladding" } as const;
   // East wall with two doorways (z −7.5…−4.5 and 3…6).
-  b.box(WX1 - 0.5, 0, -12, WX1, WH, -7.5, "concrete", wall);
-  b.box(WX1 - 0.5, 0, -4.5, WX1, WH, 3, "concrete", wall);
-  b.box(WX1 - 0.5, 0, 6, WX1, WH, 12, "concrete", wall);
-  b.box(WX1 - 0.5, 2.8, -7.5, WX1, WH, -4.5, "concrete", wall);
-  b.box(WX1 - 0.5, 2.8, 3, WX1, WH, 6, "concrete", wall);
+  b.box(WX1 - 0.5, 0, -12, WX1, WH, -7.5, "concrete", wall, clad);
+  b.box(WX1 - 0.5, 0, -4.5, WX1, WH, 3, "concrete", wall, clad);
+  b.box(WX1 - 0.5, 0, 6, WX1, WH, 12, "concrete", wall, clad);
+  b.box(WX1 - 0.5, 2.8, -7.5, WX1, WH, -4.5, "concrete", wall, clad);
+  b.box(WX1 - 0.5, 2.8, 3, WX1, WH, 6, "concrete", wall, clad);
   // North wall with a roller door (x −30…−25).
-  b.box(-X, 0, -12.5, -30, WH, -12, "concrete", wall);
-  b.box(-25, 0, -12.5, WX1, WH, -12, "concrete", wall);
-  b.box(-30, 3.2, -12.5, -25, WH, -12, "concrete", wall);
+  b.box(-X, 0, -12.5, -30, WH, -12, "concrete", wall, clad);
+  b.box(-25, 0, -12.5, WX1, WH, -12, "concrete", wall, clad);
+  b.box(-30, 3.2, -12.5, -25, WH, -12, "concrete", wall, clad);
   // South wall with a door (x −24…−21).
-  b.box(-X, 0, 12, -24, WH, 12.5, "concrete", wall);
-  b.box(-21, 0, 12, WX1, WH, 12.5, "concrete", wall);
-  b.box(-24, 2.8, 12, -21, WH, 12.5, "concrete", wall);
+  b.box(-X, 0, 12, -24, WH, 12.5, "concrete", wall, clad);
+  b.box(-21, 0, 12, WX1, WH, 12.5, "concrete", wall, clad);
+  b.box(-24, 2.8, 12, -21, WH, 12.5, "concrete", wall, clad);
   // Roof.
-  b.box(-X, WH, -12.5, WX1, WH + 0.35, 12.5, "metal", 0x8a8f93);
+  b.box(-X, WH, -12.5, WX1, WH + 0.35, 12.5, "metal", 0x8a8f93, { look: "cladding" });
   // Racks inside (x −32…−23 at z −4.5 and 4.5), with a gap in the middle of each.
   b.box(-32.5, 0, -5.2, -28.6, 2.1, -4, "metal", PALETTE.yellow);
   b.box(-26.4, 0, -5.2, -22.5, 2.1, -4, "metal", PALETTE.yellow);
@@ -149,6 +173,7 @@ function saltyard(): MapDef {
   /* Center: the stack (containers around an open court). */
   b.container(-5, -6, "x", PALETTE.rust);
   b.container(-5, -6, "x", PALETTE.teal, 1);
+  b.container(-5, -6, "x", PALETTE.mustard, 2);
   b.container(5.5, -6, "x", PALETTE.blue);
   b.container(-5.5, 6, "x", PALETTE.mustard);
   b.container(5, 6, "x", PALETTE.bone);
@@ -175,6 +200,7 @@ function saltyard(): MapDef {
   b.container(16, -16.95, "z", PALETTE.blue);
   b.container(16, -10.85, "z", PALETTE.rust);
   b.container(16, -16.95, "z", PALETTE.bone, 1);
+  b.container(16, -16.95, "z", PALETTE.teal, 2);
   b.container(16, 7.05, "z", PALETTE.teal);
   b.container(16, 13.15, "z", PALETTE.mustard);
   // Row B (x = 23).
@@ -189,6 +215,7 @@ function saltyard(): MapDef {
   b.container(30, 2, "z", PALETTE.blue);
   b.container(30, 8.1, "z", PALETTE.olive);
   b.container(30, 8.1, "z", PALETTE.rust, 1);
+  b.container(30, 8.1, "z", PALETTE.blue, 2);
   // Cover in the lanes.
   b.crate(19.6, 1.5, 1.1);
   b.crate(26.6, -0.5, 1.2);
@@ -198,7 +225,7 @@ function saltyard(): MapDef {
 
   /* North yard: a parked truck and trailer, crates. */
   b.block(-4, -21.5, 2.5, 2.4, 2.9, "metal", 0xd2d6d8); // cab
-  b.box(-2.75, 0, -22.7, 5.6, 1.1, -20.3, "metal", 0x3a3d42); // chassis
+  b.box(-2.75, 0, -22.7, 5.6, 1.1, -20.3, "metal", 0x3a3d42, { look: "plate" }); // chassis
   b.box(-2.6, 1.1, -22.72, 5.6, 1.1 + CONTAINER_H, -20.28, "container", PALETTE.rust, { ribs: "x" });
   b.crate(-17.6, -24.4, 1.2);
   b.crate(-16.3, -24.8, 1);
@@ -208,7 +235,7 @@ function saltyard(): MapDef {
 
   /* South yard. */
   b.block(4, 21.5, 2.5, 2.4, 2.9, "metal", 0x3d6fb0); // cab
-  b.box(-5.6, 0, 20.3, 2.75, 1.1, 22.7, "metal", 0x3a3d42);
+  b.box(-5.6, 0, 20.3, 2.75, 1.1, 22.7, "metal", 0x3a3d42, { look: "plate" });
   b.box(-5.6, 1.1, 20.28, 2.6, 1.1 + CONTAINER_H, 22.72, "container", PALETTE.teal, { ribs: "x" });
   b.crate(16.7, 25.2, 1.2);
   b.crate(-12.4, 25.6, 1.2);
@@ -230,6 +257,22 @@ function saltyard(): MapDef {
   b.box(-11, 16.6, -19, -10, 17.4, 19, "metal", PALETTE.yellow, { ghost: true });
   b.box(10, 16.6, -19, 11, 17.4, 19, "metal", PALETTE.yellow, { ghost: true });
   b.box(-1.5, 14.6, -19, 1.5, 15.4, 19, "metal", 0x4b4f55, { ghost: true });
+
+  /* Set dressing that is also cover: drum clusters, pallet stacks, a burnt-out car, light poles. */
+  b.drums(-10.2, -9.6);
+  b.drums(20.8, 10.6);
+  b.drums(34.4, 4.8);
+  b.drums(-8.2, 24.6, 1.3, 1.3);
+  b.drums(-30.9, -1.4);
+  b.pallets(-19.6, -25.3, 5);
+  b.pallets(27.9, 12.6, 4, "z");
+  b.pallets(-30.6, -9.2, 3);
+  b.pallets(6.6, -25.2, 6);
+  b.box(-28.6, 0, 18.6, -24.4, 1.45, 20.5, "metal", 0x2b2622, { look: "wreck" });
+  b.pole(-35.25, 16.5);
+  b.pole(35.25, -18.5);
+  b.pole(12.5, 29.25);
+  b.pole(-14.5, -29.25);
 
   const spawns: Spawn[] = [
     // North yard (facing south, into the map).
@@ -296,7 +339,13 @@ function saltyard(): MapDef {
     spawns,
     perches,
     skyline,
-    sun: [0.45, 0.8, 0.35],
+    // Low late-afternoon sun (matches the HDRI's sun azimuth; a little higher so lanes aren't all shade).
+    sun: [0.714, 0.469, 0.519],
+    fires: [{ x: -26.5, y: 1.2, z: 19.55 }],
+    plumes: [
+      { x: -70, z: -95, h: 70 },
+      { x: 95, z: 60, h: 55 },
+    ],
     sky: { top: 0x6fa6d6, horizon: 0xe9dcc4, ground: 0xb9a88c, fog: 0xe6d9c2 },
   };
 }

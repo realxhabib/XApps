@@ -8,6 +8,14 @@
 export type Tier = "high" | "medium" | "low";
 export type QualityPref = "auto" | Tier;
 
+/**
+ * Which downloaded asset set a tier renders with (see `assets.ts`): `lo` is
+ * a handful of 512 px albedo textures on cheap Lambert materials and the
+ * blocky soldiers; `mid` and `hi` are full PBR sets (1K, and 2K for the
+ * containers and the asphalt), the HDRI sky and the animated soldiers.
+ */
+export type AssetLevel = "lo" | "mid" | "hi";
+
 export interface TierSettings {
   /** Max device pixel ratio (the engine may go lower on its own). */
   dpr: number;
@@ -16,6 +24,8 @@ export interface TierSettings {
   antialias: boolean;
   shadows: boolean;
   shadowMapSize: number;
+  /** Shadow filter radius in texels (hardware PCF, Vogel disk). */
+  shadowSoftness: number;
   /** Fog end = draw distance (m). */
   far: number;
   /** Bullet-hole decals kept. */
@@ -23,13 +33,26 @@ export interface TierSettings {
   /** Particle budget multiplier. */
   particles: number;
   skyline: boolean;
+  assets: AssetLevel;
+  /** Post-processing: ambient occlusion, bloom, SMAA, color grade, grain. */
+  post: boolean;
+  /** Muzzle flashes and explosions light the scene (point lights). */
+  flashLights: boolean;
+  /** Animated smoke plumes, the burning wreck, drifting dust. */
+  ambience: boolean;
 }
 
 export const TIERS: Record<Tier, TierSettings> = {
-  high: { dpr: 2, minDpr: 1, antialias: true, shadows: true, shadowMapSize: 2048, far: 170, decals: 96, particles: 1, skyline: true },
-  medium: { dpr: 1.5, minDpr: 0.85, antialias: true, shadows: true, shadowMapSize: 1024, far: 130, decals: 64, particles: 0.7, skyline: true },
-  low: { dpr: 1, minDpr: 0.6, antialias: false, shadows: false, shadowMapSize: 0, far: 90, decals: 32, particles: 0.45, skyline: false },
+  high: { dpr: 2, minDpr: 1, antialias: false, shadows: true, shadowMapSize: 4096, shadowSoftness: 2.2, far: 190, decals: 128, particles: 1, skyline: true, assets: "hi", post: true, flashLights: true, ambience: true },
+  medium: { dpr: 1.5, minDpr: 0.85, antialias: true, shadows: true, shadowMapSize: 2048, shadowSoftness: 1.6, far: 150, decals: 64, particles: 0.7, skyline: true, assets: "mid", post: false, flashLights: true, ambience: true },
+  low: { dpr: 1, minDpr: 0.6, antialias: false, shadows: false, shadowMapSize: 0, shadowSoftness: 0, far: 90, decals: 32, particles: 0.45, skyline: false, assets: "lo", post: false, flashLights: false, ambience: false },
 };
+
+/** Whether assets loaded for `have` can render a tier that wants `want` (higher sets cover lower PBR ones, never `lo`). */
+export function assetsCover(have: AssetLevel, want: AssetLevel): boolean {
+  if (want === "lo" || have === "lo") return have === want;
+  return have === "hi" || want === "mid";
+}
 
 let guessed: Tier | null = null;
 
@@ -63,6 +86,11 @@ function gpuRenderer(): string {
   const name = ext ? (gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) as string) : (gl.getParameter(gl.RENDERER) as string);
   gl.getExtension("WEBGL_lose_context")?.loseContext();
   return name ?? "";
+}
+
+/** The tier to render with for a preference (auto → the device guess). */
+export function tierFor(pref: QualityPref, auto: Tier = detectTier()): Tier {
+  return pref === "auto" ? auto : pref;
 }
 
 export function lower(tier: Tier): Tier {

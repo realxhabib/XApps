@@ -7,7 +7,7 @@
 
 import { motion, useReducedMotion } from "motion/react";
 
-export function FrontlineLoading({ label = "Deploying to Saltyard" }: { label?: string }) {
+export function FrontlineLoading({ label = "Deploying to Saltyard", progress }: { label?: string; progress?: number }) {
   const reduce = useReducedMotion();
   return (
     <div className="m-auto flex flex-col items-center gap-5 px-6 text-center">
@@ -31,6 +31,11 @@ export function FrontlineLoading({ label = "Deploying to Saltyard" }: { label?: 
           Front<span className="bg-[linear-gradient(100deg,var(--accent-from),var(--accent-to))] bg-clip-text pr-1 text-transparent">line</span>
         </p>
         <p className="mt-1 text-sm text-ink-300">{label}…</p>
+        {progress !== undefined && (
+          <div className="mx-auto mt-3 h-1 w-44 overflow-hidden rounded-full bg-white/10" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)} aria-label="Loading">
+            <div className="h-full rounded-full bg-[linear-gradient(90deg,var(--accent-from),var(--accent-to))] transition-[width] duration-200" style={{ width: `${Math.round(Math.max(0.04, progress) * 100)}%` }} />
+          </div>
+        )}
       </div>
     </div>
   );

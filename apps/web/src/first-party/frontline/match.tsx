@@ -15,13 +15,15 @@ import { usePlayers, usePresence, useRoomEvent, useXApps } from "@xapps/sdk/reac
 import { useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { reportStats, unlockAchievements } from "../shared/progress";
+import { assetProgress, loadAssets, onAssetProgress, type AssetPack } from "./assets";
 import { Engine } from "./engine";
 import { Game, type FinalRow, type SeatInfo } from "./game";
 import { Hud } from "./hud";
 import { isTouchDevice } from "./input";
 import { DEFAULT_MAP, MAPS } from "./map";
 import { earnedAchievements, finalStats } from "./progress";
-import { detectTier, lower, type Tier } from "./quality";
+import { FrontlineLoading } from "./loading";
+import { TIERS, assetsCover, detectTier, lower, type AssetLevel, type Tier } from "./quality";
 import { lineOfSight } from "./physics";
 import { formatClock, isWinner, parseDoc } from "./rules";
 import type { Settings } from "./settings";
@@ -148,6 +150,33 @@ export function MatchView({ settings, onSettings }: { settings: Settings; onSett
   const tierRef = useRef(tier);
   const hostRef = useRef<HTMLDivElement | null>(null);
 
+  // The tier's assets (textures, sky, soldier). A tier whose set the loaded one covers keeps it
+  // (high → medium); anything else loads its own and remounts the engine when ready.
+  const want: AssetLevel = TIERS[tier].assets;
+  const [pack, setPack] = useState<AssetPack | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [progress, setProgress] = useState(() => assetProgress(want));
+  const need = !pack || !assetsCover(pack.level, want);
+  useEffect(() => {
+    if (!need) return;
+    let live = true;
+    const off = onAssetProgress(() => setProgress(assetProgress(want)));
+    loadAssets(want)
+      .then((p) => {
+        if (live) setPack(p);
+      })
+      .catch((error: unknown) => {
+        console.warn(`[${TAG}] assets failed to load`, error);
+        // Fall back to the light set (or give up if that's the one failing).
+        if (live && want !== "lo") void loadAssets("lo").then((p) => live && setPack(p), () => live && setLoadFailed(true));
+        else if (live) setLoadFailed(true);
+      });
+    return () => {
+      live = false;
+      off();
+    };
+  }, [need, want]);
+
   // Each mount gets a fresh canvas: the engine frees its GL context on dispose, and a
   // context that was lost can't be reused (React remounts in dev, rematches in prod).
   const attach = useCallback(
@@ -157,12 +186,14 @@ export function MatchView({ settings, onSettings }: { settings: Settings; onSett
       const canvas = document.createElement("canvas");
       canvas.className = "absolute inset-0 block size-full";
       host.appendChild(canvas);
+      if (!pack) return;
       let e: Engine;
       try {
         e = new Engine({
           canvas,
           host,
           game,
+          pack,
           tier: tierRef.current,
           reduceMotion: reduce,
           touch,
@@ -187,7 +218,13 @@ export function MatchView({ settings, onSettings }: { settings: Settings; onSett
       ro.observe(host);
       e.start();
       setEngine(e);
-      if (process.env.NODE_ENV !== "production") (window as unknown as { __frontline?: unknown }).__frontline = { game, engine: e, aim: (seat?: number) => debugAim(game, seat) };
+      if (process.env.NODE_ENV !== "production") (window as unknown as { __frontline?: unknown }).__frontline = {
+          game,
+          engine: e,
+          aim: (seat?: number) => debugAim(game, seat),
+          // Throws your grenade on the next frame (as if G was released).
+          throwNade: () => !!game.me && game.me.nades > 0 && (game.me.nadeHeld = true),
+        };
       return () => {
         ro.disconnect();
         e.dispose();
@@ -195,7 +232,7 @@ export function MatchView({ settings, onSettings }: { settings: Settings; onSett
         setEngine(null);
       };
     },
-    [game, reduce, touch, xapps],
+    [game, reduce, touch, xapps, pack],
   );
 
   useEffect(() => {
@@ -260,7 +297,7 @@ export function MatchView({ settings, onSettings }: { settings: Settings; onSett
     return () => clearInterval(id);
   }, [game, xapps, isSpectator]);
 
-  if (failed) {
+  if (failed || loadFailed) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-center text-sm text-ink-300">
         This device couldn&apos;t start 3D graphics (WebGL). Try another browser.
@@ -270,8 +307,13 @@ export function MatchView({ settings, onSettings }: { settings: Settings; onSett
 
   return (
     <div className="absolute inset-0 overflow-hidden bg-ink-950">
-      <div ref={attach} className="absolute inset-0" />
+      {pack && <div key={pack.level} ref={attach} className="absolute inset-0" />}
       {engine && <Hud engine={engine} game={game} touch={touch} settings={settings} onSettings={onSettings} tier={tier} />}
+      {(!pack || !engine) && (
+        <div className="absolute inset-0 flex">
+          <FrontlineLoading progress={pack ? 1 : progress} />
+        </div>
+      )}
     </div>
   );
 }

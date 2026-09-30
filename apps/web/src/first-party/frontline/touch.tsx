@@ -9,7 +9,7 @@
  */
 
 import { useGestureLock } from "@xapps/sdk/react";
-import { ArrowUpFromLine, ChevronsDown, Crosshair, RotateCw, Scan } from "lucide-react";
+import { ArrowUpFromLine, Bomb, ChevronsDown, Crosshair, RotateCw, Scan } from "lucide-react";
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import type { Engine } from "./engine";
@@ -185,7 +185,14 @@ export function TouchControls({ engine, hud }: { engine: Engine; hud: HudState }
         >
           <Scan className="size-6" />
         </Btn>
-        <div />
+        <Btn
+          label="Grenade (hold to aim, release to throw)"
+          size="sm"
+          className={me.nades > 0 ? undefined : "opacity-35"}
+          {...press((down) => input.setTouch({ grenade: down && me.nades > 0 }), true)}
+        >
+          <Bomb className="size-5" />
+        </Btn>
         <div />
         <Btn label="Fire" size="lg" {...press((down) => input.setTouch({ fire: down }), true)} className="bg-[color-mix(in_oklab,var(--accent-to)_40%,transparent)]">
           <Crosshair className="size-9" />

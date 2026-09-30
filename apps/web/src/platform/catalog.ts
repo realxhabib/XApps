@@ -612,9 +612,9 @@ export const OFFICIAL_APPS: AppManifest[] = [
     scoring: "high",
     durationLabel: "~7 min",
     howTo: [
-      "Pick a primary weapon and a perk, then deploy. Everyone carries a Warden P9 sidearm.",
-      "Desktop: click to lock the mouse. WASD moves, Shift sprints, C or Ctrl crouches, Space jumps, right mouse aims, R reloads, 1/2 or the wheel swaps. Esc opens settings.",
-      "Phone: the left stick moves (push to the edge to sprint), drag on the right to look, and use the fire, aim, reload, jump and crouch buttons.",
+      "Pick a primary weapon and a perk, then deploy. Everyone carries a Warden P9 sidearm and one frag grenade per life.",
+      "Desktop: click to lock the mouse. WASD moves, Shift sprints, C or Ctrl crouches, Space jumps, right mouse aims, R reloads, 1/2 or the wheel swaps, hold G to aim a frag grenade and release to throw it. Esc opens settings.",
+      "Phone: the left stick moves (push to the edge to sprint), drag on the right to look, and use the fire, aim, reload, jump, crouch and grenade buttons (hold the grenade to see its arc, let go to throw).",
       "Headshots hurt more, bullets lose power with distance, and you heal when you stay out of fire. Three kills without dying calls in a radar sweep.",
       "First to 20 kills wins (team play: the team total), or the most kills when the 7-minute clock runs out. Your score is your kills.",
     ],
