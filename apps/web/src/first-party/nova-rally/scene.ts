@@ -267,7 +267,8 @@ class Trail {
   }
 
   update(head: Vector3, up: Vector3, right: Vector3, width: number, strength: number, color: Color): void {
-    if (!this.primed) {
+    // Teleports (respawns, first frame) restart the ribbon instead of stretching it across the map.
+    if (!this.primed || this.pts[0]!.distanceToSquared(head) > 400) {
       for (const p of this.pts) p.copy(head);
       this.primed = true;
     }
@@ -467,7 +468,7 @@ export class RaceScene {
     this.empRing = new Mesh(ringGeo, ringMat);
     this.scene.add(this.empRing);
     const domeGeo = new SphereGeometry(1, 32, 16);
-    const domeMat = new MeshBasicMaterial({ color: new Color("#9a6bff").multiplyScalar(1.5), transparent: true, opacity: 0, blending: AdditiveBlending, depthWrite: false, side: DoubleSide, toneMapped: false, wireframe: true });
+    const domeMat = new MeshBasicMaterial({ color: new Color("#9a6bff").multiplyScalar(1.2), transparent: true, opacity: 0, blending: AdditiveBlending, depthWrite: false, side: DoubleSide, toneMapped: false });
     this.empDome = new Mesh(domeGeo, domeMat);
     this.empDome.visible = false;
     this.scene.add(this.empDome);
@@ -788,7 +789,7 @@ export class RaceScene {
       this.empDome.visible = true;
       this.empDome.position.copy(this.empRing.position);
       this.empDome.scale.setScalar(3 + k * 70);
-      (this.empDome.material as MeshBasicMaterial).opacity = Math.max(0, 0.35 * (1 - k));
+      (this.empDome.material as MeshBasicMaterial).opacity = Math.max(0, 0.18 * (1 - k) * (1 - k));
     } else {
       (this.empRing.material as MeshBasicMaterial).opacity = 0;
       this.empDome.visible = false;

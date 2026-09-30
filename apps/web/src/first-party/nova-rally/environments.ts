@@ -1557,9 +1557,9 @@ ${
   float fr = pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 2.2);
   float thick = fbm(vRockP * 2.1 + 4.0);
   totalEmissiveRadiance += uIce * (fr * 1.1 + (1.0 - thick) * 0.18);
-  vec3 cell = floor(vRockP * 38.0);
+  vec3 cell = floor(vRockP * 24.0);
   float spk = hash13(cell + floor(uTime * 1.5 + hash13(cell + 3.1) * 7.0));
-  totalEmissiveRadiance += vec3(0.9, 0.97, 1.0) * step(0.985, spk) * (2.0 + 6.0 * fr);
+  totalEmissiveRadiance += vec3(0.9, 0.97, 1.0) * step(0.994, spk) * (2.0 + 5.0 * fr);
 }`
     : ""
 }`,
@@ -1991,7 +1991,8 @@ float dC = triDetail(uScales.x * 0.23, tbw);
 float dF = 0.5;
 if (nearK > 0.0) dF = triDetail(uScales.x * 9.7, tbw) * 0.6 + triDetail(uScales.x * 4.1, tbw) * 0.4;
 float detailH = dA * 0.6 + dC * 0.3 + (dF - 0.5) * 0.45 * nearK;
-diffuseColor.rgb *= (0.64 + 0.7 * (dA * 0.7 + dC * 0.3)) * (0.82 + 0.36 * dB) * (1.0 + (dF - 0.5) * 0.55 * nearK);`,
+float farK = smoothstep(60.0, 260.0, viewD);
+diffuseColor.rgb *= mix(0.64 + 0.7 * (dA * 0.7 + dC * 0.3), 0.64 + 0.7 * (0.5 * 0.7 + dC * 0.3), farK * 0.8) * (0.82 + 0.36 * dB) * (1.0 + (dF - 0.5) * 0.55 * nearK);`,
       )
       .replace(
         "#include <normal_fragment_maps>",
@@ -1999,7 +2000,7 @@ diffuseColor.rgb *= (0.64 + 0.7 * (dA * 0.7 + dC * 0.3)) * (0.82 + 0.36 * dB) * 
 {
   vec3 dpx = dFdx(-vViewPosition);
   vec3 dpy = dFdy(-vViewPosition);
-  float bk = uBump * mix(0.4, 1.0, smoothstep(3.0, 26.0, viewD)) * (1.0 - 0.5 * smoothstep(150.0, 500.0, viewD));
+  float bk = uBump * mix(0.4, 1.0, smoothstep(3.0, 26.0, viewD)) * (1.0 - 0.8 * smoothstep(30.0, 180.0, viewD));
   float dhx = dFdx(detailH) * bk;
   float dhy = dFdy(detailH) * bk;
   vec3 r1 = cross(dpy, normal);
@@ -2750,7 +2751,7 @@ function buildSaturn(ctx: Ctx): ThemeLook {
     ],
     0.06,
   );
-  const V = azEl(-45, 17);
+  const V = azEl(-72, 15);
   const side = new Vector3().crossVectors(V, new Vector3(0, 1, 0)).normalize();
   const upP = new Vector3().crossVectors(side, V).normalize();
   const roll = -0.45;
@@ -2974,7 +2975,7 @@ void main() {
   float scan = 0.82 + 0.18 * sin(uv.y * 380.0 - uTime * 14.0);
   float band = 0.6 + 0.4 * smoothstep(0.0, 0.12, fract(uv.y * 1.5 - uTime * 0.35 + uSeed));
   float flick = 0.88 + 0.12 * sin(uTime * 37.0 + uSeed * 10.0) * sin(uTime * 13.0);
-  vec3 col = t.rgb * scan * band * flick * 2.2 * smoothstep(6.0, 16.0, vViewD);
+  vec3 col = t.rgb * scan * band * flick * 2.2 * smoothstep(8.0, 26.0, vViewD);
   gl_FragColor = vec4(col, 1.0);
   ${FRAG_TAIL}
 }
@@ -3064,9 +3065,11 @@ function buildNebula(ctx: Ctx): ThemeLook {
   const p = new Vector3();
   const poleMat = nearFade(new MeshStandardMaterial({ color: 0x8890b8, metalness: 0.75, roughness: 0.3, emissive: 0x2a1650, emissiveIntensity: 0.6 }), 6, 14);
   const boards = Math.min(12, Math.floor(o.count / 140));
+  const startGap = Math.min(90, o.count * 0.06);
   let kind = 0;
   for (let b = 0; b < boards; b++) {
     const i = Math.floor(((b + 0.5) / boards) * o.count);
+    if (i < startGap || i > o.count - startGap) continue;
     const j = (i + 30) % o.count;
     p.fromArray(o.pos, i * 3);
     up.fromArray(o.up, i * 3);
@@ -3482,12 +3485,12 @@ function buildSun(ctx: Ctx): ThemeLook {
   for (let k = 0; k < loops; k++) {
     // Mostly on the upper limb (theta ~ pi/2 faces the zenith side).
     const th = Math.PI / 2 + (r() - 0.5) * 2.4;
-    const span = 0.12 + r() * 0.2;
+    const span = 0.05 + r() * 0.1;
     const a = limb(th - span / 2);
     const b = limb(th + span / 2);
     const mid = a.clone().add(b).multiplyScalar(0.5);
     const n = mid.clone().sub(sc).normalize();
-    const h = 14 + r() * 30;
+    const h = 5 + r() * 14;
     const push = (q: Vector3) => q.addScaledVector(q.clone().sub(sc).normalize(), -6);
     const curve = new CubicBezierCurve3(
       push(a.clone()),
@@ -3496,7 +3499,7 @@ function buildSun(ctx: Ctx): ThemeLook {
       push(b.clone()),
     );
     for (let strand = 0; strand < 2; strand++) {
-      const geo = new TubeGeometry(curve, 64, 0.9 + r() * 1.1 - strand * 0.4, 8, false);
+      const geo = new TubeGeometry(curve, 64, 0.35 + r() * 0.45 - strand * 0.15, 8, false);
       const m = new Mesh(
         geo,
         new ShaderMaterial({

@@ -603,6 +603,8 @@ export const OFFICIAL_APPS: AppManifest[] = [
     icon: "🚀",
     accent: ["#ff8a4c", "#8f7bff"],
     url: "/embed/nova-rally",
+    coverImage: "/showcase/nova-rally-cover.webp",
+    iconImage: "/showcase/nova-rally-icon.webp",
     modes: ["live", "async", "practice"],
     players: { min: 2, max: 8 },
     teams: 0,

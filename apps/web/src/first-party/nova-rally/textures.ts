@@ -53,7 +53,7 @@ export interface RoadLook {
 
 export const ROAD_LOOKS: Record<ThemeId, RoadLook> = {
   mars: { style: "plates", base: "#5a3226", panel: "#6e3c2b", seam: "#2c1712", line: "#ffd166", glow: "#ff8a4c", grit: 0.3, roughness: 0.7, metalness: 0.45, emissive: 0.9, curb: ["#e8363f", "#f4efe6"] },
-  belt: { style: "grating", base: "#161a28", panel: "#20263a", seam: "#0a0c14", line: "#9fe8ff", glow: "#46e6ff", grit: 0.1, roughness: 0.45, metalness: 0.8, emissive: 1.2, curb: ["#8f7bff", "#e6e2ff"] },
+  belt: { style: "grating", base: "#3a4260", panel: "#4a5476", seam: "#161a28", line: "#9fe8ff", glow: "#46e6ff", grit: 0.1, roughness: 0.45, metalness: 0.8, emissive: 1.2, curb: ["#8f7bff", "#e6e2ff"] },
   saturn: { style: "ice", base: "#b9cde0", panel: "#d6e4f2", seam: "#7f97b0", line: "#ffcf6a", glow: "#ffd98a", grit: 0.06, roughness: 0.2, metalness: 0.1, emissive: 0.7, curb: ["#ffd98a", "#ffffff"] },
   nebula: { style: "glass", base: "#150d26", panel: "#1e1236", seam: "#090512", line: "#ffe9ff", glow: "#ff4fd8", grit: 0.04, roughness: 0.12, metalness: 0.6, emissive: 1.4, curb: ["#ff4fd8", "#36f3ff"] },
   luna: { style: "slabs", base: "#4a4e57", panel: "#585d67", seam: "#2a2d33", line: "#9fd0ff", glow: "#5ab0ff", grit: 0.28, roughness: 0.85, metalness: 0.15, emissive: 0.8, curb: ["#3f86ff", "#f4f7ff"] },

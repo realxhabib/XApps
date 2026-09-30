@@ -13,13 +13,16 @@ import type { AppManifest } from "@/platform/types";
 export function AppArt({ app, className }: { app: AppManifest; className?: string }) {
   const cover = appImageSrc(app.coverImage);
   const [failed, setFailed] = useState<string | null>(null);
-  if (cover && failed !== cover) return <CoverArt src={cover} onError={() => setFailed(cover)} className={className} />;
+  if (cover && failed !== cover) {
+    return <CoverArt src={cover} onError={() => setFailed(cover)} className={className} rush={app.slug === "nova-rally"} />;
+  }
   return <DrawnArt app={app} className={className} />;
 }
 
 /** An uploaded cover: fills the art area with a slow drift, fading out at the bottom into the card. */
-function CoverArt({ src, onError, className }: { src: string; onError: () => void; className?: string }) {
+function CoverArt({ src, onError, className, rush = false }: { src: string; onError: () => void; className?: string; rush?: boolean }) {
   const reduced = useReducedMotion();
+  if (rush) return <RushCover src={src} onError={onError} className={className} reduced={!!reduced} />;
   return (
     <div className={cn("relative overflow-hidden", className)} aria-hidden>
       <motion.img
@@ -32,6 +35,46 @@ function CoverArt({ src, onError, className }: { src: string; onError: () => voi
         animate={reduced ? { scale: 1 } : { scale: [1.01, 1.05, 1.01] }}
         transition={reduced ? { duration: 0 } : { duration: 18, repeat: Infinity, ease: "easeInOut" }}
       />
+      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-ink-850/90" />
+    </div>
+  );
+}
+
+/** Racing covers: a steady push toward the vanishing point with light streaks rushing past. */
+const STREAKS = [
+  { y: 18, delay: 0, dur: 1.1, w: 34, from: "#ff9ef0" },
+  { y: 32, delay: 0.5, dur: 0.9, w: 26, from: "#9ef4ff" },
+  { y: 64, delay: 0.25, dur: 1.2, w: 40, from: "#ffffff" },
+  { y: 78, delay: 0.8, dur: 1.0, w: 30, from: "#ffd166" },
+  { y: 48, delay: 1.1, dur: 1.3, w: 22, from: "#b18cff" },
+] as const;
+
+function RushCover({ src, onError, className, reduced }: { src: string; onError: () => void; className?: string; reduced: boolean }) {
+  return (
+    <div className={cn("relative overflow-hidden", className)} aria-hidden>
+      <motion.img
+        src={src}
+        alt=""
+        draggable={false}
+        onError={onError}
+        className="absolute inset-0 size-full object-cover"
+        style={{ transformOrigin: "46% 52%" }}
+        initial={{ scale: 1.02 }}
+        animate={reduced ? { scale: 1.02 } : { scale: [1.02, 1.12], x: ["0%", "-1.5%"] }}
+        transition={reduced ? { duration: 0 } : { duration: 7, repeat: Infinity, repeatType: "mirror", ease: "easeInOut" }}
+      />
+      {reduced
+        ? null
+        : STREAKS.map((s, i) => (
+            <motion.span
+              key={i}
+              className="absolute h-[2px] rounded-full mix-blend-screen"
+              style={{ top: `${s.y}%`, width: `${s.w}%`, background: `linear-gradient(${i % 2 ? 270 : 90}deg, transparent, ${s.from})` }}
+              initial={{ left: "45%", opacity: 0 }}
+              animate={{ left: i % 2 ? ["45%", "-45%"] : ["45%", "110%"], opacity: [0, 0.9, 0] }}
+              transition={{ duration: s.dur, delay: s.delay, repeat: Infinity, repeatDelay: 0.6, ease: "easeIn" }}
+            />
+          ))}
       <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-ink-850/90" />
     </div>
   );
