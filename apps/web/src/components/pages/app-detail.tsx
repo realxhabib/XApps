@@ -29,6 +29,7 @@ import { MODE_LABEL } from "@/platform/match-utils";
 import { useActivity, useApp, useLeaderboard, usePractice, useQuickMatch } from "@/platform/queries";
 import { getRetiredApp } from "@/platform/retired-apps";
 import { CATEGORIES } from "@/platform/types";
+import { goToHost } from "@/lib/host-nav";
 
 export function AppDetail({ slug }: { slug: string }) {
   const router = useRouter();
@@ -72,7 +73,7 @@ export function AppDetail({ slug }: { slug: string }) {
         kind === "quick"
           ? await quick.mutateAsync(app.slug)
           : await practice.mutateAsync(seatChoices.length > 1 ? { appSlug: app.slug, players: seats } : app.slug);
-      router.push(`/play/${match.id}`);
+      goToHost(router, `/play/${match.id}`);
     } catch (error) {
       toast(error instanceof Error ? error.message : "Couldn't start a match", { tone: "danger" });
     }

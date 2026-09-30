@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Bricolage_Grotesque, Geist, Geist_Mono } from "next/font/google";
+import { HostLinkGuard } from "@/components/chrome/host-link-guard";
 import { MotionProvider } from "@/components/chrome/motion-provider";
 import "./globals.css";
 
@@ -48,6 +49,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className={`${display.variable} ${sans.variable} ${mono.variable} antialiased`}>
       <body className="min-h-dvh">
+        <HostLinkGuard />
         <MotionProvider>{children}</MotionProvider>
       </body>
     </html>

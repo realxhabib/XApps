@@ -16,6 +16,7 @@ import { useApps, useMatchAction, useMyMatches } from "@/platform/queries";
 import type { Match } from "@/platform/types";
 import { DeveloperNotices } from "./developer-notices";
 import { SignInPrompt } from "./sign-in-prompt";
+import { goToHost } from "@/lib/host-nav";
 
 type Tab = "move" | "waiting" | "history";
 
@@ -56,7 +57,7 @@ export function Challenges() {
   const respond = async (matchId: string, kind: "join" | "decline") => {
     try {
       await action.mutateAsync({ action: kind, matchId });
-      if (kind === "join") router.push(`/play/${matchId}`);
+      if (kind === "join") goToHost(router, `/play/${matchId}`);
       else toast("Challenge declined");
     } catch (error) {
       toast(error instanceof Error ? error.message : "Something went wrong", { tone: "danger" });

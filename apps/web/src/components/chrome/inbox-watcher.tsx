@@ -11,6 +11,7 @@ import { useViewer } from "@/platform/client";
 import { useApps, useMyMatches } from "@/platform/queries";
 import type { Match } from "@/platform/types";
 import { toast } from "./toasts";
+import { goToHost } from "@/lib/host-nav";
 
 const signature = (m: Match) => `${m.status}|${m.turnUserId ?? ""}|${m.players.map((p) => `${p.userId}:${p.state}`).join(",")}`;
 const statusOf = (sig: string | undefined) => sig?.split("|")[0];
@@ -45,7 +46,7 @@ export function InboxWatcher() {
       const me = match.players.find((p) => p.userId === viewerId);
       const opponent = seatedPlayers(match).find((p) => p.userId !== viewerId);
       const icon = app ? <AppGlyph app={app} size={28} /> : undefined;
-      const open = { label: "Open", onClick: () => router.push(`/play/${match.id}`) };
+      const open = { label: "Open", onClick: () => goToHost(router, `/play/${match.id}`) };
 
       const group = match.maxPlayers > 2 || match.teams >= 2 || seatedPlayers(match).length > 2;
       const creator = match.players.find((p) => p.userId === match.createdBy);
@@ -57,7 +58,7 @@ export function InboxWatcher() {
         toast(group ? `@${host?.profile.handle ?? "someone"} saved you a seat` : `@${host?.profile.handle ?? "someone"} challenged you`, {
           description: `${app?.name ?? "A match"} · ${group ? `${match.maxPlayers} players · ` : ""}${match.mode === "live" ? "live" : "play anytime"}`,
           icon,
-          action: { label: "View", onClick: () => router.push(`/play/${match.id}`) },
+          action: { label: "View", onClick: () => goToHost(router, `/play/${match.id}`) },
           duration: 9000,
         });
       } else if (before && turnOf(before) !== viewerId && isYourTurn(match, viewerId)) {
@@ -65,7 +66,7 @@ export function InboxWatcher() {
         toast(`Your turn in ${app?.name ?? "your match"}`, {
           description: match.turnDeadline ? `You have ${formatTimeLeft(Date.parse(match.turnDeadline) - Date.now())} to move.` : undefined,
           icon,
-          action: { label: "Play", onClick: () => router.push(`/play/${match.id}`) },
+          action: { label: "Play", onClick: () => goToHost(router, `/play/${match.id}`) },
           tone: "success",
           duration: 9000,
         });
@@ -97,7 +98,7 @@ export function InboxWatcher() {
           description: group ? `${app?.name ?? "Match"} · ${seatedPlayers(match).length} players` : `${app?.name ?? "Match"} vs @${opponent?.profile.handle ?? "?"}`,
           icon,
           tone: won || outcome.rank === 1 ? "success" : "info",
-          action: { label: "See", onClick: () => router.push(`/play/${match.id}`) },
+          action: { label: "See", onClick: () => goToHost(router, `/play/${match.id}`) },
         });
       } else if (was !== "voting" && match.status === "voting") {
         toast("Entries are in — the crowd is voting", { description: app?.name, icon });

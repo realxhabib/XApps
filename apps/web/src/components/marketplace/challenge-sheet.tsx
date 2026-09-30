@@ -19,6 +19,7 @@ import { useViewer } from "@/platform/client";
 import { useCreateChallenge, useSearchProfiles } from "@/platform/queries";
 import { AppSetupFrame, type AppSetupResult } from "./app-setup-frame";
 import type { AppManifest, Profile } from "@/platform/types";
+import { goToHost } from "@/lib/host-nav";
 
 /** Table sizes the app allows (multiples of the team count in team play). */
 function tableRange(app: AppManifest): { min: number; max: number; step: number } {
@@ -149,7 +150,7 @@ export function ChallengeSheet({
         },
       );
       onClose();
-      router.push(`/play/${match.id}`);
+      goToHost(router, `/play/${match.id}`);
     } catch (error) {
       toast(error instanceof Error ? error.message : "Couldn't send the challenge", { tone: "danger" });
     }

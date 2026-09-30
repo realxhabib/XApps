@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { useBackend } from "@/platform/client";
 import { useAppTesters, useCreateChallenge } from "@/platform/queries";
 import type { AppVersion, Profile } from "@/platform/types";
+import { goToHost } from "@/lib/host-nav";
 
 /** Practice a (possibly unpublished) version against bots, then open the play room. */
 export function usePlayTestBuild(slug: string) {
@@ -30,7 +31,7 @@ export function usePlayTestBuild(slug: string) {
       queryClient.setQueryData(["match", match.id], match);
       void queryClient.invalidateQueries({ queryKey: ["my-matches"] });
       play("whoosh");
-      router.push(`/play/${match.id}`);
+      goToHost(router, `/play/${match.id}`);
     },
     onError: (error) => toast(error instanceof Error ? error.message : "Couldn't start the test build", { tone: "danger" }),
   });
@@ -88,7 +89,7 @@ function ChallengeBody({ version, onDone }: { version: AppVersion; onDone: () =>
       play("whoosh");
       toast(picked.length ? `Test build sent to ${picked.map((p) => `@${p.handle}`).join(", ")}` : "Open test challenge created", { tone: "success" });
       onDone();
-      router.push(`/play/${match.id}`);
+      goToHost(router, `/play/${match.id}`);
     } catch (error) {
       toast(error instanceof Error ? error.message : "Couldn't create the challenge", { tone: "danger" });
     }
