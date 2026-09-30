@@ -37,7 +37,7 @@ export function PlaceBadge({ place, big = false }: { place: number; big?: boolea
     <span
       className="font-display inline-flex items-baseline font-black italic leading-none"
       style={{
-        fontSize: big ? "clamp(56px, 13vw, 104px)" : 28,
+        fontSize: big ? "clamp(52px, 11vw, 96px)" : 28,
         backgroundImage: `linear-gradient(180deg, ${a} 10%, ${b} 90%)`,
         WebkitBackgroundClip: "text",
         backgroundClip: "text",
@@ -177,12 +177,26 @@ export function RaceHud({ hud, minimap, onExit, onRetry }: { hud: HudSnapshot; m
 
       {showRace ? (
         <div className="absolute right-3 top-3 flex flex-col items-end gap-1.5">
-          <Pill className="text-[18px] leading-none">
-            <span className="text-[11px] not-italic opacity-80">LAP </span>
-            {hud.lap}
-            <span className="text-[13px] opacity-70">/{hud.laps}</span>
-          </Pill>
-          <Pill className="font-mono text-[14px] not-italic tabular-nums leading-none">{formatTime(hud.raceTime)}</Pill>
+          {hud.battle ? (
+            <>
+              <Pill className="flex items-center gap-1 text-[15px] leading-none">
+                <span className="text-[11px] not-italic opacity-80">ORBS</span>
+                {[0, 1, 2].map((k) => (
+                  <span key={k} className="size-3.5 rounded-full border-2 border-white" style={{ background: k < hud.battle!.orbs ? "#7dffb0" : "transparent", boxShadow: k < hud.battle!.orbs ? "0 0 8px #7dffb0" : "none" }} />
+                ))}
+              </Pill>
+              <Pill className={`font-mono text-[14px] not-italic tabular-nums leading-none ${hud.battle.left < 20 ? "text-red-300" : ""}`}>{formatTime(hud.battle.left).slice(0, -3)}</Pill>
+            </>
+          ) : (
+            <>
+              <Pill className="text-[18px] leading-none">
+                <span className="text-[11px] not-italic opacity-80">LAP </span>
+                {hud.lap}
+                <span className="text-[13px] opacity-70">/{hud.laps}</span>
+              </Pill>
+              <Pill className="font-mono text-[14px] not-italic tabular-nums leading-none">{formatTime(hud.raceTime)}</Pill>
+            </>
+          )}
           {!hud.spectator ? (
             <Pill className="flex items-center gap-1 text-[15px] leading-none">
               <CoinIcon className="size-5" />
@@ -202,13 +216,21 @@ export function RaceHud({ hud, minimap, onExit, onRetry }: { hud: HudSnapshot; m
       {showRace ? <div className="absolute bottom-3 left-3">{minimap}</div> : null}
 
       {showRace && !hud.spectator ? (
-        <div className="absolute bottom-2 right-4 flex items-end gap-2 max-sm:bottom-[168px]">
-          <AnimatePresence mode="popLayout">
-            <motion.div key={hud.place} initial={{ scale: 1.6, opacity: 0, rotate: -8 }} animate={{ scale: 1, opacity: 1, rotate: 0 }} exit={{ scale: 0.6, opacity: 0 }} transition={spring.bouncy}>
-              <PlaceBadge place={hud.place} big />
-            </motion.div>
-          </AnimatePresence>
+        <div className="absolute bottom-2 right-3 pr-2 max-sm:bottom-[168px]">
+          <motion.div key={hud.place} initial={{ scale: 1.5, rotate: -8 }} animate={{ scale: 1, rotate: 0 }} transition={spring.bouncy} style={{ transformOrigin: "100% 100%" }}>
+            <PlaceBadge place={hud.place} big />
+          </motion.div>
         </div>
+      ) : null}
+      {hud.incoming && showRace ? (
+        <motion.div
+          className="absolute left-1/2 top-[16%] -translate-x-1/2 rounded-2xl border-2 border-white px-4 py-1.5 text-lg font-black italic text-white"
+          style={{ background: hud.incoming === "singularity" ? "rgba(90,40,200,0.9)" : "rgba(220,30,60,0.9)" }}
+          animate={{ scale: [1, 1.08, 1], opacity: [1, 0.6, 1] }}
+          transition={{ duration: 0.35, repeat: Infinity }}
+        >
+          {hud.incoming === "singularity" ? "🕳️ SINGULARITY INCOMING" : "⚠ MISSILE LOCK"}
+        </motion.div>
       ) : null}
 
       <Countdown value={hud.countdown} />
@@ -228,10 +250,11 @@ export function RaceHud({ hud, minimap, onExit, onRetry }: { hud: HudSnapshot; m
           hud.trial ? <TrialResults key="trial" hud={hud} onExit={onExit} onRetry={onRetry} /> : <Results key={`r${hud.raceIndex}`} hud={hud} />
         ) : null}
       </AnimatePresence>
-      {showRace && (hud.knockout || hud.mirror || hud.trial) ? (
+      {showRace && (hud.knockout || hud.mirror || hud.trial || hud.battle) ? (
         <div className="absolute left-1/2 top-3 flex -translate-x-1/2 gap-1.5">
           {hud.trial ? <Pill className="text-[11px] not-italic">⏱ TIME TRIAL{hud.trial.best ? ` · best ${formatTime(hud.trial.best)}` : ""}</Pill> : null}
           {hud.knockout ? <Pill className="text-[11px] not-italic">💥 KNOCKOUT</Pill> : null}
+          {hud.battle ? <Pill className="text-[11px] not-italic">⚔️ BATTLE</Pill> : null}
           {hud.mirror ? <Pill className="text-[11px] not-italic">🪞 MIRROR</Pill> : null}
         </div>
       ) : null}
@@ -393,8 +416,8 @@ function Podium({ hud }: { hud: HudSnapshot }) {
   const rows = hud.standings;
   const me = rows.find((r) => r.isMe);
   return (
-    <motion.div className="pointer-events-auto absolute inset-0 flex flex-col items-center justify-between p-4" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-      <motion.div className="flex flex-col items-center gap-1 text-center" initial={{ y: -30, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ ...spring.bouncy, delay: 0.3 }}>
+    <motion.div className="pointer-events-auto absolute inset-0 flex flex-col items-center justify-between p-4 pt-3 md:items-end" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+      <motion.div className="flex w-full flex-col items-center gap-1 text-center" initial={{ y: -30, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ ...spring.bouncy, delay: 0.3 }}>
         <div className="rounded-full bg-black/45 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.25em] text-white/85">{hud.cupName} · final standings</div>
         {rows[0] ? (
           <div
@@ -412,8 +435,8 @@ function Podium({ hud }: { hud: HudSnapshot }) {
           </div>
         ) : null}
       </motion.div>
-      <div className="flex w-full max-w-md flex-col gap-1.5">
-        <ol className="grid grid-cols-2 gap-1">
+      <div className="flex w-full max-w-md flex-col gap-1.5 md:max-w-[250px]">
+        <ol className="grid grid-cols-2 gap-1 md:grid-cols-1">
           {rows.map((row, i) => (
             <motion.li
               key={row.idx}

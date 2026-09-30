@@ -27,6 +27,20 @@ import {
 import type { ShipStats } from "./types";
 
 export const HZ = 60;
+/** Height of a ramp's lip. */
+export const RAMP_HEIGHT = 1.4;
+
+/** Surface height of any ramp under (s, d): ships drive up the slope before launching. */
+export function rampHeight(track: CompiledTrack, s: number, d: number): number {
+  for (const ramp of track.ramps) {
+    const into = deltaS(ramp.s - RAMP_LENGTH, s, track.length);
+    if (into >= 0 && into <= RAMP_LENGTH) {
+      const i = Math.floor(wrapS(s, track.length) / track.step) % track.count;
+      if (Math.abs(d) <= track.wall[i]! + 0.5) return (into / RAMP_LENGTH) * RAMP_HEIGHT;
+    }
+  }
+  return 0;
+}
 export const DT = 1 / HZ;
 export const SHIP_RADIUS = 1.7;
 const GRAVITY = 44;
@@ -369,7 +383,7 @@ export class Ship {
         }
       }
     } else {
-      this.h = 0;
+      this.h = rampHeight(track, this.s, this.d);
       if (!hasFloor(track, this.s)) {
         this.airborne = true;
         this.vh = -2;

@@ -909,6 +909,27 @@ export class RaceAudio {
     }
   }
 
+  /** A short pilot voice bark ("Wahoo!") in that pilot's pitch. Never interrupts the announcer. */
+  bark(text: string, pitch: number, rate = 1.15): void {
+    if (typeof window === "undefined" || !this.announcerOn) return;
+    if (!(this.off ? this.enabled : isSoundEnabled())) return;
+    const synth = window.speechSynthesis as SpeechSynthesis | undefined;
+    if (!synth || typeof SpeechSynthesisUtterance === "undefined" || synth.speaking) return;
+    try {
+      this.hookVoices(synth);
+      if (!this.speechVoice) this.speechVoice = this.pickVoice(synth);
+      const u = new SpeechSynthesisUtterance(text);
+      if (this.speechVoice) u.voice = this.speechVoice;
+      u.lang = this.speechVoice?.lang ?? "en-US";
+      u.rate = clamp(rate, 0.5, 2);
+      u.pitch = clamp(pitch, 0, 2);
+      u.volume = 0.8;
+      synth.speak(u);
+    } catch {
+      // Speech is a nicety.
+    }
+  }
+
   private hookVoices(synth: SpeechSynthesis): void {
     if (this.voicesListener) return;
     this.voicesListener = () => {

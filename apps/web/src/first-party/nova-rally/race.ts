@@ -38,6 +38,8 @@ import {
 } from "./items";
 import {
   FIELD_SIZE,
+  BATTLE_ORBS,
+  BATTLE_SECONDS,
   classScale,
   earnedAchievements,
   knockoutCount,
@@ -128,8 +130,11 @@ export class Racer {
   startDelay = 0;
   rocketStart = false;
   gone = false;
-  /** Knocked out (knockout mode). */
+  /** Knocked out (knockout mode, or out of orbs in battle). */
   out = false;
+  /** Battle shield orbs left. */
+  orbs = 0;
+  hitsLanded = 0;
 
   constructor(opts: {
     id: string;
@@ -251,6 +256,9 @@ export interface HudSnapshot {
   knockout: boolean;
   mirror: boolean;
   out: boolean;
+  /** A seeker or singularity is closing in on you. */
+  incoming: "seeker" | "singularity" | null;
+  battle: { left: number; orbs: number } | null;
 }
 
 export interface Input {
@@ -349,7 +357,7 @@ export class RaceRuntime {
     this.trial = opts.trial ?? null;
     this.spectator = this.trial ? false : xapps.isSpectator;
     this.settings = this.trial
-      ? { cup: { id: `trial:${this.trial}`, name: "Time Trial", icon: "⏱️", tracks: [this.trial] }, cc: 150, laps: 3, mirror: false, knockout: false }
+      ? { cup: { id: `trial:${this.trial}`, name: "Time Trial", icon: "⏱️", tracks: [this.trial] }, cc: 150, laps: 3, mirror: false, knockout: false, battle: false }
       : parseSettings(xapps.match.settings);
     this.scale = classScale(this.settings.cc);
     const players = [...xapps.players].sort((a, b) => a.seat - b.seat);
@@ -566,6 +574,8 @@ export class RaceRuntime {
       r.lastGain = 0;
       r.rocketStart = false;
       r.out = false;
+      r.orbs = this.settings.battle ? BATTLE_ORBS : 0;
+      r.hitsLanded = 0;
       r.record = emptyRecord(track.def.id);
       r.startDelay = r.isMe ? 0 : 0.05 + Math.random() * 0.35 * (1.2 - (r.ai?.skill ?? 0.6));
     });
@@ -693,6 +703,8 @@ export class RaceRuntime {
       knockout: this.settings.knockout,
       mirror: this.settings.mirror,
       out: !!me?.out,
+      incoming: this.incomingFor(me),
+      battle: this.settings.battle ? { left: Math.max(0, BATTLE_SECONDS - this.raceTime), orbs: me?.orbs ?? 0 } : null,
     };
   }
 
@@ -857,14 +869,16 @@ export class RaceRuntime {
 
       ship.step(controls);
       this.onShipEvents(r);
-      this.checkLap(r);
+      if (!this.settings.battle) this.checkLap(r);
 
       if (r.roulette > 0) {
         r.roulette -= DT;
         if (r.roulette <= 0) {
           r.roulette = 0;
           const leaderHas = this.racers.some((o) => o.items.some((i) => i.id === "singularity")) || this.projectiles.some((p) => p.kind === "singularity");
-          const id = rollItem(r.place, this.racers.length, Math.random(), leaderHas);
+          const id = this.settings.battle
+            ? rollItem(Math.floor(this.racers.length / 2), this.racers.length, Math.random(), true)
+            : rollItem(r.place, this.racers.length, Math.random(), leaderHas);
           r.items.push({ id, uses: ITEMS[id].uses });
           if (r.isMe) {
             this.audio.play("rouletteStop");
@@ -966,6 +980,21 @@ export class RaceRuntime {
     }
   }
 
+  private eliminate(r: Racer, why: string): void {
+    r.out = true;
+    r.finished = true;
+    r.finishTime = this.raceTime;
+    this.fx.push({ type: "boom", pos: r.ship.pos.clone(), big: true });
+    this.sfx("explosion", r);
+    if (r.isMe) {
+      this.phase = "finished";
+      this.phaseTime = 0;
+      this.audio.play("lose");
+      this.say(why, "bad");
+    } else if (this.me && !this.me.out) this.say(`${r.name} is out!`, "info");
+    if (this.sendRoom && r.local) this.xapps.room.send("fin", { r: this.raceIndex, i: r.idx, t: Math.round(this.raceTime * 1000), o: 1 }).catch(ignore);
+  }
+
   private knockouts(): void {
     const alive = this.racers.filter((r) => !r.out && r.kind !== "ghost");
     const leaderLap = Math.max(...alive.map((r) => r.lap));
@@ -1007,6 +1036,27 @@ export class RaceRuntime {
   }
 
   private fireQueued = false;
+  private lastBark = 0;
+
+  /** Your pilot's voice: every pilot has their own pitch and catchphrases. */
+  private pilotBark(kind: "boost" | "trick" | "hurt" | "win"): void {
+    const me = this.me;
+    if (!me || performance.now() - this.lastBark < 2500) return;
+    this.lastBark = performance.now();
+    const lines = PILOT_LINES[me.pilot.id] ?? PILOT_LINES.default!;
+    const pick = lines[kind];
+    this.audio.bark(pick[Math.floor(Math.random() * pick.length)]!, lines.pitch);
+  }
+
+  private incomingFor(me: Racer | null): HudSnapshot["incoming"] {
+    if (!me || me.finished) return null;
+    const L = this.track.length;
+    for (const p of this.projectiles) {
+      if (p.kind === "seeker" && p.target === me.id && deltaS(p.s, me.ship.s, L) < 120 && deltaS(p.s, me.ship.s, L) > 0) return "seeker";
+      if (p.kind === "singularity" && me.place === 0 && p.boom < 0) return "singularity";
+    }
+    return null;
+  }
   /** Debug/attract: the CPU flies your ship. */
   autopilot = false;
 
@@ -1077,6 +1127,7 @@ export class RaceRuntime {
           this.fx.push({ type: "land", racer: r.idx, strength: e.strength });
           if (e.trick) {
             r.record.tricks++;
+            if (me) this.pilotBark("trick");
             if (me) {
               this.audio.play("trick");
               this.say("Trick boost!", "good");
@@ -1092,6 +1143,7 @@ export class RaceRuntime {
           break;
         case "turbo":
           r.record.turbos++;
+          if (me && e.tier >= 2) this.pilotBark("boost");
           if (e.tier === 3) r.record.purpleTurbos++;
           this.fx.push({ type: "turbo", racer: r.idx, tier: e.tier });
           if (me) {
@@ -1179,6 +1231,13 @@ export class RaceRuntime {
 
   private updatePlaces(): void {
     const sorted = [...this.racers].sort((a, b) => {
+      if (this.settings.battle) {
+        if (a.out !== b.out) return a.out ? 1 : -1;
+        if (a.out && b.out) return b.finishTime - a.finishTime;
+        return b.orbs - a.orbs || b.hitsLanded - a.hitsLanded || a.idx - b.idx;
+      }
+      // Knocked-out racers rank below everyone still on track (later knockouts ahead of earlier ones).
+      if (a.out !== b.out) return a.out ? 1 : -1;
       if (a.finished && b.finished) return a.finishTime - b.finishTime;
       if (a.finished) return -1;
       if (b.finished) return 1;
@@ -1228,7 +1287,7 @@ export class RaceRuntime {
       BOX_LANES.forEach((lane, k) => {
         if (this.boxes[row]![k]! > 0) return;
         if (Math.abs(lane * track.halfWidth[i]! - ship.d) > 2.6) return;
-        this.boxes[row]![k] = BOX_RESPAWN;
+        this.boxes[row]![k] = this.settings.battle ? BOX_RESPAWN * 0.5 : BOX_RESPAWN;
         this.fx.push({ type: "box", pos: this.worldOf(s, lane * track.halfWidth[i]!, 1.4) });
         if (remote) return;
         if (r.items.length < 2 && r.roulette <= 0) {
@@ -1280,15 +1339,22 @@ export class RaceRuntime {
     }
     if (!landed) return;
     r.record.timesHit++;
+    if (this.settings.battle && !r.out) {
+      r.orbs = Math.max(0, r.orbs - 1);
+      if (r.orbs === 0) this.eliminate(r, "Out of orbs!");
+      this.updatePlaces();
+    }
     r.ship.coins = Math.max(0, r.ship.coins - 2);
     this.fx.push({ type: "hit", racer: r.idx });
     this.sfx(kind === "bolt" || kind === null ? "spinout" : "explosion", r);
     if (r.isMe) {
+      this.pilotBark("hurt");
       this.say(kind === "singularity" ? "Sucked into a singularity!" : "Hit!", "bad");
       this.xapps.ui.haptic("heavy").catch(ignore);
     }
     if (by) {
       const shooter = this.racers.find((o) => o.id === by);
+      if (shooter) shooter.hitsLanded++;
       if (shooter?.local) {
         shooter.record.hitsLanded++;
         if (kind === "singularity" && r.place === 0) shooter.record.singularityOnLeader = true;
@@ -1410,6 +1476,29 @@ export class RaceRuntime {
   /* ---------------------------------------------------------------- */
 
   private checkRaceEnd(dt: number): void {
+    if (this.settings.battle && this.endTimer < 0) {
+      const alive = this.racers.filter((r) => !r.out && r.kind !== "ghost");
+      if (alive.length <= 1 || this.raceTime >= BATTLE_SECONDS) {
+        this.endTimer = 2.2;
+        for (const r of alive) {
+          r.finished = true;
+          r.finishTime = this.raceTime;
+        }
+        if (this.me && !this.me.out) {
+          this.phase = "finished";
+          this.phaseTime = 0;
+          this.updatePlaces();
+          this.say(this.me.place === 0 ? "Last ship flying!" : "Time!", "big");
+          this.audio.play(this.me.place === 0 ? "win" : "finish");
+        }
+      }
+      return;
+    }
+    if (this.settings.battle) {
+      this.endTimer -= dt;
+      if (this.endTimer <= 0) this.endRace();
+      return;
+    }
     const humans = this.racers.filter((r) => r.kind === "me" || r.kind === "human");
     const leaderDone = this.racers.find((r) => r.finished);
     const allHumansDone = humans.every((r) => r.finished || r.gone);
@@ -1454,7 +1543,9 @@ export class RaceRuntime {
       const pace = Math.max(35, r.ship.tune.top * 0.85);
       r.finishTime = this.raceTime + remaining / pace + 0.5;
     }
-    let order = [...this.racers].sort((a, b) => {
+    if (this.settings.battle) this.updatePlaces();
+    let order = this.settings.battle ? [...this.racers].sort((a, b) => a.place - b.place) : [...this.racers].sort((a, b) => {
+      if (a.out !== b.out) return a.out ? 1 : -1;
       if (a.finished !== b.finished) return a.finished ? -1 : 1;
       if (a.finished) return a.finishTime - b.finishTime;
       return b.progress - a.progress;
@@ -1620,7 +1711,7 @@ export class RaceRuntime {
         (r.finished ? 256 : 0) |
         (s.driftDir !== 0 ? 512 : 0) |
         (s.driftDir > 0 ? 1024 : 0);
-      rows.push([r.idx, round(s.s, 1), round(s.d, 2), round(s.h, 2), round(s.speed, 1), round(s.headingError, 3), flags, r.lap]);
+      rows.push([r.idx, round(s.s, 1), round(s.d, 2), round(s.h, 2), round(s.speed, 1), round(s.headingError, 3), flags, r.lap, r.orbs]);
     }
     this.xapps.room.send("st", { r: this.raceIndex, a: rows }).catch(ignore);
   }
@@ -1634,6 +1725,7 @@ export class RaceRuntime {
       const r = this.racers[row[0]!];
       if (!r || r.local) continue;
       r.net = { s: row[1]!, d: row[2]!, h: row[3]!, speed: row[4]!, yaw: row[5]!, flags: row[6]!, lap: row[7]!, at: performance.now() };
+      if (typeof row[8] === "number" && this.settings.battle) r.orbs = row[8];
     }
   }
 
@@ -1661,6 +1753,7 @@ export class RaceRuntime {
     if (!r || r.local || r.finished) return;
     r.finished = true;
     r.finishTime = p.t / 1000;
+    if ((p as { o?: number }).o === 1) r.out = true;
     this.updatePlaces();
   }
 
@@ -1858,3 +1951,15 @@ function saveGhost(track: string, run: GhostRun): void {
 export function bestTrialTime(track: string): number | null {
   return typeof window === "undefined" ? null : (loadGhost(track)?.time ?? null);
 }
+
+const PILOT_LINES: Record<string, { pitch: number; boost: string[]; trick: string[]; hurt: string[]; win: string[] }> = {
+  default: { pitch: 1.2, boost: ["Woo-hoo!", "Here we go!"], trick: ["Yeah!", "Too easy!"], hurt: ["Oof!", "Hey!"], win: ["I did it!"] },
+  whiskers: { pitch: 1.6, boost: ["Mee-yow!", "Purr-fect!"], trick: ["Nine lives!", "Meow-za!"], hurt: ["Hiss!", "My whiskers!"], win: ["Cat's out of the bag!"] },
+  bolt: { pitch: 0.55, boost: ["Turbo engaged.", "Beep boop!"], trick: ["Calculated.", "Flip executed."], hurt: ["Error!", "System damage!"], win: ["Victory computed."] },
+  zib: { pitch: 1.9, boost: ["Zib zoom!", "Wheee!"], trick: ["Zib zab!", "Out of this world!"], hurt: ["Glorp!", "Ow ow ow!"], win: ["Zib wins!"] },
+  inky: { pitch: 1.35, boost: ["Blub blub!", "Splash!"], trick: ["Eight-arm flip!", "Ink-credible!"], hurt: ["Blurp!", "My bowl!"], win: ["Ink-redible!"] },
+  rita: { pitch: 1.45, boost: ["Buckle up!", "Let's rocket!"], trick: ["Showtime!", "Buttercup!"], hurt: ["Oh no you didn't!", "Rude!"], win: ["Rita rules!"] },
+  boulder: { pitch: 0.4, boost: ["Rock and roll!", "Rumble!"], trick: ["Rocky!", "Boulder dash!"], hurt: ["Ow. Rocks.", "Crumble!"], win: ["Boulder wins."] },
+  twinkle: { pitch: 2, boost: ["Twinkle twinkle!", "Shine!"], trick: ["Sparkle!", "Stellar!"], hurt: ["Eek!", "Dimmed!"], win: ["Star power!"] },
+  biscuit: { pitch: 1.5, boost: ["Arf arf!", "Zoomies!"], trick: ["Good boy!", "Awoo!"], hurt: ["Yip!", "Ruff!"], win: ["Who's a good winner!"] },
+};

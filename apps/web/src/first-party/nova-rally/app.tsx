@@ -234,7 +234,7 @@ function Garage({
                   }}
                 >
                   <span className="block h-10 w-16" dangerouslySetInnerHTML={{ __html: shipIconSvg(s, liveryFor(s, selected ? choice.livery : -1)) }} />
-                  <span className="w-full truncate text-center">{s.name}</span>
+                  <span className="w-full text-center text-[9.5px] leading-tight">{s.name}</span>
                 </motion.button>
               );
             })}
@@ -346,7 +346,7 @@ function TimeTrials({ onTrial }: { onTrial: (track: string) => void }) {
         <span className="text-[12px] font-bold text-white">⏱ Time Trial while you wait</span>
         <span className="text-[11px] text-white/55">Solo vs your ghost · nothing is submitted</span>
       </div>
-      <div className="flex gap-2 overflow-x-auto pb-1">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {TRACKS.map((t) => (
           <button
             key={t.id}
@@ -355,7 +355,7 @@ function TimeTrials({ onTrial }: { onTrial: (track: string) => void }) {
               play("pop");
               onTrial(t.id);
             }}
-            className="flex min-w-[120px] flex-col items-start rounded-xl px-3 py-2 text-left"
+            className="flex flex-col items-start rounded-xl px-3 py-2 text-left"
             style={{ background: `linear-gradient(135deg, ${t.accent[0]}44, ${t.accent[1]}22)`, border: `1px solid ${t.accent[0]}88` }}
           >
             <span className="text-[12px] font-black italic text-white">{t.name}</span>
@@ -399,6 +399,7 @@ function Setup() {
   const [laps, setLaps] = useState(start.laps);
   const [mirror, setMirror] = useState(start.mirror);
   const [knockout, setKnockout] = useState(start.knockout);
+  const [battle, setBattle] = useState(start.battle);
   const [busy, setBusy] = useState(false);
   const single = TRACKS.some((t) => t.id === cup);
   const name = single ? trackById(cup).name : (CUPS.find((c) => c.id === cup)?.name ?? "Solar Cup");
@@ -408,7 +409,8 @@ function Setup() {
     const settings: { [key: string]: string | number | boolean } = single ? { track: cup, cc, laps } : { cup, cc, laps };
     if (mirror) settings.mirror = true;
     if (knockout) settings.mode = "knockout";
-    const extras = [mirror ? "mirror" : "", knockout ? "knockout" : ""].filter(Boolean).join(" · ");
+    if (battle) settings.mode = "battle";
+    const extras = [mirror ? "mirror" : "", knockout ? "knockout" : "", battle ? "battle" : ""].filter(Boolean).join(" · ");
     submit(settings, `${name} · ${cc}cc · ${laps} laps${extras ? ` · ${extras}` : ""}`).catch(() => setBusy(false));
   };
 
@@ -463,7 +465,21 @@ function Setup() {
             🪞 Mirror mode
             <span className="block text-xs font-medium text-white/60">Every track flipped</span>
           </button>
-          <button type="button" className={option(knockout)} onClick={() => setKnockout((k) => !k)}>
+          <button
+            type="button"
+            className={option(battle)}
+            onClick={() => {
+              setBattle((b) => !b);
+              setKnockout(false);
+            }}
+          >
+            ⚔️ Battle
+            <span className="block text-xs font-medium text-white/60">Three shield orbs each; last ship flying wins</span>
+          </button>
+          <button type="button" className={option(knockout)} onClick={() => {
+            setKnockout((k) => !k);
+            setBattle(false);
+          }}>
             💥 Knockout
             <span className="block text-xs font-medium text-white/60">Slowest racers eliminated each lap</span>
           </button>

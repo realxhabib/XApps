@@ -54,16 +54,16 @@ export function ShipPreview({ design, livery, pilot, reduced }: { design: ShipDe
     rim.position.set(-5, 3, -4);
     scene.add(key, rim);
     const camera = new PerspectiveCamera(32, 1, 0.1, 100);
-    camera.position.set(0, 2.4, 6.4);
-    camera.lookAt(0, 0.35, 0);
+    camera.position.set(0, 2.9, 6.6);
+    camera.lookAt(0, 0.1, 0);
 
     const padMat = new MeshBasicMaterial({ color: new Color("#ffffff"), transparent: true, opacity: 0.12 });
-    const pad = new Mesh(new CircleGeometry(2.6, 48), padMat);
+    const pad = new Mesh(new CircleGeometry(2.1, 48), padMat);
     pad.rotation.x = -Math.PI / 2;
     pad.position.y = -0.35;
     scene.add(pad);
     const ringMat = new MeshBasicMaterial({ color: new Color(livery.glow), transparent: true, opacity: 0.9, blending: AdditiveBlending });
-    const ring = new Mesh(new RingGeometry(2.45, 2.6, 64), ringMat);
+    const ring = new Mesh(new RingGeometry(1.98, 2.1, 64), ringMat);
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = -0.34;
     scene.add(ring);

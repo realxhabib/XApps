@@ -31,6 +31,7 @@ import {
   type Texture,
 } from "three";
 import { ROAD_LOOKS, paintChecker, paintChevrons, paintCurb, paintRoad, paintShoulder, paintSign } from "./textures";
+import { RAMP_HEIGHT } from "./physics";
 import { PAD_LENGTH, RAMP_LENGTH, frameAt, newFrame, wrapS, type CompiledTrack } from "./track";
 
 export interface TrackView {
@@ -378,18 +379,104 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
     obj.position.copy(f.pos).addScaledVector(f.right, d).addScaledVector(f.up, h);
   };
   const archEvery = lowQ ? 260 : 170;
-  for (let s = 120; s < track.length - 60; s += archEvery) {
+  const hazardStripe = own(paintCurb("#ffcf2e", "#1a1a1a"));
+  hazardStripe.repeat.set(1, 6);
+  const trussMat = own(new MeshStandardMaterial({ color: "#8a4a2e", roughness: 0.55, metalness: 0.7 }));
+  const stripeMat = own(new MeshStandardMaterial({ map: hazardStripe, roughness: 0.5, metalness: 0.3 }));
+  const goldMat = own(new MeshStandardMaterial({ color: "#ffcf6a", roughness: 0.2, metalness: 1, emissive: "#ff9a2e", emissiveIntensity: 0.25 }));
+  const iceMat = own(new MeshStandardMaterial({ color: "#cfe8ff", roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.8, emissive: "#5ab0ff", emissiveIntensity: 0.35 }));
+  let k = 0;
+  for (let s = 120; s < track.length - 60; s += archEvery, k++) {
     const i = Math.floor(s / track.step) % track.count;
     if (noFloor(i)) continue;
     const r = track.wall[i]! + 1.5;
-    const tg = own(new TorusGeometry(r, 0.35, 8, 48, Math.PI));
-    const arch = new Mesh(tg, (s / archEvery) % 2 < 1 ? archMat : archMat2);
-    place(arch, s, 0, 0);
-    group.add(arch);
-    const ring2 = new Mesh(tg, pillarMat);
-    ring2.scale.setScalar(1.04);
-    place(ring2, s + 0.5, 0, 0);
-    group.add(ring2);
+    const gate = new Group();
+    switch (theme) {
+      case "mars": {
+        // Rusted steel truss gantry with hazard-striped legs and a lamp bar.
+        const leg = own(new BoxGeometry(1.2, 11, 1.2));
+        for (const side of [-1, 1]) {
+          const m = new Mesh(leg, stripeMat);
+          m.position.set(side * r, 5.5, 0);
+          m.castShadow = true;
+          gate.add(m);
+        }
+        const beam = new Mesh(own(new BoxGeometry(r * 2 + 1.2, 1.4, 1.4)), trussMat);
+        beam.position.set(0, 10.6, 0);
+        gate.add(beam);
+        for (let x = -r + 2; x <= r - 2; x += 3) {
+          const brace = new Mesh(own(new BoxGeometry(0.25, 2.4, 0.25)), trussMat);
+          brace.position.set(x, 9.3, 0);
+          brace.rotation.z = x % 2 ? 0.6 : -0.6;
+          gate.add(brace);
+        }
+        const lamps = new Mesh(own(new BoxGeometry(r * 1.6, 0.35, 0.5)), k % 2 ? archMat : archMat2);
+        lamps.position.set(0, 9.8, 0.75);
+        gate.add(lamps);
+        break;
+      }
+      case "luna":
+      case "europa": {
+        // Tall light towers either side, with a banner line between them.
+        const mast = own(new CylinderGeometry(0.35, 0.55, 13, 10));
+        for (const side of [-1, 1]) {
+          const m = new Mesh(mast, pillarMat);
+          m.position.set(side * r, 6.5, 0);
+          m.castShadow = true;
+          gate.add(m);
+          const head = new Mesh(own(new BoxGeometry(2.4, 0.9, 0.9)), archMat2);
+          head.position.set(side * r, 13, 0);
+          gate.add(head);
+        }
+        const banner = new Mesh(own(new BoxGeometry(r * 2, 0.18, 0.18)), theme === "europa" ? iceMat : archMat);
+        banner.position.set(0, 12.2, 0);
+        gate.add(banner);
+        break;
+      }
+      case "saturn": {
+        // Full golden rings you fly through; the lower half hangs below the floating road.
+        const ring = new Mesh(own(new TorusGeometry(r + 1, 0.55, 12, 64)), goldMat);
+        gate.add(ring);
+        const glow = new Mesh(own(new TorusGeometry(r + 1, 0.2, 8, 64)), k % 2 ? archMat : archMat2);
+        glow.position.z = 0.5;
+        gate.add(glow);
+        break;
+      }
+      case "belt": {
+        // Hexagonal scanner gates.
+        const hex = new Mesh(own(new TorusGeometry(r + 0.5, 0.45, 6, 6, Math.PI)), k % 2 ? archMat : archMat2);
+        hex.rotation.z = 0;
+        gate.add(hex);
+        const frame = new Mesh(own(new TorusGeometry(r + 1.1, 0.3, 6, 6, Math.PI)), pillarMat);
+        gate.add(frame);
+        break;
+      }
+      case "sun": {
+        // Angled heat-shield fins leaning over the road.
+        const fin = own(new BoxGeometry(0.4, 12, 3));
+        for (const side of [-1, 1]) {
+          const m = new Mesh(fin, goldMat);
+          m.position.set(side * (r - 1), 5.5, 0);
+          m.rotation.z = side * 0.35;
+          gate.add(m);
+          const edge = new Mesh(own(new BoxGeometry(0.15, 12, 0.3)), archMat);
+          edge.position.set(side * (r - 1) - side * 0.25, 5.5, 1.5);
+          edge.rotation.z = side * 0.35;
+          gate.add(edge);
+        }
+        break;
+      }
+      default: {
+        const tg = own(new TorusGeometry(r, 0.35, 8, 48, Math.PI));
+        gate.add(new Mesh(tg, k % 2 ? archMat : archMat2));
+        const ring2 = new Mesh(tg, pillarMat);
+        ring2.scale.setScalar(1.04);
+        ring2.position.z = -0.5;
+        gate.add(ring2);
+      }
+    }
+    place(gate, s, 0, 0);
+    group.add(gate);
   }
 
   /* Start / finish */
@@ -487,22 +574,35 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
   }
 
   /* Ramps */
-  const rampMat = own(new MeshStandardMaterial({ color: "#d8dde8", roughness: 0.35, metalness: 0.6, emissive: accent2, emissiveIntensity: 0.25 }));
+  const rampTex = own(paintChevrons(def.accent[1]));
+  rampTex.repeat.set(3, 1);
+  const rampMat = own(new MeshStandardMaterial({ color: "#c9ced9", map: rampTex, roughness: 0.35, metalness: 0.6, emissive: accent2, emissiveMap: rampTex, emissiveIntensity: 0.6 }));
   for (const ramp of track.ramps) {
     const s0 = ramp.s - RAMP_LENGTH;
     const lift = (i: number) => {
       const ds = ((i * track.step - s0 + track.length * 1.5) % track.length) - track.length / 2;
-      return Math.max(0, Math.min(1, ds / RAMP_LENGTH)) * 1.8;
+      return Math.max(0, Math.min(1, ds / RAMP_LENGTH)) * RAMP_HEIGHT;
     };
     const inRamp = (i: number) => {
       const ds = ((i * track.step - s0 + track.length * 1.5) % track.length) - track.length / 2;
       return ds < 0 || ds > RAMP_LENGTH;
     };
-    const top = own(strip(track, { d0: (i) => -wall(i), d1: (i) => wall(i), h0: lift, h1: lift, across: 6, vScale: 3, skip: inRamp }));
-    group.add(new Mesh(top, rampMat));
-    const chev = new Mesh(top, padMats[0] ?? rampMat);
-    chev.position.y += 0.01;
-    group.add(chev);
+    const top = own(strip(track, { d0: (i) => -wall(i), d1: (i) => wall(i), h0: lift, h1: lift, across: 6, vScale: RAMP_LENGTH, skip: inRamp }));
+    const rm = new Mesh(top, rampMat);
+    rm.castShadow = true;
+    rm.receiveShadow = true;
+    group.add(rm);
+    // Sloped side skirts and the lip face so it reads as a solid wedge.
+    for (const side of [-1, 1] as const) {
+      const skirt = own(strip(track, { d0: (i) => side * wall(i), d1: (i) => side * wall(i), h0: 0, h1: lift, across: 1, vScale: 3, skip: inRamp, flip: side > 0 }));
+      group.add(new Mesh(skirt, rampMat));
+    }
+    // Glowing lip strip.
+    const lip = own(strip(track, { d0: (i) => -wall(i), d1: (i) => wall(i), h0: (i) => lift(i) + 0.02, h1: (i) => lift(i) + 0.02, across: 1, vScale: 1, skip: (i) => {
+      const ds = ((i * track.step - s0 + track.length * 1.5) % track.length) - track.length / 2;
+      return ds < RAMP_LENGTH - 1.2 || ds > RAMP_LENGTH;
+    } }));
+    group.add(new Mesh(lip, railGlowMat));
   }
 
   const lightColors = [new Color("#ff2a2a"), new Color("#ff2a2a"), new Color("#ff2a2a"), new Color("#2aff6a")];

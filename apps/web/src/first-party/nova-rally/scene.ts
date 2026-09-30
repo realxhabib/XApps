@@ -306,6 +306,9 @@ interface ShipView {
   drone: Group;
   flares: Sprite[];
   warp: Mesh;
+  blob: Mesh;
+  reticle: Mesh;
+  orbs: Mesh[];
 }
 
 interface ProjectileView {
@@ -368,11 +371,16 @@ export class RaceScene {
   private readonly boxInnerMat = new MeshBasicMaterial({ color: new Color("#ffffff").multiplyScalar(2), toneMapped: false });
   private readonly itemFace: Texture;
   private readonly coinGeo = starCoinGeometry();
-  private readonly warpGeo = new CylinderGeometry(2.6, 1.2, 14, 32, 1, true);
+  private readonly warpGeo = new CylinderGeometry(3.2, 1.4, 18, 32, 1, true);
+  private readonly blobGeo = new PlaneGeometry(3.4, 4.4);
+  private readonly orbGeo = new SphereGeometry(0.26, 16, 12);
+  private readonly blobMat = new MeshBasicMaterial({ color: "#000000", transparent: true, opacity: 0.55, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 });
+  private readonly reticleGeo = new RingGeometry(2.2, 2.6, 4, 1);
+  private readonly reticleMat = new MeshBasicMaterial({ color: new Color("#ff2a4a").multiplyScalar(3), transparent: true, opacity: 0.9, side: DoubleSide, depthTest: false, toneMapped: false });
   private readonly warpMat = new ShaderMaterial({
     vertexShader: "varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
     fragmentShader:
-      "uniform float uTime; varying vec2 vUv; void main() { float streak = pow(max(0.0, sin(vUv.x * 40.0 + sin(vUv.x * 7.0) * 2.0)), 6.0); float flow = fract(vUv.y * 2.0 + uTime * 3.0); float a = streak * (0.35 + 0.65 * flow) * smoothstep(0.0, 0.3, vUv.y) * (1.0 - smoothstep(0.7, 1.0, vUv.y)); gl_FragColor = vec4(vec3(1.0, 0.45, 0.9) * 2.0 * a, a); }",
+      "uniform float uTime; varying vec2 vUv; void main() { float streak = pow(max(0.0, sin(vUv.x * 40.0 + sin(vUv.x * 7.0) * 2.0)), 6.0); float flow = fract(vUv.y * 2.0 + uTime * 3.0); float a = streak * (0.45 + 0.55 * flow) * smoothstep(0.0, 0.3, vUv.y) * (1.0 - smoothstep(0.7, 1.0, vUv.y)); gl_FragColor = vec4(mix(vec3(1.0, 0.35, 0.85), vec3(0.6, 0.9, 1.0), flow) * 3.2 * a, a); }",
     uniforms: { uTime: { value: 0 } },
     transparent: true,
     depthWrite: false,
@@ -440,7 +448,10 @@ export class RaceScene {
     rock.computeVertexNormals();
     this.rockGeo = rock;
     this.warpGeo.rotateX(Math.PI / 2);
-    this.shared.push(this.warpGeo, this.warpMat);
+    this.blobGeo.rotateX(-Math.PI / 2);
+    this.blobMat.alphaMap = this.dot;
+    this.shared.push(this.orbGeo);
+    this.shared.push(this.warpGeo, this.warpMat, this.blobGeo, this.blobMat, this.reticleGeo, this.reticleMat);
     this.shared.push(this.dot, this.itemFace, this.boxGeo, this.boxInnerGeo, this.boxMat, this.boxInnerMat, this.coinGeo, this.coinMat, this.rockGeo, this.rockMat);
 
     this.particles = new Particles(quality.level === "low" ? 1600 : 4000, this.dot);
@@ -662,7 +673,20 @@ export class RaceScene {
     const warp = new Mesh(this.warpGeo, this.warpMat);
     warp.visible = false;
     this.scene.add(warp);
-    this.ships.set(r.idx, { racer: r, model, key: `${r.designIndex}:${r.liveryIndex}:${r.pilotIndex}`, trail, drone, flares, warp });
+    const blob = new Mesh(this.blobGeo, this.blobMat);
+    blob.renderOrder = 1;
+    this.scene.add(blob);
+    const reticle = new Mesh(this.reticleGeo, this.reticleMat);
+    reticle.visible = false;
+    reticle.renderOrder = 9;
+    this.scene.add(reticle);
+    const orbs = [0, 1, 2].map(() => {
+      const m = new Mesh(this.orbGeo, this.glow(r.livery.glow, 1.8));
+      m.visible = false;
+      this.scene.add(m);
+      return m;
+    });
+    this.ships.set(r.idx, { racer: r, model, key: `${r.designIndex}:${r.liveryIndex}:${r.pilotIndex}`, trail, drone, flares, warp, blob, reticle, orbs });
   }
 
   private buildDrone(): Group {
@@ -692,7 +716,7 @@ export class RaceScene {
   }
 
   private removeShip(view: ShipView): void {
-    this.scene.remove(view.model.root, view.trail.mesh, view.drone, view.warp, ...view.flares);
+    this.scene.remove(view.model.root, view.trail.mesh, view.drone, view.warp, view.blob, view.reticle, ...view.flares, ...view.orbs);
     for (const f of view.flares) f.material.dispose();
     view.model.dispose();
     view.trail.dispose();
@@ -855,10 +879,45 @@ export class RaceScene {
         sp.visible = tier > 0 || (ship.driftDir !== 0 && !ship.airborne);
         if (!sp.visible) return;
         const side = i === 0 ? -1 : 1;
-        sp.position.copy(pos).addScaledVector(ship.fwd, -1.5).addScaledVector(this.v2.crossVectors(ship.fwd, f.up).normalize(), side * 0.95).addScaledVector(f.up, -0.1);
-        const flick = 0.8 + Math.random() * 0.4;
-        sp.scale.setScalar((tier === 0 ? 0.7 : 1.2 + tier * 0.55) * flick);
-        sp.material.color.copy(DRIFT_SPARK[tier]!).multiplyScalar(tier === 0 ? 0.8 : 3);
+        sp.position.copy(pos).addScaledVector(ship.fwd, -1.45).addScaledVector(this.v2.crossVectors(ship.fwd, f.up).normalize(), side * 0.9).addScaledVector(f.up, 0.2);
+        const flick = 0.75 + Math.random() * 0.5;
+        sp.scale.setScalar((tier === 0 ? 0.35 : 0.45 + tier * 0.15) * flick);
+        sp.material.color.copy(DRIFT_SPARK[tier]!).multiplyScalar(tier === 0 ? 0.6 : 2.4);
+        sp.material.depthTest = false;
+        sp.renderOrder = 8;
+      });
+      // Contact shadow on the road (fades as the ship climbs).
+      view.blob.visible = root.visible && ship.state !== "fall";
+      if (view.blob.visible) {
+        view.blob.position.copy(pos).addScaledVector(f.up, -(0.35 + bob + ship.h) + 0.04);
+        view.blob.quaternion.copy(root.quaternion);
+        const fade = Math.max(0, 1 - ship.h / 8);
+        view.blob.scale.setScalar(0.8 + ship.h * 0.08);
+        (view.blob.material as MeshBasicMaterial).opacity = 0.55;
+        view.blob.visible = fade > 0.05;
+      }
+      // Missile lock-on reticle over whoever a seeker is chasing.
+      const locked = rt.projectiles.some((p) => p.kind === "seeker" && p.target === r.id);
+      view.reticle.visible = locked && root.visible;
+      if (locked) {
+        view.reticle.position.copy(pos).addScaledVector(f.up, 1.2);
+        view.reticle.quaternion.copy(this.camera.quaternion);
+        view.reticle.rotateZ(this.time * 3);
+        view.reticle.scale.setScalar(0.8 + 0.15 * Math.sin(this.time * 12));
+      }
+      // EMP: the ship crackles with purple lightning while its systems are down.
+      if (ship.shocked > 0 && !this.reduced) {
+        for (let k = 0; k < 3; k++) {
+          const p = pos.clone().add(new Vector3((Math.random() - 0.5) * 3, Math.random() * 1.6, (Math.random() - 0.5) * 3.5));
+          this.particles.emit(p, new Vector3((Math.random() - 0.5) * 8, Math.random() * 6, (Math.random() - 0.5) * 8), Math.random() < 0.5 ? new Color("#c79bff") : new Color("#ffffff"), 0.35, 0.15, 0);
+        }
+      }
+      // Battle orbs circle the ship.
+      view.orbs.forEach((o, k) => {
+        o.visible = root.visible && k < r.orbs && !r.out;
+        if (!o.visible) return;
+        const a = this.time * 2.4 + (k * Math.PI * 2) / 3;
+        o.position.copy(pos).addScaledVector(ship.fwd, Math.cos(a) * 2.2).addScaledVector(right, Math.sin(a) * 2.2).addScaledVector(f.up, 1 + Math.sin(a * 2) * 0.2);
       });
       view.warp.visible = ship.state === "warp";
       if (view.warp.visible) {
@@ -889,12 +948,13 @@ export class RaceScene {
         const col = DRIFT_SPARK[ship.driftTier]!;
         for (const side of [-1, 1]) {
           const wp = pos.clone().addScaledVector(ship.fwd, -1.3).addScaledVector(right, side * 1.0).addScaledVector(f.up, -0.2);
-          for (let k = 0; k < (ship.driftTier > 0 ? 3 : 1); k++) {
-            const vel = new Vector3((Math.random() - 0.5) * 6, 0, (Math.random() - 0.5) * 6)
-              .addScaledVector(f.up, 2 + Math.random() * 5)
-              .addScaledVector(ship.fwd, ship.speed * 0.7 - 6)
-              .addScaledVector(right, side * 3);
-            this.particles.emit(wp, vel, col, ship.driftTier > 0 ? 0.5 + ship.driftTier * 0.12 : 0.35, 0.25 + Math.random() * 0.2, 2);
+          wp.addScaledVector(f.up, 0.35);
+          for (let k = 0; k < (ship.driftTier > 0 ? 4 + ship.driftTier * 2 : 1); k++) {
+            const vel = new Vector3((Math.random() - 0.5) * 5, 0, (Math.random() - 0.5) * 5)
+              .addScaledVector(f.up, 3 + Math.random() * 6)
+              .addScaledVector(ship.fwd, ship.speed * 0.75 - 10 - Math.random() * 6)
+              .addScaledVector(right, side * (2 + Math.random() * 4));
+            this.particles.emit(wp, vel, col, ship.driftTier > 0 ? 0.22 + ship.driftTier * 0.05 : 0.2, 0.18 + Math.random() * 0.22, 1.2);
           }
         }
       }
@@ -1070,6 +1130,7 @@ export class RaceScene {
 
   private buildProjectile(kind: string): Object3D {
     const g = new Group();
+    g.scale.setScalar(kind === "seeker" ? 1.6 : kind === "singularity" ? 1.8 : kind === "bolt" ? 1.25 : 1.2);
     if (kind === "seeker") {
       const body = new Mesh(new CylinderGeometry(0.28, 0.35, 1.8, 12), new MeshStandardMaterial({ color: "#e8e8ee", metalness: 0.7, roughness: 0.3 }));
       body.rotation.x = Math.PI / 2;
@@ -1205,6 +1266,7 @@ export class RaceScene {
 
   private fovKick = 0;
   private podium: Group | null = null;
+  private podiumSnap = false;
   private podiumAnchor = new Vector3();
   private podiumBasis = new Matrix4();
 
@@ -1257,6 +1319,7 @@ export class RaceScene {
     if (!this.podium) {
       this.podium = this.buildPodium();
       this.scene.add(this.podium);
+      this.podiumSnap = true;
     }
     const order = rt.getSnapshot().standings.slice(0, 3).map((row) => row.idx);
     const heights = this.podium.userData.heights as number[];
@@ -1349,10 +1412,12 @@ export class RaceScene {
       const center = this.podiumAnchor.clone().add(new Vector3(0, 2.4, 0));
       const back = new Vector3(0, 0, 1).applyQuaternion(this.podium.quaternion);
       const side = new Vector3(1, 0, 0).applyQuaternion(this.podium.quaternion);
-      targetPos = center.clone().addScaledVector(back, 9.5 + Math.cos(a) * 1.2).addScaledVector(side, Math.sin(a) * 4.5).add(new Vector3(0, 1.4, 0));
-      targetLook = center;
+      targetPos = center.clone().addScaledVector(back, 12 + Math.cos(a) * 1.2).addScaledVector(side, Math.sin(a) * 4).add(new Vector3(0, 0.8, 0));
+      // Aim a little below the podium so it sits in the upper part of the frame, clear of the table.
+      targetLook = center.clone().add(new Vector3(0, -1.6, 0));
       targetUp = UP;
-      rate = 3;
+      rate = this.podiumSnap ? 1000 : 4;
+      this.podiumSnap = false;
     } else if (this.photo) {
       const q = new Quaternion().setFromAxisAngle(this.camUp, this.photo.angle);
       const off = new Vector3().copy(this.camFwd).multiplyScalar(-this.photo.dist).applyQuaternion(q);
@@ -1395,6 +1460,11 @@ export class RaceScene {
       this.camLook.copy(targetLook);
       this.fov = 66;
     }
+    // Respawns, tows and teleports: cut instead of flying across the map.
+    if (this.camPos.distanceToSquared(targetPos) > 45 * 45) {
+      this.camPos.copy(targetPos);
+      this.camLook.copy(targetLook);
+    }
     this.camPos.lerp(targetPos, k(rate));
     this.camLook.lerp(targetLook, k(rate * 1.4));
     this.camera.position.copy(this.camPos);
@@ -1422,9 +1492,9 @@ export class RaceScene {
     const ship = rt.focus.ship;
     const speed01 = Math.max(0, ship.speed) / Math.max(1, ship.tune.top);
     const boosting = ship.boost > 0 || ship.state === "warp";
-    const target = rt.phase === "race" ? Math.max(0, speed01 - 0.75) * 1.2 + (boosting ? 0.45 : 0) : 0;
+    const target = rt.phase === "race" ? Math.max(0, speed01 - 0.75) * 1.2 + (boosting ? 0.45 : 0) + (ship.state === "warp" ? 0.6 : 0) : 0;
     const mat = this.speedLines.material as MeshBasicMaterial;
-    mat.opacity += (Math.min(0.3, target * 0.6) - mat.opacity) * (1 - Math.exp(-6 * dt));
+    mat.opacity += (Math.min(ship.state === "warp" ? 0.6 : 0.3, target * 0.6) - mat.opacity) * (1 - Math.exp(-6 * dt));
     this.speedLines.visible = mat.opacity > 0.01 && !this.reduced;
     if (!this.speedLines.visible) return;
     const v = ship.speed * (boosting ? 1.6 : 1.1);

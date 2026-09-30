@@ -206,8 +206,28 @@ export function paintRoad(theme: ThemeId): { map: Texture; emissive: Texture; ro
     g.fillStyle = grad;
     g.fillRect(x, 0, 36, H);
   }
-  // Dashed lane lines.
-  for (const lx of [W * 0.34, W * 0.66]) {
+  // Lane markings suit the surface: dashes on plates and slabs, chevron dots on glass and ice, none on grating.
+  if (look.style === "glass" || look.style === "ice" || look.style === "ceramic") {
+    for (const lx of [W * 0.34, W * 0.66]) {
+      for (let y = 0; y < H; y += 128) {
+        for (const gc of [g, ge]) {
+          gc.fillStyle = look.line;
+          gc.globalAlpha = gc === g ? 0.75 : 0.5;
+          gc.beginPath();
+          gc.moveTo(lx - 16, y + 70);
+          gc.lineTo(lx, y + 40);
+          gc.lineTo(lx + 16, y + 70);
+          gc.lineTo(lx + 16, y + 84);
+          gc.lineTo(lx, y + 54);
+          gc.lineTo(lx - 16, y + 84);
+          gc.closePath();
+          gc.fill();
+          gc.globalAlpha = 1;
+        }
+      }
+    }
+  }
+  for (const lx of look.style === "plates" || look.style === "slabs" ? [W * 0.34, W * 0.66] : []) {
     for (let y = 0; y < H; y += 256) {
       g.fillStyle = look.line;
       g.globalAlpha = 0.7;

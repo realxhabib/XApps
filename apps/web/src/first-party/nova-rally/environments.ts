@@ -662,20 +662,20 @@ function detailTexture(ctx: Ctx, seed: number, kind: "mars" | "luna" | "europa")
       if (kind === "mars") {
         // Wind ripples plus grit.
         const rip = Math.sin((u * 48 + fbm2(u * 4, v * 4, seed + 9, 3, 4) * 6) * Math.PI * 2) * 0.5 + 0.5;
-        h = h * 0.82 + rip * rip * 0.14 + noise2(x, y, seed + 3, S) * 0.03;
+        h = h * 0.86 + rip * rip * 0.14;
       } else if (kind === "europa") {
         // Frost grain with a web of hairline cracks.
         const c1 = Math.abs(fbm2(u * 6, v * 6, seed + 21, 4, 6) - 0.5);
         const c2 = Math.abs(fbm2(u * 14, v * 14, seed + 22, 3, 14) - 0.5);
-        h = h * 0.7 + 0.25 - smooth(0.035, 0.0, c1) * 0.3 - smooth(0.025, 0.0, c2) * 0.15 + noise2(x, y, seed + 3, S) * 0.02;
+        h = h * 0.7 + 0.25 - smooth(0.06, 0.0, c1) * 0.2 - smooth(0.05, 0.0, c2) * 0.1;
       } else {
-        h = h * 0.85 + noise2(x, y, seed + 3, S) * 0.03;
+        h = h * 0.9;
       }
       hgt[y * S + x] = h;
     }
   }
   // Pebbles (mars) or micro-craters (luna).
-  const n = kind === "mars" ? 900 * sc * sc : kind === "luna" ? 260 : 0;
+  const n = 0 * sc;
   for (let k = 0; k < n; k++) {
     const px = r() * S;
     const py = r() * S;
@@ -1659,7 +1659,36 @@ interface TerrainSpec {
   scales: [number, number];
   bump: number;
   roughness: number;
+  /** Procedural near-field ground detail (shader noise in world space). */
+  ground: "mars" | "luna" | "europa";
 }
+
+/** Smooth world-space ground detail per surface, in [0, ~1]. No texels anywhere. */
+const GROUND_GLSL: Record<"mars" | "luna" | "europa", string> = {
+  mars: /* glsl */ `
+float groundFine(vec3 wp) {
+  vec2 q = wp.xz;
+  float warp = vnoise(vec3(q * 0.07, 1.0));
+  float rip = 0.5 + 0.5 * sin(dot(q, vec2(0.8, 0.6)) * 2.1 + warp * 10.0 + vnoise(vec3(q * 0.3, 4.0)) * 1.5);
+  rip = rip * rip * (3.0 - 2.0 * rip);
+  float grain = vnoise(wp * 2.2);
+  float peb = smoothstep(0.8, 0.96, vnoise(wp * 1.3 + 3.0));
+  return rip * 0.42 + grain * 0.28 + peb * 0.55;
+}`,
+  luna: /* glsl */ `
+float groundFine(vec3 wp) {
+  float grain = vnoise(wp * 1.2) * 0.45 + vnoise(wp * 3.1 + 2.0) * 0.22 + vnoise(wp * 7.3 + 4.0) * 0.1;
+  float pit = smoothstep(0.8, 0.95, vnoise(wp * 0.5 + 5.0));
+  return grain + 0.12 - pit * 0.3;
+}`,
+  europa: /* glsl */ `
+float groundFine(vec3 wp) {
+  float frost = vnoise(wp * 1.4) * 0.5 + vnoise(wp * 3.6 + 1.0) * 0.2;
+  float crack = 1.0 - smoothstep(0.0, 0.035, abs(vnoise(wp * vec3(0.22, 0.1, 0.22)) - 0.5));
+  float crack2 = 1.0 - smoothstep(0.0, 0.03, abs(vnoise(wp * vec3(0.6, 0.3, 0.6) + 9.0) - 0.5));
+  return 0.35 + frost - crack * 0.35 - crack2 * 0.18;
+}`,
+};
 
 interface Terrain {
   mesh: Mesh;
@@ -1956,6 +1985,7 @@ function buildTerrain(ctx: Ctx, spec: TerrainSpec): Terrain {
   const detail = spec.detail;
   const [s1, s2] = spec.scales;
   const bump = spec.bump;
+  const ground = spec.ground;
   mat.onBeforeCompile = (s: WebGLProgramParametersWithUniforms) => {
     s.uniforms.uDetail = { value: detail };
     s.uniforms.uScales = { value: new Vector2(s1, s2) };
@@ -1975,6 +2005,8 @@ uniform vec2 uScales;
 uniform float uBump;
 varying vec3 vWPos;
 varying vec3 vWNrm;
+${GLSL_NOISE.replace(/FBM_OCT/g, "3")}
+${GROUND_GLSL[ground]}
 float triDetail(float sc, vec3 bw) {
   return texture2D(uDetail, vWPos.zy * sc).r * bw.x + texture2D(uDetail, vWPos.xz * sc).r * bw.y + texture2D(uDetail, vWPos.xy * sc).r * bw.z;
 }`,
@@ -1984,15 +2016,16 @@ float triDetail(float sc, vec3 bw) {
         `vec3 tbw = pow(abs(normalize(vWNrm)), vec3(4.0));
 tbw /= (tbw.x + tbw.y + tbw.z);
 float viewD = length(vViewPosition);
-float nearK = 1.0 - smoothstep(14.0, 42.0, viewD);
-float dA = triDetail(uScales.x, tbw);
+float nearK = 1.0 - smoothstep(22.0, 75.0, viewD);
+float midK = 1.0 - smoothstep(90.0, 320.0, viewD);
 float dB = triDetail(uScales.y, tbw);
 float dC = triDetail(uScales.x * 0.23, tbw);
-float dF = 0.5;
-if (nearK > 0.0) dF = triDetail(uScales.x * 9.7, tbw) * 0.6 + triDetail(uScales.x * 4.1, tbw) * 0.4;
-float detailH = dA * 0.6 + dC * 0.3 + (dF - 0.5) * 0.45 * nearK;
-float farK = smoothstep(60.0, 260.0, viewD);
-diffuseColor.rgb *= mix(0.64 + 0.7 * (dA * 0.7 + dC * 0.3), 0.64 + 0.7 * (0.5 * 0.7 + dC * 0.3), farK * 0.8) * (0.82 + 0.36 * dB) * (1.0 + (dF - 0.5) * 0.55 * nearK);`,
+// Smooth world-space value noise: soft medium undulation, then the near-field ground.
+float mid = vnoise(vWPos * vec3(0.16, 0.1, 0.16)) * 0.6 + vnoise(vWPos * 0.42 + 7.0) * 0.4;
+float fineG = 0.5;
+if (nearK > 0.0) fineG = groundFine(vWPos);
+float detailH = mid * 0.5 * midK + (fineG - 0.5) * 0.55 * nearK;
+diffuseColor.rgb *= (0.8 + 0.4 * mix(0.5, mid, midK)) * (0.78 + 0.44 * dC) * (0.85 + 0.3 * dB) * (1.0 + (fineG - 0.5) * 0.45 * nearK);`,
       )
       .replace(
         "#include <normal_fragment_maps>",
@@ -2000,7 +2033,7 @@ diffuseColor.rgb *= mix(0.64 + 0.7 * (dA * 0.7 + dC * 0.3), 0.64 + 0.7 * (0.5 * 
 {
   vec3 dpx = dFdx(-vViewPosition);
   vec3 dpy = dFdy(-vViewPosition);
-  float bk = uBump * mix(0.4, 1.0, smoothstep(3.0, 26.0, viewD)) * (1.0 - 0.8 * smoothstep(30.0, 180.0, viewD));
+  float bk = uBump * 0.6 * mix(0.55, 1.0, smoothstep(3.0, 20.0, viewD));
   float dhx = dFdx(detailH) * bk;
   float dhy = dFdy(detailH) * bk;
   vec3 r1 = cross(dpy, normal);
@@ -2463,6 +2496,7 @@ function buildMars(ctx: Ctx): ThemeLook {
     paint,
     chasmDepth: 70,
     detail: detailTexture(ctx, 21, "mars"),
+    ground: "mars",
     scales: [1 / 14, 1 / 60],
     bump: 1.6,
     roughness: 0.96,
@@ -3323,6 +3357,7 @@ function buildLuna(ctx: Ctx): ThemeLook {
     paint,
     chasmDepth: 60,
     detail: detailTexture(ctx, 44, "luna"),
+    ground: "luna",
     scales: [1 / 20, 1 / 75],
     bump: 1.3,
     roughness: 0.98,
@@ -3704,6 +3739,7 @@ function buildEuropa(ctx: Ctx): ThemeLook {
     paint,
     chasmDepth: 60,
     detail: detailTexture(ctx, 66, "europa"),
+    ground: "europa",
     scales: [1 / 16, 1 / 70],
     bump: 0.9,
     roughness: 0.35,

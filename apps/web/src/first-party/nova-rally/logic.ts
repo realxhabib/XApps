@@ -21,6 +21,8 @@ export interface GpSettings {
   mirror: boolean;
   /** Knockout: the slowest racers are eliminated at the end of every lap but the last. */
   knockout: boolean;
+  /** Battle: three shield orbs each, last ship flying wins. */
+  battle: boolean;
 }
 
 export const SPEED_CLASSES: readonly { cc: SpeedClass; label: string; blurb: string }[] = [
@@ -44,7 +46,7 @@ export function parseSettings(raw: { [key: string]: Json } | null | undefined): 
   }
   const cc = raw?.cc === 100 || raw?.cc === 200 ? raw.cc : 150;
   const laps = typeof raw?.laps === "number" && raw.laps >= 1 && raw.laps <= 5 ? Math.round(raw.laps) : LAPS;
-  return { cup, cc, laps, mirror: raw?.mirror === true, knockout: raw?.mode === "knockout" };
+  return { cup, cc, laps, mirror: raw?.mirror === true, knockout: raw?.mode === "knockout", battle: raw?.mode === "battle" };
 }
 
 /** How many racers drop out when the leader completes a lap in knockout (never below two left). */
@@ -52,6 +54,10 @@ export function knockoutCount(alive: number, lapsLeft: number): number {
   if (lapsLeft <= 0 || alive <= 2) return 0;
   return Math.max(1, Math.min(alive - 2, Math.floor((alive - 2) / lapsLeft)));
 }
+
+/** Battle length in seconds and starting orbs. */
+export const BATTLE_SECONDS = 150;
+export const BATTLE_ORBS = 3;
 
 export function pointsFor(place: number): number {
   return POINTS[place] ?? 0;

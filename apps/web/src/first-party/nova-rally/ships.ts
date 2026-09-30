@@ -401,8 +401,8 @@ void main() {
   vec2 g = abs(fract(h + vec2(0.5 * floor(h.y), 0.0)) - 0.5);
   float cell = smoothstep(0.42, 0.5, max(g.x, g.y));
   float scan = 0.5 + 0.5 * sin(vP.y * 14.0 - uTime * 5.0);
-  float a = (fr * 0.75 + 0.03 + cell * (0.03 + 0.16 * fr) + scan * 0.06 * fr + uPop * 0.3) * uAlpha;
-  vec3 col = mix(uColor, vec3(1.0), clamp(fr * 0.35 + uPop, 0.0, 1.0));
+  float a = (fr * 0.9 + cell * (0.08 + 0.3 * fr) + scan * 0.08 * fr + uPop * 0.35) * uAlpha;
+  vec3 col = mix(uColor * 1.8, vec3(1.0), clamp(fr * 0.15 + uPop * 0.6, 0.0, 1.0));
   gl_FragColor = vec4(col, clamp(a, 0.0, 1.0));
   #include <colorspace_fragment>
 }`;
@@ -1885,7 +1885,7 @@ export function buildShip(design: ShipDesign, livery: Livery, quality: "high" | 
   });
   shaderMats.push(shieldMat);
   const shield = new Mesh(shieldGeo, shieldMat);
-  shield.scale.set(1.45, 0.85, 2.0);
+  shield.scale.set(1.55, 1.15, 2.0);
   shield.position.set(0, 0.52, 0);
   shield.visible = false;
   shield.renderOrder = 6;
@@ -1974,7 +1974,7 @@ export function buildShip(design: ShipDesign, livery: Livery, quality: "high" | 
       setU(shieldMat, "uTime", time);
       setU(shieldMat, "uPop", pop);
       const s = 1 + 0.25 * pop + 0.015 * Math.sin(time * 6);
-      shield.scale.set(1.45 * s, 0.85 * s, 2.0 * s);
+      shield.scale.set(1.55 * s, 1.15 * s, 2.0 * s);
     },
 
     setGhost(alpha: number): void {
