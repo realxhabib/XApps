@@ -72,14 +72,15 @@ python3 compose.py edl-vertical.json work/vcut.mp4 --crf=19
 python3 audio.py 25.93 2.0 22.1 work/vbed.wav
 ```
 
-`edl-short.json` is the 13 s launch clip (`xapps-short.mp4`: challenge sent → VS → GO → Victory/Share → end card),
-cut from `chalv` plus:
+`edl-short.json` is the 14 s launch clip (`xapps-short.mp4`: challenge sent → VS → a round played → Victory/Share →
+end card), cut from a calmer capture that picks @neon_nomad from the list (no typing, so the sheet never jumps):
 
 ```bash
+node challenge-short.mjs 2.6666667 chals
 node cards.mjs vcap-chal-top cap 3 "v=1&dur=3&pos=top&e=Any%20app%20%C2%B7%20anyone%20on%20X&h=Send%20a%20challenge."
 node cards.mjs vcap-share cap 2.8 "v=1&dur=2.8&e=Results%20%C2%B7%20XP%20%C2%B7%20Achievements&h=Share%20the%20win%20on%20X."
 node cards.mjs vcard-short end 2.5 "v=1&tag=Build%20any%20game.%3Cbr%3EWe%20wire%20it%20to%20%3Cspan%20class%3D%22grad%22%3EX.%3C%2Fspan%3E&chip=%3Cb%3E%E2%86%92%3C%2Fb%3E%20xapps.vercel.app"
-python3 audio.py 13.27 0.5 10.77 work/sbed.wav
+python3 audio.py 13.57 0.5 11.07 work/sbed.wav
 ```
 
 Frame indices depend on the run (GPU timing can change a seed's fight), so check a contact sheet before composing.
