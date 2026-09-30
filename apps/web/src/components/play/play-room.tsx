@@ -25,6 +25,7 @@ import { BackendError } from "@/platform/backend";
 import { useBackend, useViewer } from "@/platform/client";
 import { buildLaunchContext, opponentOf, playerOf, toLaunchMatch, toMatchResult } from "@/platform/match-utils";
 import { invalidateProgress, useApp, useAppVersions, useMatch, useMatchAction } from "@/platform/queries";
+import { retiredAppManifest } from "@/platform/retired-apps";
 import { applyVersionToApp, isTestBuild } from "@/platform/shipping";
 import type { AppManifest, Json, LogLevel, Match, Profile } from "@/platform/types";
 import { showAchievement } from "./achievement-moment";
@@ -122,9 +123,12 @@ export function PlayRoom({ matchId }: { matchId: string }) {
   const ownsApp = !!listedApp && !!viewer && !listedApp.official && listedApp.developer.id === viewer.id;
   const { data: versions, isPending: versionsLoading } = useAppVersions(listedApp?.slug ?? "", testBuild && ownsApp);
   const testVersion = testBuild ? versions?.find((v) => v.id === match?.versionId) : undefined;
+  // An app that's gone (a retired first-party app, or one this viewer can't see) gets a stand-in, so
+  // the match's history still renders; its stage never loads.
+  const goneSlug = listedApp === null && match && !testBuild ? match.appSlug : null;
   const app = useMemo(
-    () => (listedApp && testVersion ? applyVersionToApp(listedApp, testVersion) : listedApp),
-    [listedApp, testVersion],
+    () => (listedApp && testVersion ? applyVersionToApp(listedApp, testVersion) : goneSlug ? retiredAppManifest(goneSlug) : listedApp),
+    [goneSlug, listedApp, testVersion],
   );
   const action = useMatchAction();
   const me = match ? playerOf(match, viewer?.id) : undefined;
@@ -193,7 +197,7 @@ export function PlayRoom({ matchId }: { matchId: string }) {
     );
   }
 
-  const showStage = !!viewer && !!me && (canPlay || stickyStage);
+  const showStage = !app.retired && !!viewer && !!me && (canPlay || stickyStage);
   if (showStage) {
     return <MatchStage key={match.id} app={app} match={match} viewer={viewer} />;
   }
@@ -205,6 +209,7 @@ export function PlayRoom({ matchId }: { matchId: string }) {
     ? () => (viewer ? void lobbyCall("watch") : router.push(`/login?next=${encodeURIComponent(`/play/${match.id}`)}`))
     : undefined;
   const lobbyOpen = match.status === "open" || match.status === "pending";
+  const appHref = app.retired ? "/apps" : `/apps/${app.slug}`;
   let body: React.ReactNode;
 
   if (match.status === "completed") {
@@ -213,8 +218,8 @@ export function PlayRoom({ matchId }: { matchId: string }) {
         app={app}
         match={match}
         viewer={viewer}
-        onShare={() => openXIntent(shareText(app, match, viewer?.id), `${window.location.origin}/apps/${app.slug}`)}
-        onHome={() => router.push(`/apps/${app.slug}`)}
+        onShare={() => openXIntent(shareText(app, match, viewer?.id), `${window.location.origin}${appHref}`)}
+        onHome={() => router.push(appHref)}
       />
     );
   } else if (["declined", "cancelled", "expired"].includes(match.status)) {
@@ -223,7 +228,7 @@ export function PlayRoom({ matchId }: { matchId: string }) {
         emoji={match.status === "declined" ? "🙅" : match.status === "cancelled" ? "🚫" : "⌛"}
         title={match.status === "declined" ? "Challenge declined" : match.status === "cancelled" ? "Challenge cancelled" : "Challenge expired"}
         action={
-          <Button href={`/apps/${app.slug}`} variant="accent">
+          <Button href={appHref} variant="accent">
             Find another match
           </Button>
         }
@@ -241,6 +246,18 @@ export function PlayRoom({ matchId }: { matchId: string }) {
         onShare={() => openXIntent(`Help me win ${app.name} on XApps — vote for the best entry ${app.icon}`, `${window.location.origin}/arena`)}
         onLeave={() => router.push("/arena")}
       />
+    );
+  } else if (app.retired) {
+    body = (
+      <EmptyState
+        emoji={app.icon}
+        title={`${app.name} was retired`}
+        action={<Button href="/apps">Browse apps</Button>}
+        className="mx-auto mt-24 max-w-md"
+      >
+        This app is no longer on XApps, so this match can&apos;t go on. Earlier results and the XP they earned stay on
+        your profile.
+      </EmptyState>
     );
   } else if (!viewer) {
     body = (

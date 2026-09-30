@@ -228,7 +228,8 @@ export class SupabaseBackend implements Backend {
       const row = bySlug.get(app.slug);
       return withManifestDefaults({ ...app, playCount: row?.play_count ?? 0, upvotes: row?.upvotes ?? 0, upvoted: row?.viewer_upvoted === true });
     });
-    const community = rows.filter((r) => !getOfficialApp(r.slug)).map(toApp);
+    // An official row the catalog no longer has is a retired first-party app: never listed.
+    const community = rows.filter((r) => !r.official && !getOfficialApp(r.slug)).map(toApp);
     return [...official, ...community];
   }
 
@@ -238,10 +239,12 @@ export class SupabaseBackend implements Backend {
       this.viewerUpvotes(slug),
     ]);
     if (error) fail(error);
+    const official = getOfficialApp(slug);
     if (!data) {
-      const official = getOfficialApp(slug);
       return official ? withManifestDefaults({ ...official, upvotes: 0, upvoted: false }) : null;
     }
+    // Retired first-party app (official, but no longer in the catalog): gone, like a hidden row.
+    if (data.official && !official) return null;
     return toApp(withViewerUpvotes([data], upvoted)[0]);
   }
 

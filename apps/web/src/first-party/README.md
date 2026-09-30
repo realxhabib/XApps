@@ -27,6 +27,18 @@ Standalone apps (`kind: "app"`) open in app mode instead (see below).
 Migrations are only for platform changes. Official apps never get
 `app_versions`: they ship with the site, so their version RPCs refuse them.
 
+## Retiring a first-party app
+
+Delete its folder, its `/embed/<slug>` route and its catalog entry, and add
+its name, icon and accent to `RETIRED_APPS` in `src/platform/retired-apps.ts`.
+Again no migration: the next `npm run sync-apps` sets the row it finds
+official but no longer in the catalog to `rejected` (hidden from listings,
+refused by every play, stats and achievements RPC) and cancels its open,
+pending and active matches. Matches still in voting settle at their deadline.
+The row, finished matches and earned XP stay, and match cards, results and
+the app page render old matches as "<name> was retired". The demo backend
+cancels such matches in stored data the same way.
+
 ## Lifecycle contract (what the host does)
 
 1. The host loads the app in an iframe and answers the SDK handshake.

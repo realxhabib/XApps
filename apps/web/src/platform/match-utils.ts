@@ -1,5 +1,6 @@
 import type { LaunchContext, MatchResult, PlayerInfo } from "@xapps/sdk";
 import { getOfficialApp } from "./catalog";
+import { getRetiredApp } from "./retired-apps";
 import type { AppManifest, Match, MatchPlayer, PlayableMode, PlayerRole, Profile } from "./types";
 
 /* ---------------------------------------------------------------------- */
@@ -354,21 +355,21 @@ export const MODE_LABEL: Record<PlayableMode, string> = {
 };
 
 function appNameOf(match: Match, appName?: string): string {
-  return appName ?? getOfficialApp(match.appSlug)?.name ?? "match";
+  return appName ?? getOfficialApp(match.appSlug)?.name ?? getRetiredApp(match.appSlug)?.name ?? "match";
 }
 
 function isGroup(match: Match): boolean {
   return seatedPlayers(match).length > 2 || (match.maxPlayers ?? 2) > 2 || (match.teams ?? 0) >= 2;
 }
 
-/** "a 4-player Trivia Royale" */
+/** "a 4-player Wedge Wars" */
 function tableLabel(match: Match, appName?: string): string {
   const seated = isLobby(match) ? 0 : placements(match).length;
   const n = Math.max(2, seated || (match.maxPlayers ?? 2));
   return `a ${n}-player ${appNameOf(match, appName)}`;
 }
 
-/** Third-person result for 3+ players or team play ("@a won a 4-player Trivia Royale"). */
+/** Third-person result for 3+ players or team play ("@a won a 4-player Wedge Wars"). */
 export function groupResultLine(match: Match, appName?: string): string {
   const table = tableLabel(match, appName);
   if (match.teams >= 2 && match.winnerTeam !== null && match.winnerTeam !== undefined) {

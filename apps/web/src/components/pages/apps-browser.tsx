@@ -59,7 +59,7 @@ export function AppsBrowser() {
           Every way to <span className="text-gradient">settle it</span>.
         </h1>
         <p className="mt-3 max-w-xl text-ink-300">
-          Games, contests, debates and trivia head-to-head, plus apps you simply open. All built on the same open SDK.
+          Games and contests head-to-head, plus apps you simply open. All built on the same open SDK.
         </p>
       </motion.header>
 

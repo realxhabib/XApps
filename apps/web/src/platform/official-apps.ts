@@ -16,6 +16,10 @@
  * `upvotes` (20261006000200_app_upvotes.sql), `created_at`, `developer_id` (null for official apps), `authority` (only
  * set_app_authority moves it) and `published_version_id` (official apps have no
  * `app_versions`; apps_register_version skips them).
+ *
+ * An official row the catalog no longer has is retired (`planOfficialAppRetirement`
+ * below): the script sets its status to `rejected` and cancels its unfinished
+ * matches, keeping the row and its history.
  */
 import { OFFICIAL_APPS, achievementDefsError, isSingleEmoji, manifestShapeError, statDefsError } from "./catalog";
 import { CATEGORIES } from "./types";
@@ -247,4 +251,44 @@ export function planOfficialAppSync(desired: readonly OfficialAppRow[], existing
     const changed = OFFICIAL_APP_COLUMNS.filter((col) => canonicalJson(current[col]) !== canonicalJson(row[col]));
     return { slug: row.slug, action: changed.length ? "update" : "unchanged", changed, row };
   });
+}
+
+/* ---------------------------------------------------------------------- */
+/* Retiring official apps the catalog dropped                             */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * The status a retired official app's row gets. `rejected` is what already
+ * keeps an app off the platform: the `public.apps` read policy hides it,
+ * `playable_app` refuses it (so challenges, quick match, practice, stats and
+ * achievements are refused), and the row with its play count, finished
+ * matches and XP stays. Putting the app back in the catalog republishes it.
+ */
+export const RETIRED_STATUS = "rejected" as const satisfies AppStatus;
+
+/**
+ * Match statuses the sync cancels for a retired app: lobbies, invites and
+ * matches in play, which could never finish without the app. Matches in
+ * `voting` still settle at their deadline (finalize_due_matches).
+ */
+export const RETIRED_MATCH_STATUSES = ["open", "pending", "active"] as const;
+
+export interface RetireStep {
+  slug: string;
+  /** `retire`: set the status; `retired`: already done (its matches are still swept). */
+  action: "retire" | "retired";
+}
+
+/**
+ * Official rows whose slug the catalog no longer has (any catalog slug,
+ * official or not, is left alone): each is retired, idempotently.
+ */
+export function planOfficialAppRetirement(
+  existing: readonly { slug: string; official?: unknown; status?: unknown }[],
+  apps: readonly AppManifest[] = OFFICIAL_APPS,
+): RetireStep[] {
+  const keep = new Set(catalogSlugs(apps));
+  return existing
+    .filter((row) => row.official === true && !keep.has(row.slug))
+    .map((row) => ({ slug: row.slug, action: row.status === RETIRED_STATUS ? "retired" : "retire" }));
 }

@@ -1,7 +1,8 @@
 /**
- * The share card: the face you built (misplaced features, ghost outlines of
- * where they belong) next to the score, drawn on a 1200×630 canvas and
- * handed to `media.upload` → `social.share` by the app.
+ * The share card: the face you built (just the misplaced features, no ghost
+ * outlines: the funny face is the joke) next to the score, drawn on a
+ * 1200×630 canvas and handed to `media.upload` → `social.share` by the app.
+ * `faceImageBlob` is the clean face alone, for saving.
  */
 import { PART_LABEL, PART_ORDER } from "./face";
 import type { FaceKit } from "./kit";
@@ -109,7 +110,7 @@ export function renderShareCard(
   ctx.roundRect(box.x, box.y, box.w, box.h, 32);
   ctx.fill();
   ctx.restore();
-  drawBuiltFace(ctx, kit, drops, box);
+  drawBuiltFace(ctx, kit, drops, box, { ghosts: false });
   ctx.lineWidth = 2;
   ctx.strokeStyle = "rgb(255 255 255 / 0.14)";
   ctx.beginPath();
@@ -182,5 +183,16 @@ export function shareCardBlob(
   const c = renderShareCard(kit, drops, score, options);
   return new Promise((resolve, reject) =>
     c.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Couldn't render the card"))), "image/png"),
+  );
+}
+
+/** The built face alone (no outlines, no card), at the kit's full resolution, as a PNG. */
+export function faceImageBlob(kit: FaceKit, drops: readonly Drop[]): Promise<Blob> {
+  const c = document.createElement("canvas");
+  c.width = kit.blank.width;
+  c.height = kit.blank.height;
+  drawBuiltFace(c.getContext("2d")!, kit, drops, { x: 0, y: 0, w: c.width, h: c.height }, { ghosts: false, radius: 0 });
+  return new Promise((resolve, reject) =>
+    c.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Couldn't render the face"))), "image/png"),
   );
 }

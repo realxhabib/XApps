@@ -14,11 +14,13 @@ trap '"${psql_cmd[@]}" -d postgres -c "drop database if exists $db" >/dev/null' 
 for f in "$here"/../migrations/*.sql; do
   "${psql_cmd[@]}" -d "$db" -f "$f"
 done
-# Official apps: replay `npm run sync-apps` (its --dry-run rows) on the migrated schema.
+# Official apps: replay `npm run sync-apps` (its --dry-run rows, and retiring official apps outside
+# its --catalog-slugs) on the migrated schema.
 sync_apps="$here/../../apps/web/scripts/sync-apps.mjs"
 if command -v node >/dev/null && [ -d "$here/../../node_modules/esbuild" ]; then
   rows="$(node "$sync_apps" --dry-run)"
-  "${psql_cmd[@]}" -d "$db" -v rows="$rows" -f "$here/official_apps.sql"
+  slugs="$(node "$sync_apps" --catalog-slugs)"
+  "${psql_cmd[@]}" -d "$db" -v rows="$rows" -v slugs="$slugs" -f "$here/official_apps.sql"
 else
   echo "Skipping the official app sync check: needs node and npm install (for esbuild)." >&2
 fi

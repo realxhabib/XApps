@@ -49,7 +49,7 @@ const profile = (id: string): Profile => ({
 /** A match_json row as the v1 schema returns it (no v2 fields). */
 const v1Match = {
   id: "m1",
-  appSlug: "emoji-decode",
+  appSlug: "quick-draw",
   mode: "live",
   status: "completed",
   scoring: "high",

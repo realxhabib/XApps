@@ -82,22 +82,47 @@ test("two players duel live across tabs", async ({ context }) => {
   await expect(bob.getByRole("dialog", { name: /Defeat/ })).toBeVisible({ timeout: 15_000 });
 });
 
-test("four-player trivia practice runs to a podium", async ({ page }) => {
-  test.setTimeout(180_000);
-  await signIn(page, "trivia_e2e");
-  await page.goto("/apps/trivia-royale");
+test("four-player practice runs to a podium", async ({ page }) => {
+  // Wedge Wars seats 2–4: the viewer locks in and three practice bots brawl it out until the 2:30 bell
+  // at the latest. Headless WebGL is slow, so render at the lowest quality tier.
+  test.setTimeout(420_000);
+  await page.addInitScript(() => window.localStorage.setItem("wedge-wars:quality", "low"));
+  await signIn(page, "podium_e2e");
+  await page.goto("/apps/wedge-wars");
   await page.getByRole("radiogroup", { name: "Practice table size" }).getByRole("radio", { name: "4" }).click();
   await page.getByRole("button", { name: /^Practice/ }).click();
   await expect(page).toHaveURL(/\/play\//);
 
   const app = page.frameLocator("iframe");
-  const results = page.getByRole("dialog", { name: /Trivia Royale/ });
-  // Eight rounds: tap the first answer tile whenever one is open.
-  for (let i = 0; i < 90 && !(await results.isVisible()); i++) {
-    await app.getByRole("button", { name: /^Triangle:/ }).click({ timeout: 1_500 }).catch(() => undefined);
-    await page.waitForTimeout(1_000);
-  }
-  await expect(results).toBeVisible({ timeout: 30_000 });
+  // Lock in once the garage is interactive (the button turns into "Locked in — waiting…").
+  const lockIn = app.getByRole("button", { name: /^Lock in/ });
+  await expect(async () => {
+    await lockIn.click({ timeout: 20_000 });
+    await expect(lockIn).toBeHidden({ timeout: 15_000 });
+  }).toPass({ timeout: 120_000 });
+  const results = page.getByRole("dialog", { name: /Wedge Wars/ });
+  await expect(results).toBeVisible({ timeout: 240_000 });
   // Four seated players are ranked: the viewer plus three practice bots.
-  await expect(results.getByText(/trivia_e2e/).first()).toBeVisible();
+  await expect(results.getByText(/podium_e2e/).first()).toBeVisible();
+});
+
+test("history of a retired app still renders", async ({ page }) => {
+  await signIn(page, "history_e2e");
+  // Older demo data: a finished match of Trivia Royale, since retired.
+  const matchId = await page.evaluate(() => {
+    const key = "xapps:demo-db:v4";
+    const db = JSON.parse(localStorage.getItem(key)!);
+    const match = Object.values(db.matches as Record<string, { id: string; status: string; scoring: string; appSlug: string }>).find(
+      (m) => m.status === "completed" && m.scoring !== "votes",
+    )!;
+    match.appSlug = "trivia-royale";
+    localStorage.setItem(key, JSON.stringify(db));
+    return match.id;
+  });
+  await page.goto(`/play/${matchId}`);
+  await expect(page.getByRole("dialog", { name: /Trivia Royale/ })).toBeVisible();
+  await page.goto("/apps/trivia-royale");
+  await expect(page.getByText("Trivia Royale was retired")).toBeVisible();
+  await page.goto("/apps");
+  await expect(page.getByRole("link", { name: /Trivia Royale/ })).toHaveCount(0);
 });

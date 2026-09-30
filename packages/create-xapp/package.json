@@ -1,6 +1,6 @@
 {
   "name": "create-xapp",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Scaffold an XApps app in seconds: Vite + React + TypeScript with @xapps/sdk, a turn-based starter, or one HTML file.",
   "license": "MIT",
   "author": "XApps contributors",

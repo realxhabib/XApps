@@ -14,7 +14,7 @@ const SIDE_STYLES: Record<string, { label: string; className: string }> = {
   against: { label: "Against", className: "bg-flare/15 text-flare border-flare/30" },
 };
 
-/** Parses tones like "for:2" (side + spice) used by Hot Takes; other tones render as a plain badge. */
+/** Parses debate tones like "for:2" (side + spice; old Hot Takes entries carry them); other tones render as a plain badge. */
 function parseTone(tone?: string): { side?: { label: string; className: string }; spice: number; raw?: string } {
   if (!tone) return { spice: 0 };
   const [side, spice] = tone.split(":");

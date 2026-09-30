@@ -18,7 +18,7 @@ import { haptic } from "@/lib/haptics";
 import { play } from "@/lib/sfx";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import { getOfficialApp } from "@/platform/catalog";
+import { appForSlug, isRetiredApp } from "@/platform/retired-apps";
 import { useViewer } from "@/platform/client";
 import { XP } from "@/platform/scoring";
 import { useApps, useVote, useVotingMatches } from "@/platform/queries";
@@ -40,8 +40,9 @@ export function Arena() {
   const [judged, setJudged] = useState(0);
   const optionRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  // Freeze the queue for the session so contests don't reshuffle mid-vote.
-  if (data && queue === null) setQueue(data.filter((m) => m.players.length >= 2));
+  // Freeze the queue for the session so contests don't reshuffle mid-vote. A retired app's last
+  // contests settle on their own at the deadline; the crowd no longer sees them.
+  if (data && queue === null) setQueue(data.filter((m) => m.players.length >= 2 && !isRetiredApp(m.appSlug)));
 
   const votable = useMemo(() => {
     const slugs = new Set((queue ?? []).map((m) => m.appSlug));
@@ -49,7 +50,7 @@ export function Arena() {
   }, [queue]);
   const filtered = useMemo(() => (queue ?? []).filter((m) => filter === "all" || m.appSlug === filter), [filter, queue]);
   const current = filtered[index];
-  const app = current ? (apps?.find((a) => a.slug === current.appSlug) ?? getOfficialApp(current.appSlug)) : undefined;
+  const app = current ? appForSlug(current.appSlug, apps) : undefined;
 
   const next = useCallback(() => {
     setPicked(null);
@@ -132,7 +133,7 @@ export function Arena() {
             items={[
               { id: "all", label: "All" },
               ...votable.map((slug) => {
-                const a = apps?.find((x) => x.slug === slug) ?? getOfficialApp(slug);
+                const a = appForSlug(slug, apps);
                 return { id: slug, label: a?.name ?? slug, icon: <span>{a?.icon}</span> };
               }),
             ]}

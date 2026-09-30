@@ -27,6 +27,7 @@ import { isMultiplayer, seatedPlayers, tableSizeLabel, tableSizeLabelForMatch } 
 import { play } from "@/lib/sfx";
 import { MODE_LABEL } from "@/platform/match-utils";
 import { useActivity, useApp, useLeaderboard, usePractice, useQuickMatch } from "@/platform/queries";
+import { getRetiredApp } from "@/platform/retired-apps";
 import { CATEGORIES } from "@/platform/types";
 
 export function AppDetail({ slug }: { slug: string }) {
@@ -43,8 +44,13 @@ export function AppDetail({ slug }: { slug: string }) {
   const isOwner = useIsAppOwner(app);
 
   if (!app) {
+    const retired = getRetiredApp(slug);
     return isPending ? (
       <Skeleton className="h-96 rounded-[2.5rem]" />
+    ) : retired ? (
+      <EmptyState emoji={retired.icon} title={`${retired.name} was retired`} action={<Button href="/apps">Browse apps</Button>}>
+        It&apos;s no longer on XApps. Your matches in it, and the XP they earned, stay on your profile.
+      </EmptyState>
     ) : (
       <EmptyState emoji="🧭" title="App not found" action={<Button href="/apps">Browse apps</Button>}>
         It may have been removed, or it&apos;s still waiting for review.

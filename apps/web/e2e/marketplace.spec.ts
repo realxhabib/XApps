@@ -11,8 +11,8 @@ test("home shows the hero and featured apps", async ({ page }) => {
 test("marketplace filters by category", async ({ page }) => {
   await enableDemo(page);
   await page.goto("/apps");
-  await page.getByRole("tab", { name: /Trivia/ }).click();
-  await expect(page.getByRole("link", { name: /Emoji Decode/ })).toBeVisible();
+  await page.getByRole("tab", { name: /Contests/ }).click();
+  await expect(page.getByRole("link", { name: /Meme Duel/ })).toBeVisible();
   await expect(page.getByRole("link", { name: /Four in a Row/ })).toHaveCount(0);
 });
 

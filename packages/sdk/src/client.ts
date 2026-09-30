@@ -29,6 +29,7 @@ import {
   type SubmitResult,
   type ToastTone,
 } from "./protocol";
+import { calmPage, lockGestures } from "./gestures";
 import { createRandom, randomId, type Random } from "./random";
 import { createWindowTransport, type AppTransport } from "./transport";
 import { createMockHost, type MockHostOptions } from "./mock-host";
@@ -74,6 +75,12 @@ export interface ConnectOptions {
    * (level `error`, with the stack). Default true.
    */
   captureErrors?: boolean;
+  /**
+   * Inside XApps, stop your page from bouncing or pull-to-refreshing when
+   * people drag (`overscroll-behavior: none`; scrolling still works). Default
+   * true. For drag surfaces also call `xapps.ui.lockGestures(element)`.
+   */
+  gestures?: boolean;
 }
 
 type Handler<T> = (value: T) => void;
@@ -575,6 +582,12 @@ export class XAppsClient {
      * changes. Returns a function that stops it. Fire and forget.
      */
     autoResize: (options: AutoResizeOptions = {}): (() => void) => this.startAutoResize(options),
+    /**
+     * Makes an element a drag surface (canvas, board, slider): touches on it
+     * never scroll, bounce or pull-to-refresh the page, even on iOS. Returns
+     * a function that undoes it. Local only, works in every purpose.
+     */
+    lockGestures: (element: HTMLElement | null | undefined): (() => void) => lockGestures(element),
   };
 
   readonly social = {
@@ -1423,6 +1436,7 @@ async function handshake(options: ConnectOptions): Promise<XAppsClient> {
   if (!transport) {
     if (!win) throw new XAppsError("not_connected", "connect() must run in a browser");
     const embedded = win.parent !== win;
+    if (embedded && options.gestures !== false) calmPage(win.document);
     if (!embedded) {
       if (options.mock === false) {
         throw new XAppsError("not_connected", "Not running inside XApps (no parent window)");

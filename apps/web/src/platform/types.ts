@@ -119,6 +119,11 @@ export interface AppManifest {
   official: boolean;
   developer: { id: string | null; handle: string; name: string };
   status: AppStatus;
+  /**
+   * A first-party app taken off the platform (see `retired-apps.ts`): a stand-in so old matches and
+   * results still render. Never listed or playable.
+   */
+  retired?: boolean;
   playCount: number;
   /**
    * How many people upvoted the app (the marketplace sorts by it). The backends always set it;

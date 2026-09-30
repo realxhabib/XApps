@@ -248,6 +248,7 @@ const API: { group: string; rows: [string, string][] }[] = [
     rows: [
       ["xapps.ui.setStatus(text) · setScores(map) · setTurn(id)", "Drive the host HUD above your app."],
       ["xapps.ui.toast(msg) · celebrate() · haptic(style)", "Host-rendered toasts, confetti and vibration."],
+      ["xapps.ui.lockGestures(element)", "Makes a canvas/board/slider a drag surface: no page scroll, bounce or pull-to-refresh while touching it, iOS included. Returns an undo function. React: useGestureLock(ref). connect() already stops your page from bouncing inside XApps."],
       ["xapps.social.share(text, url?)", "Opens the X composer, pre-filled. The user always confirms. Pass a media.upload image URL and X shows the picture as a large card."],
     ],
   },

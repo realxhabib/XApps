@@ -1,13 +1,13 @@
 # XApps
 
 **A social app marketplace on X.** Sign in with X, pick an app and go head-to-head with anyone:
-reflex duels, meme battles judged by the crowd, hot-take debates, strategy and trivia races.
+reflex duels, meme battles judged by the crowd, strategy and 3D robot brawls.
 Anyone can build and list their own app with the `@xapps/sdk`.
 
 - **Marketplace**: browse, search and filter apps. Each app card is a live animated vignette.
 - **Challenges**: quick match, invite one or several `@handles`, or post an open challenge link to your timeline. Tables seat 2–8 players, with teams and spectators.
 - **Play room**: every app runs inside a host that adds the drama: a VS intro, a 3-2-1 countdown, a HUD with presence and turn indicators, emoji reactions, results with XP and level-ups, rematch and share.
-- **The Arena**: the crowd judges meme duels and hot takes. Entries stay anonymous until you vote, and every vote earns XP.
+- **The Arena**: the crowd judges meme duels and other crowd-voted contests. Entries stay anonymous until you vote, and every vote earns XP.
 - **Profiles and leaderboards**: XP, levels, streaks, and rankings overall and per app.
 - **Developer portal**: SDK docs, app registration with a live preview, and a **Sandbox** that runs two copies of your app side by side with a live protocol log.
 
@@ -15,11 +15,8 @@ Anyone can build and list their own app with the `@xapps/sdk`.
 | --- | --- | --- |
 | 🖼️ Meme Duel | Caption the same real meme template, or an image the challenger drops (upload or an X post's photo), optionally on a topic; add stickers and let the crowd vote | votes |
 | ⚡ Reflexes | Best-of-five reflex duel, with reaction times measured on each device | rounds won |
-| 🔥 Hot Takes | You're assigned a side; argue it in 280 characters, and the crowd picks the better argument | votes |
 | 🔴 Four in a Row | Connect-four with physics and a minimax bot; play live or turn by turn over days | win/draw/loss |
-| 🎯 Trivia Royale | 2–8 players, eight rounds, faster right answers score more; spectators welcome | points |
 | 🛻 Wedge Wars | 3D arena brawl for 2–4 players: armored wedge trucks with spinners, flippers, hammers and flamethrowers, with saws, flame vents and a KO pit | placement + damage |
-| 🧩 Emoji Decode | Eight emoji puzzles, where both speed and accuracy score | points |
 | ✊ RPS Showdown | Example community app: **one HTML file**, commit-reveal included | rounds won |
 
 The default apps are built on the **same public SDK** that third-party developers use. They're only special in that they're served from `/embed/*`.
@@ -66,7 +63,7 @@ If the keys are set but the schema isn't installed yet, the app says so and offe
 
 **Vercel** (recommended): import the repo and set **Root Directory** to `apps/web`. Leave *Include files outside the root directory* on, because the app imports `packages/sdk`. [`apps/web/vercel.json`](apps/web/vercel.json) already installs from the monorepo root and runs `npm run build`, which bundles the SDK and then runs `next build`. Use Node 22 (anything from 20.9 works). Add the four variables from step 6 in *Settings → Environment Variables*, with `NEXT_PUBLIC_SITE_URL` set to your production URL. Then add `https://<your-domain>/auth/callback` to the Supabase redirect URLs. Without the Supabase variables, the deployment runs in demo mode.
 
-**Official apps.** First-party apps live in code ([`apps/web/src/platform/catalog.ts`](apps/web/src/platform/catalog.ts)), not in migrations. `npm run sync-apps` upserts every app the catalog flags `official` into `public.apps` and reports each one as inserted, updated or unchanged (`npm run sync-apps -- --dry-run` prints the rows without connecting). It needs the Supabase **service role** key, so add `SUPABASE_SERVICE_ROLE_KEY` (or the new `SUPABASE_SECRET_KEY`, `sb_secret_…`) in Vercel as a server-only variable (never `NEXT_PUBLIC_`) for the **Production** environment. Every production build then runs the sync after `next build`, and a failed sync fails the deploy. Without the key the build skips the sync. Preview builds skip it too, so a branch never publishes its catalog to your database (set `SYNC_APPS=always` if previews use their own Supabase project, or `SYNC_APPS=off` to turn the sync off). Without Vercel, run `npm run sync-apps` with the key in your environment or `apps/web/.env.local` after deploying.
+**Official apps.** First-party apps live in code ([`apps/web/src/platform/catalog.ts`](apps/web/src/platform/catalog.ts)), not in migrations. `npm run sync-apps` upserts every app the catalog flags `official` into `public.apps` and reports each one as inserted, updated or unchanged (`npm run sync-apps -- --dry-run` prints the rows without connecting). An official app you delete from the catalog is **retired** by the next sync: its row is set to `rejected`, so it is no longer listed or playable, and its open, pending and active matches are cancelled; the row, finished matches and earned XP stay, and old matches still render under the app's name (`src/platform/retired-apps.ts`). It needs the Supabase **service role** key, so add `SUPABASE_SERVICE_ROLE_KEY` (or the new `SUPABASE_SECRET_KEY`, `sb_secret_…`) in Vercel as a server-only variable (never `NEXT_PUBLIC_`) for the **Production** environment. Every production build then runs the sync after `next build`, and a failed sync fails the deploy. Without the key the build skips the sync. Preview builds skip it too, so a branch never publishes its catalog to your database (set `SYNC_APPS=always` if previews use their own Supabase project, or `SYNC_APPS=off` to turn the sync off). Without Vercel, run `npm run sync-apps` with the key in your environment or `apps/web/.env.local` after deploying.
 
 **Anywhere else**: `npm ci && npm run build && npm start` on Node 20.9+ serves on port 3000 (set `PORT` to change it).
 
@@ -160,7 +157,7 @@ Full reference: the `/developers` page in the app and [`packages/sdk/README.md`]
 | --- | --- |
 | `npm run dev` | Builds the SDK bundle and starts Next.js on :3000 |
 | `npm run build` / `npm start` | Production build and serve (the build also syncs official apps when a service role key is set) |
-| `npm run sync-apps` | Upserts the first-party apps from the catalog into Supabase (`-- --dry-run` prints the rows) |
+| `npm run sync-apps` | Upserts the first-party apps from the catalog into Supabase and retires official apps it no longer has (`-- --dry-run` prints the rows) |
 | `npm test` | Unit tests (SDK protocol, game logic, scoring) |
 | `npm run typecheck` / `npm run lint` | TypeScript and ESLint |
 | `npm run test:e2e` | Playwright end-to-end run in demo mode |

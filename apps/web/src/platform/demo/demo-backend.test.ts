@@ -107,7 +107,7 @@ describe("demo backend: N-player lobbies", () => {
   it("rejects more invites than seats and table sizes outside the app's range", async () => {
     await signUp("bob", "carol");
     await as("alice");
-    await expectCode(backend.createChallenge({ appSlug: "emoji-decode", mode: "live", opponentHandles: ["bob", "carol"] }), "invalid");
+    await expectCode(backend.createChallenge({ appSlug: "quick-draw", mode: "live", opponentHandles: ["bob", "carol"] }), "invalid");
     await backend.registerApp(appInput("royale", { players: { min: 2, max: 4 } }));
     await expectCode(backend.createChallenge({ appSlug: "royale", mode: "live", maxPlayers: 6 }), "invalid");
     await expectCode(backend.createChallenge({ appSlug: "royale", mode: "live", opponentHandles: ["bob", "carol"], maxPlayers: 2 }), "invalid");
@@ -156,7 +156,7 @@ describe("demo backend: N-player lobbies", () => {
   it("declines a table that can no longer reach its minimum, like a v1 1v1", async () => {
     await signUp("bob");
     await as("alice");
-    const match = await backend.createChallenge({ appSlug: "emoji-decode", mode: "live", opponentHandle: "bob" });
+    const match = await backend.createChallenge({ appSlug: "quick-draw", mode: "live", opponentHandle: "bob" });
     expect(match.status).toBe("pending");
     await as("bob");
     expect((await backend.declineMatch(match.id)).status).toBe("declined");
@@ -303,7 +303,7 @@ describe("demo backend: settlement", () => {
     try {
       await signUp("bob");
       await as("alice");
-      const match = await backend.createChallenge({ appSlug: "emoji-decode", mode: "live", opponentHandle: "bob" });
+      const match = await backend.createChallenge({ appSlug: "quick-draw", mode: "live", opponentHandle: "bob" });
       await as("bob");
       await backend.joinMatch(match.id);
       await as("alice");
@@ -329,7 +329,7 @@ describe("demo backend: settlement", () => {
   it("keeps a 1v1 settling exactly like v1", async () => {
     await signUp("bob");
     await as("alice");
-    const match = await backend.createChallenge({ appSlug: "emoji-decode", mode: "live", opponentHandle: "bob" });
+    const match = await backend.createChallenge({ appSlug: "quick-draw", mode: "live", opponentHandle: "bob" });
     await as("bob");
     await backend.joinMatch(match.id);
     await backend.submit(match.id, { score: 300 });
@@ -562,18 +562,18 @@ describe("demo backend: dead lobbies", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       await as("alice");
-      const first = await backend.quickMatch("emoji-decode");
+      const first = await backend.quickMatch("quick-draw");
       expect(first.status).toBe("open");
       vi.setSystemTime(Date.now() + 11 * 60_000);
       const listed = await backend.listMyMatches();
       expect(listed.find((m) => m.id === first.id)?.status).toBe("expired");
       // A new press makes one fresh lobby, not another dead one next to it.
-      const fresh = await backend.quickMatch("emoji-decode");
+      const fresh = await backend.quickMatch("quick-draw");
       expect(fresh.id).not.toBe(first.id);
-      expect((await backend.quickMatch("emoji-decode")).id).toBe(fresh.id);
+      expect((await backend.quickMatch("quick-draw")).id).toBe(fresh.id);
       await signUp("bob");
       await as("alice");
-      const table = await backend.createChallenge({ appSlug: "emoji-decode", mode: "live", opponentHandle: "bob" });
+      const table = await backend.createChallenge({ appSlug: "quick-draw", mode: "live", opponentHandle: "bob" });
       vi.setSystemTime(Date.now() + 3 * 3_600_000);
       const later = await backend.listMyMatches();
       expect(later.find((m) => m.id === table.id)?.status).toBe("expired");
@@ -629,5 +629,40 @@ describe("demo store", () => {
     expect(db.matches.m1?.players[0]).toMatchObject({ role: "player", team: null, rank: 1 });
     expect(PRACTICE_BOTS.every((bot) => db.profiles[bot.id])).toBe(true);
     expect(fakeLocalStorage.getItem("xapps:demo-db:v3")).toBeNull();
+  });
+});
+
+describe("demo backend: retired apps", () => {
+  it("keeps old matches readable, cancels unfinished ones and refuses new play", async () => {
+    await signUp("bob");
+    await as("alice");
+    const done = await backend.createChallenge({ appSlug: "quick-draw", mode: "live", opponentHandle: "bob" });
+    await as("bob");
+    await backend.joinMatch(done.id);
+    await backend.submit(done.id, { score: 1 });
+    await as("alice");
+    await backend.submit(done.id, { score: 3 });
+    const waiting = await backend.createChallenge({ appSlug: "quick-draw", mode: "live", opponentHandle: "bob" });
+    // Older demo data: both were Trivia Royale matches.
+    const db = JSON.parse(fakeLocalStorage.getItem(DB_KEY)!);
+    for (const id of [done.id, waiting.id]) db.matches[id].appSlug = "trivia-royale";
+    fakeLocalStorage.setItem(DB_KEY, JSON.stringify(db));
+
+    const mine = await backend.listMyMatches();
+    expect(mine.find((m) => m.id === done.id)).toMatchObject({ appSlug: "trivia-royale", status: "completed", winnerId: people.alice!.id });
+    expect(mine.find((m) => m.id === waiting.id)?.status).toBe("cancelled");
+    expect((await backend.getMatch(done.id))?.status).toBe("completed");
+    expect((await backend.listApps()).some((a) => a.slug === "trivia-royale")).toBe(false);
+    expect(await backend.getApp("trivia-royale")).toBeNull();
+    await expectCode(backend.quickMatch("trivia-royale"), "not_found");
+    await expectCode(backend.createChallenge({ appSlug: "trivia-royale", mode: "live", opponentHandle: "bob" }), "not_found");
+    await expectCode(backend.startPractice("trivia-royale"), "not_found");
+    await expectCode(backend.registerApp(appInput("trivia-royale")), "conflict");
+  });
+
+  it("stocks the Arena with Meme Duels only", () => {
+    const voting = Object.values(load().matches).filter((m) => m.status === "voting");
+    expect(voting.length).toBeGreaterThan(0);
+    expect(voting.every((m) => m.appSlug === "meme-duel")).toBe(true);
   });
 });

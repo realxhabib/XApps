@@ -51,7 +51,7 @@ export default function OpengraphImage() {
             .
           </div>
           <div style={{ marginTop: 28, fontSize: 34, color: "#b8bfcf" }}>
-            Reflex duels · meme battles · hot takes · trivia races
+            Reflex duels · meme battles · robot brawls · four in a row
           </div>
         </div>
       </div>

@@ -138,6 +138,150 @@ begin
   assert (select official from public.apps where slug = 'rps-showdown'), 'apps outside the sync are left alone';
 end $$;
 
+-- 4. Retirement: official rows the catalog no longer has (run.sh passes every
+--    catalog slug, official or not, as :slugs) are retired, replaying the
+--    script: `update apps set status = 'rejected'` for them, then cancel their
+--    open, pending and active matches. Trivia Royale, Hot Takes and Emoji
+--    Decode were seeded by migrations and have since left the catalog.
+create temp table sync_slugs as select (:'slugs')::jsonb as slugs;
+grant select on sync_slugs to service_role;
+
+create function pg_temp.sync_retire() returns integer
+language plpgsql as $$
+declare
+  v_keep text[] := array(select jsonb_array_elements_text(slugs) from sync_slugs);
+  v_gone text[];
+  n integer;
+begin
+  select coalesce(array_agg(slug), '{}') into v_gone from public.apps where official and slug <> all (v_keep);
+  update public.apps set status = 'rejected', updated_at = now()
+   where slug = any (v_gone) and official and status <> 'rejected';
+  update public.matches set status = 'cancelled', updated_at = now()
+   where app_slug = any (v_gone) and status in ('open', 'pending', 'active');
+  get diagnostics n = row_count;
+  return n;
+end;
+$$;
+grant execute on function pg_temp.sync_retire() to service_role;
+
+-- A player with history in a retired app: matches in every state, stats, a badge, XP, plays.
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('99999999-9999-4999-8999-999999999999', null, '{"user_name":"retiree","full_name":"Retiree"}');
+create temp table retiree_matches (k text primary key, id uuid);
+grant select on retiree_matches to authenticated;
+do $$
+declare
+  v_me uuid := '99999999-9999-4999-8999-999999999999';
+  v_status text;
+  v_id uuid;
+begin
+  foreach v_status in array array['open', 'pending', 'active', 'voting', 'completed'] loop
+    insert into public.matches (app_slug, mode, status, scoring, created_by, max_players, winner_id)
+    values (case when v_status = 'voting' then 'hot-takes' else 'trivia-royale' end, 'live', v_status,
+            case when v_status = 'voting' then 'votes' else 'high' end, v_me, 4,
+            case when v_status = 'completed' then v_me end)
+    returning id into v_id;
+    insert into public.match_players (match_id, user_id, seat, state, score, result)
+    values (v_id, v_me, 0, case when v_status in ('voting', 'completed') then 'submitted' else 'joined' end,
+            case when v_status = 'completed' then 7420 end, case when v_status = 'completed' then 'win' end);
+    insert into retiree_matches values (v_status, v_id);
+  end loop;
+  insert into public.app_user_stats (app_slug, user_id, key, value) values ('trivia-royale', v_me, 'crowns', 1);
+  insert into public.user_achievements (app_slug, user_id, achievement_id) values ('trivia-royale', v_me, 'crowned');
+  update public.profiles set xp = 140 where id = v_me;
+  update public.apps set play_count = 9 where slug = 'trivia-royale';
+end $$;
+
+set role service_role;
+select set_config('sync.cancelled', pg_temp.sync_retire()::text, false) as retire_result \gset
+reset role;
+do $$
+begin
+  assert current_setting('sync.cancelled')::int = 3, 'open, pending and active matches cancelled';
+  assert (select array_agg(slug order by slug) from public.apps where status = 'rejected' and official)
+         = '{emoji-decode,hot-takes,trivia-royale}', 'retired exactly the official apps the catalog dropped';
+  assert (select official and status = 'published' from public.apps where slug = 'rps-showdown'),
+         'catalog apps outside the sync (not official there) are left alone';
+  assert pg_temp.sync_drift() is null, 'catalog apps untouched';
+  -- Nothing is deleted: the row (plays, progress definitions) and the history stay.
+  assert (select play_count = 9 and jsonb_array_length(stats) = 4 and jsonb_array_length(achievements) = 9
+            from public.apps where slug = 'trivia-royale'), 'the row keeps its plays and progress definitions';
+  assert (select jsonb_object_agg(k, m.status) from retiree_matches r join public.matches m on m.id = r.id)
+         = '{"open":"cancelled","pending":"cancelled","active":"cancelled","voting":"voting","completed":"completed"}',
+         'unfinished matches cancelled; voting ones settle at their deadline; finished ones stay';
+  assert (select xp from public.profiles where handle = 'retiree') = 140, 'XP stays';
+  assert exists (select 1 from public.app_user_stats where app_slug = 'trivia-royale'), 'stats rows stay';
+  assert exists (select 1 from public.user_achievements where app_slug = 'trivia-royale'), 'badges stay';
+end $$;
+
+-- Retiring again changes nothing.
+set role service_role;
+select set_config('sync.cancelled', pg_temp.sync_retire()::text, false) as retire_result \gset
+reset role;
+do $$
+begin
+  assert current_setting('sync.cancelled')::int = 0, 'idempotent';
+end $$;
+
+-- Players: the app is gone from listings and play, but their history still opens.
+set role authenticated;
+select set_config('request.jwt.claim.sub', '99999999-9999-4999-8999-999999999999', false) as jwt \gset
+do $$
+declare
+  v_done uuid := (select id from retiree_matches where k = 'completed');
+begin
+  assert not exists (select 1 from public.apps where slug in ('trivia-royale', 'hot-takes', 'emoji-decode')), 'not listed';
+  assert exists (select 1 from public.apps where slug = 'quick-draw'), 'catalog apps still listed';
+  assert (public.get_match(v_done)->>'status') = 'completed', 'a finished match still opens';
+  assert (public.get_match(v_done)->>'appSlug') = 'trivia-royale', 'and still names its app';
+  assert jsonb_path_exists(public.list_my_matches(), '$[*] ? (@.id == $id)', jsonb_build_object('id', v_done)), 'in my matches';
+end $$;
+do $$
+declare
+  v_sql text;
+  v_state text;
+begin
+  foreach v_sql in array array[
+    'select public.quick_match(''trivia-royale'')',
+    'select public.create_challenge(''emoji-decode'', ''async'', null)',
+    'select public.start_practice(''hot-takes'')',
+    'select public.report_stats(''trivia-royale'', ''{"crowns":1}'')',
+    'select public.unlock_achievement(''trivia-royale'', ''crowned'')',
+    'select public.open_app(''emoji-decode'', null)'
+  ] loop
+    begin
+      execute v_sql;
+      raise exception 'expected P0002';
+    exception when others then
+      get stacked diagnostics v_state = returned_sqlstate;
+      assert v_state = 'P0002', format('%s -> %s %s', v_sql, v_state, sqlerrm);
+    end;
+  end loop;
+end $$;
+reset role;
+select set_config('request.jwt.claim.sub', '', false) as jwt \gset
+
+-- Back in the catalog, the next sync republishes it (the upsert sends status).
+update public.apps set status = 'published' where slug = 'trivia-royale';
+set role service_role;
+select set_config('sync.cancelled', pg_temp.sync_retire()::text, false) as retire_result \gset
+reset role;
+do $$
+begin
+  assert (select status from public.apps where slug = 'trivia-royale') = 'rejected', 're-retired while still missing from the catalog';
+end $$;
+
+-- Leave lifecycle.sql the retired catalog, without this player.
+delete from public.matches where id in (select id from retiree_matches);
+delete from public.app_user_stats where user_id = '99999999-9999-4999-8999-999999999999';
+delete from public.user_achievements where user_id = '99999999-9999-4999-8999-999999999999';
+delete from public.profiles where id = '99999999-9999-4999-8999-999999999999';
+delete from auth.users where id = '99999999-9999-4999-8999-999999999999';
+update public.apps set play_count = 0 where slug = 'trivia-royale';
+drop table retiree_matches;
+drop function pg_temp.sync_retire();
+drop table sync_slugs;
+
 update public.apps set play_count = 0, upvotes = 0 where slug = 'quick-draw';
 drop function pg_temp.sync_upsert();
 drop function pg_temp.sync_drift();

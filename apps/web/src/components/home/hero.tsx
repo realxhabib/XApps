@@ -83,8 +83,8 @@ function GuestCopy() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.45, ...spring.soft }}
       >
-        Reflex duels, meme battles and hot-take showdowns. Pick an app, send the link, settle it — the crowd keeps
-        score and the winner keeps the receipts.
+        Reflex duels, meme battles and robot brawls. Pick an app, send the link, settle it — the crowd keeps score
+        and the winner keeps the receipts.
       </motion.p>
       <motion.div
         className="mt-8 flex flex-wrap items-center gap-3"

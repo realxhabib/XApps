@@ -37,7 +37,7 @@ import {
   type Drop,
 } from "./logic";
 import { Burst, DropPop, Feature, Ghost, PART_EMOJI, RowGuide, Stage, StepPips, toneFor, type FeatureState } from "./parts";
-import { shareCardBlob } from "./share";
+import { faceImageBlob, shareCardBlob } from "./share";
 import { BOARD_STAT, BOARD_TOP, cleanStanding, formatCount, percentLabel, standingMoments, type Moments } from "./standing";
 
 const TAG = "gregs-face";
@@ -387,6 +387,9 @@ function Run({
   const [result, setResult] = useState<RunResult | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [sharing, setSharing] = useState<"idle" | "busy" | "done">("idle");
+  const [saving, setSaving] = useState(false);
+  // On the reveal: dashed outlines of where each feature belonged ("misses"), or the clean face.
+  const [showMisses, setShowMisses] = useState(true);
   const [stageScope, animateStage] = useAnimate<HTMLDivElement>();
   // What event handlers read synchronously (state lags a render behind).
   // `shownMs`: slide time of the last painted frame, so a tap scores the position on screen.
@@ -540,6 +543,34 @@ function Run({
     }
   };
 
+  /** Saves the clean face (no outlines): the share sheet on phones (it has "Save Image"), a download elsewhere. */
+  const saveFace = async () => {
+    if (saving) return;
+    setSaving(true);
+    play("pop");
+    try {
+      const blob = await faceImageBlob(kit, live.current.drops);
+      const file = new File([blob], `${face.name.toLowerCase()}s-face.png`, { type: "image/png" });
+      const touch = window.matchMedia("(pointer: coarse)").matches;
+      if (touch && navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file] });
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = file.name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      }
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === "AbortError")) console.warn(`[${TAG}] save failed`, e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   /* Input ----------------------------------------------------------------- */
 
   /** The slide time of what the player was looking at (the last painted frame), else the event's time. */
@@ -651,6 +682,7 @@ function Run({
                   ),
                 )}
                 {phase === "reveal" &&
+                  showMisses &&
                   drops.map((d, i) => (revealStep > i ? <Ghost key={d.part} kit={kit} drop={d} reduced={reduced} /> : null))}
                 <AnimatePresence>
                   {phase === "dropped" && lastDrop && <DropPop key={lastDrop.part} face={face} drop={lastDrop} />}
@@ -660,6 +692,25 @@ function Run({
                 )}
               </Stage>
               <Announcer part={phase === "intro" ? partId : null} />
+              <AnimatePresence>
+                {shown && (
+                  <motion.button
+                    type="button"
+                    initial={reduced ? false : { opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={spring.snappy}
+                    onClick={() => {
+                      play("tick");
+                      setShowMisses((v) => !v);
+                    }}
+                    aria-pressed={!showMisses}
+                    className="absolute right-3 top-3 z-30 rounded-full bg-ink-950/70 px-3 py-1.5 text-xs font-bold text-ink-50 ring-1 ring-white/20 backdrop-blur transition hover:bg-ink-950/85"
+                  >
+                    {showMisses ? "✨ Clean face" : "👀 Show misses"}
+                  </motion.button>
+                )}
+              </AnimatePresence>
             </div>
 
             {phase === "reveal" ? (
@@ -695,6 +746,9 @@ function Run({
             >
               <ActionButton tone="ghost" onClick={share} disabled={sharing === "busy"} className="px-6">
                 {sharing === "busy" ? "Sharing…" : sharing === "done" ? "Shared ✓" : "Share"}
+              </ActionButton>
+              <ActionButton tone="ghost" onClick={saveFace} disabled={saving} className="px-6">
+                {saving ? "Saving…" : "Save"}
               </ActionButton>
               <ActionButton onClick={onAgain} className="px-9">
                 ↻ Again

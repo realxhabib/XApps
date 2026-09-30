@@ -25,6 +25,7 @@ export {
   type TurnInfo,
 } from "./client";
 export { createRandom, randomId, type Random } from "./random";
+export { calmPage, lockGestures } from "./gestures";
 export {
   createMockHost,
   type MockHost,

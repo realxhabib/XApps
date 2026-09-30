@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { ViewTransition } from "react";
 import { AppDetail } from "@/components/pages/app-detail";
 import { OFFICIAL_APPS, getOfficialApp } from "@/platform/catalog";
+import { getRetiredApp } from "@/platform/retired-apps";
 
 export function generateStaticParams() {
   return OFFICIAL_APPS.map((app) => ({ slug: app.slug }));
@@ -10,7 +11,10 @@ export function generateStaticParams() {
 export async function generateMetadata({ params }: PageProps<"/apps/[slug]">): Promise<Metadata> {
   const { slug } = await params;
   const app = getOfficialApp(slug);
-  if (!app) return { title: "App" };
+  if (!app) {
+    const retired = getRetiredApp(slug);
+    return { title: retired ? `${retired.name} (retired)` : "App" };
+  }
   return {
     title: app.name,
     description: `${app.tagline} Challenge anyone on X.`,

@@ -224,7 +224,7 @@ export function patchRect(src: Pixels, out: Pixels, rect: FaceRect, pad: number,
  * corners, so the skin around a feature melts away wherever it lands instead
  * of reading as a pasted rectangle.
  */
-export function featherCrop(src: Pixels, rect: FaceRect, softness = 0.9): Pixels {
+export function featherCrop(src: Pixels, rect: FaceRect, softness = 0.55): Pixels {
   const { x: rx, y: ry, w, h } = rect;
   const data = new Uint8ClampedArray(w * h * 4);
   const fade = Math.max(1, clamp(softness, 0, 1) * (Math.min(w, h) / 2));

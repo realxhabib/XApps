@@ -55,7 +55,7 @@ const player = (id: string, seat: number | null, extra: Partial<MatchPlayer> = {
 
 const match = (players: MatchPlayer[], extra: Partial<Match> = {}): Match => ({
   id: "m1",
-  appSlug: "emoji-decode",
+  appSlug: "wedge-wars",
   mode: "live",
   status: "active",
   scoring: "high",
@@ -85,7 +85,7 @@ const match = (players: MatchPlayer[], extra: Partial<Match> = {}): Match => ({
   ...extra,
 });
 
-const app = getOfficialApp("emoji-decode")!;
+const app = getOfficialApp("wedge-wars")!;
 
 describe("who's who", () => {
   it("separates seated players from the viewer's spectator row", () => {
@@ -180,11 +180,17 @@ describe("results", () => {
   });
 
   it("writes headlines for 3+ players", () => {
-    expect(matchHeadline(finished, "b")).toBe("You won a 4-player Emoji Decode");
+    expect(matchHeadline(finished, "b")).toBe("You won a 4-player Wedge Wars");
     expect(matchHeadline(finished, "a")).toBe("You placed 3rd of 4");
-    expect(matchHeadline(finished, "z", { id: "b", handle: "b" })).toBe("@b won a 4-player Emoji Decode");
-    expect(matchHeadline(finished, "z", { id: "c", handle: "c" })).toBe("@c placed 2nd in a 4-player Emoji Decode");
-    expect(describeResult(finished, "Trivia Royale")).toBe("@b won a 4-player Trivia Royale");
+    expect(matchHeadline(finished, "z", { id: "b", handle: "b" })).toBe("@b won a 4-player Wedge Wars");
+    expect(matchHeadline(finished, "z", { id: "c", handle: "c" })).toBe("@c placed 2nd in a 4-player Wedge Wars");
+    expect(describeResult(finished, "Relay")).toBe("@b won a 4-player Relay");
+  });
+
+  it("still names a retired app in old matches", () => {
+    const old = { ...finished, appSlug: "trivia-royale" };
+    expect(matchHeadline(old, "b")).toBe("You won a 4-player Trivia Royale");
+    expect(matchHeadline({ ...finished, appSlug: "gone-app" }, "b")).toBe("You won a 4-player match");
   });
 
   it("writes team headlines", () => {
@@ -230,10 +236,10 @@ describe("inbox", () => {
     const m = match([player("a", 0), player("b", 1, { state: "invited" }), player("c", 2, { state: "invited" })], {
       status: "pending",
       maxPlayers: 3,
-      appSlug: "emoji-decode",
+      appSlug: "wedge-wars",
     });
     expect(needsAttention(m, "b")).toBe(true);
-    expect(matchHeadline(m, "b")).toBe("@a invited you to a 3-player Emoji Decode");
+    expect(matchHeadline(m, "b")).toBe("@a invited you to a 3-player Wedge Wars");
     expect(matchHeadline(m, "a")).toBe("Waiting for 2 players to accept");
   });
 });

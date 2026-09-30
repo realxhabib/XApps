@@ -4,6 +4,12 @@
 //
 //   npm run sync-apps              sync (needs NEXT_PUBLIC_SUPABASE_URL + a service role key)
 //   npm run sync-apps -- --dry-run print the rows as JSON on stdout; never connects
+//   npm run sync-apps -- --catalog-slugs  print every catalog slug as JSON; never connects
+//
+// An official row whose slug the catalog no longer has is retired: its status
+// becomes `rejected` (hidden, and every play RPC refuses it) and its open,
+// pending and active matches are cancelled. The row, its finished matches and
+// the XP they earned stay; putting the app back in the catalog republishes it.
 //
 // Env (from the environment or apps/web/.env*.local, like `next build`):
 // NEXT_PUBLIC_SUPABASE_URL (or SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY
@@ -29,8 +35,9 @@ const buildMode = args.has("--build");
 const log = (...parts) => console.error(...parts);
 
 if (args.has("--help") || args.has("-h")) {
-  log("Usage: npm run sync-apps [-- --dry-run]");
-  log("Upserts official apps from src/platform/catalog.ts into Supabase public.apps.");
+  log("Usage: npm run sync-apps [-- --dry-run | --catalog-slugs]");
+  log("Upserts official apps from src/platform/catalog.ts into Supabase public.apps and retires");
+  log("official apps the catalog no longer has.");
   process.exit(0);
 }
 
@@ -70,6 +77,11 @@ try {
   rows = mod.officialAppRows();
 } catch (error) {
   fail(`could not read the official apps from src/platform/catalog.ts: ${error?.message ?? error}`);
+}
+
+if (args.has("--catalog-slugs")) {
+  process.stdout.write(`${JSON.stringify(mod.catalogSlugs())}\n`);
+  process.exit(0);
 }
 
 if (dryRun) {
@@ -177,13 +189,39 @@ for (const s of plan) {
   else log(`  = unchanged  ${s.slug}`);
 }
 
+// Official apps the catalog dropped are retired (after the upsert, so a failed sync retires nothing).
 const { data: others, error: othersError } = await supabase
   .from("apps")
-  .select("slug")
+  .select("slug,official,status")
   .eq("official", true)
   .not("slug", "in", `(${mod.catalogSlugs().join(",")})`);
 if (othersError) fail(dbError("could not list official apps", othersError));
-for (const { slug } of others ?? []) log(`  ? ${slug} is official in the database but not in the catalog (left as is)`);
+const retirement = mod.planOfficialAppRetirement(others ?? []);
+const toRetire = retirement.filter((s) => s.action === "retire").map((s) => s.slug);
+if (toRetire.length) {
+  const { error } = await supabase
+    .from("apps")
+    .update({ status: mod.RETIRED_STATUS, updated_at: new Date().toISOString() })
+    .in("slug", toRetire)
+    .eq("official", true);
+  if (error) fail(dbError("could not retire official apps", error));
+}
+const cancelled = new Map();
+if (retirement.length) {
+  const { data, error } = await supabase
+    .from("matches")
+    .update({ status: "cancelled", updated_at: new Date().toISOString() })
+    .in("app_slug", retirement.map((s) => s.slug))
+    .in("status", [...mod.RETIRED_MATCH_STATUSES])
+    .select("app_slug");
+  if (error) fail(dbError("could not cancel a retired app's unfinished matches", error));
+  for (const { app_slug } of data ?? []) cancelled.set(app_slug, (cancelled.get(app_slug) ?? 0) + 1);
+}
+for (const s of retirement) {
+  const n = cancelled.get(s.slug) ?? 0;
+  const matches = n ? `; ${n} unfinished match${n === 1 ? "" : "es"} cancelled` : "";
+  log(`  - ${s.action === "retire" ? "retired   " : "(retired) "} ${s.slug} (not in the catalog${matches})`);
+}
 
 if (drift.length) {
   fail(
@@ -192,4 +230,7 @@ if (drift.length) {
   );
 }
 const count = (action) => plan.filter((s) => s.action === action).length;
-log(`sync-apps: ✔ ${count("insert")} inserted, ${count("update")} updated, ${count("unchanged")} unchanged.`);
+log(
+  `sync-apps: ✔ ${count("insert")} inserted, ${count("update")} updated, ${count("unchanged")} unchanged` +
+    (retirement.length ? `, ${toRetire.length} retired (${retirement.length} not in the catalog).` : "."),
+);

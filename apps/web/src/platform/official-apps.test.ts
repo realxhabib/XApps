@@ -8,7 +8,10 @@ import {
   officialAppRowError,
   officialAppRows,
   officialCatalogApps,
+  planOfficialAppRetirement,
   planOfficialAppSync,
+  RETIRED_MATCH_STATUSES,
+  RETIRED_STATUS,
   type OfficialAppRow,
 } from "./official-apps";
 import type { AppManifest } from "./types";
@@ -246,5 +249,33 @@ describe("planOfficialAppSync", () => {
 
   it("canonicalJson ignores key order and undefined", () => {
     expect(canonicalJson({ b: 1, a: [{ d: 2, c: undefined }] })).toBe(canonicalJson({ a: [{ d: 2 }], b: 1 }));
+  });
+});
+
+describe("planOfficialAppRetirement", () => {
+  const catalog = [base, { ...base, slug: "community-example", official: false }];
+
+  it("retires official rows the catalog dropped, and nothing else", () => {
+    const plan = planOfficialAppRetirement(
+      [
+        { slug: "test-app", official: true, status: "published" },
+        { slug: "community-example", official: true, status: "published" },
+        { slug: "old-game", official: true, status: "published" },
+        { slug: "gone-already", official: true, status: RETIRED_STATUS },
+        { slug: "someones-app", official: false, status: "published" },
+      ],
+      catalog,
+    );
+    expect(plan).toEqual([
+      { slug: "old-game", action: "retire" },
+      { slug: "gone-already", action: "retired" },
+    ]);
+  });
+
+  it("retires the removed first-party games against the real catalog", () => {
+    const rows = ["trivia-royale", "hot-takes", "emoji-decode", "quick-draw"].map((slug) => ({ slug, official: true, status: "published" }));
+    expect(planOfficialAppRetirement(rows).map((s) => s.slug)).toEqual(["trivia-royale", "hot-takes", "emoji-decode"]);
+    expect(RETIRED_STATUS).toBe("rejected");
+    expect(RETIRED_MATCH_STATUSES).toEqual(["open", "pending", "active"]);
   });
 });

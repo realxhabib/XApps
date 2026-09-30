@@ -12,6 +12,7 @@ import {
   toStatDefs,
   withManifestDefaults,
 } from "../catalog";
+import { isRetiredApp } from "../retired-apps";
 import { XP, teamForSeat } from "../scoring";
 import {
   EDITABLE_STATUSES,
@@ -236,12 +237,22 @@ export const QUICK_LOBBY_TTL_MS = 10 * 60_000;
 /** A live table or invite that hasn't started in this long is dead too. */
 export const LIVE_TABLE_TTL_MS = 2 * 3_600_000;
 
-/** Mirrors expire_idle_lobbies: expires dead lobbies (only `userId`'s, when given). Returns whether any changed. */
+/**
+ * Mirrors expire_idle_lobbies: expires dead lobbies, and cancels a retired app's unfinished matches (only
+ * `userId`'s, when given). Returns whether any changed.
+ */
 export function expireIdleLobbies(db: DemoDb, now = Date.now(), userId?: string): boolean {
   let changed = false;
   for (const m of Object.values(db.matches)) {
-    if (m.status !== "open" && m.status !== "pending") continue;
     if (userId && !m.players.some((p) => p.userId === userId)) continue;
+    // Mirrors sync-apps: a retired app's unfinished matches are cancelled (older demo data has some).
+    if (isRetiredApp(m.appSlug) && (m.status === "open" || m.status === "pending" || m.status === "active")) {
+      m.status = "cancelled";
+      m.updatedAt = nowIso();
+      changed = true;
+      continue;
+    }
+    if (m.status !== "open" && m.status !== "pending") continue;
     const age = now - Date.parse(m.createdAt);
     const joined = m.players.filter((p) => p.role === "player" && p.state === "joined").length;
     const quickAlone = m.settings.quick === true && m.status === "open" && age > QUICK_LOBBY_TTL_MS && joined < 2;
@@ -701,7 +712,8 @@ export class DemoBackend implements Backend {
       (input.kind !== undefined && input.kind !== "game" && input.kind !== "app" ? "Kind must be game or app" : null);
     if (shapeError) throw new BackendError(shapeError, "invalid");
     return mutate((db) => {
-      if (getOfficialApp(input.slug) || db.apps[input.slug]) {
+      // A retired first-party app keeps its slug (its row stays in public.apps).
+      if (getOfficialApp(input.slug) || isRetiredApp(input.slug) || db.apps[input.slug]) {
         throw new BackendError("That slug is taken", "conflict");
       }
       const now = nowIso();
@@ -2376,7 +2388,7 @@ export class DemoBackend implements Backend {
       ).length;
       if (background < 4) {
         const rng = createRandom(randomId(8));
-        addPersonaContest(draft, rng, rng.chance(0.5) ? "meme-duel" : "hot-takes", 0, true);
+        addPersonaContest(draft, rng, 0, true);
         changed = true;
       }
 

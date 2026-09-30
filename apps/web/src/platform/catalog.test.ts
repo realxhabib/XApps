@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { OFFICIAL_APPS, achievementDefsError, getOfficialApp, manifestShapeError, statDefsError, withManifestDefaults } from "./catalog";
 
 /** First-party apps that declare stats + achievements. The catalog is the source of truth: `npm run sync-apps` writes it to Supabase. */
-const WITH_PROGRESS = ["quick-draw", "four-in-a-row", "trivia-royale", "emoji-decode", "hot-takes"];
+const WITH_PROGRESS = ["quick-draw", "four-in-a-row", "wedge-wars"];
 
 describe("official catalog", () => {
   it("every official manifest is valid (strict one-emoji icons)", () => {

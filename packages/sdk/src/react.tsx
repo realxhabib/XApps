@@ -43,6 +43,7 @@ import {
   type StateUpdater,
   type XAppsClient,
 } from "./client";
+import { lockGestures } from "./gestures";
 import type {
   AchievementDef,
   Json,
@@ -107,6 +108,15 @@ export function useUser(): LaunchContext["user"] {
  */
 export function useStandalone(): boolean {
   return useXApps().isStandalone;
+}
+
+/**
+ * Makes the referenced element a drag surface (canvas, board, slider): touches
+ * on it never scroll, bounce or pull-to-refresh the page, even on iOS.
+ * `const board = useRef(null); useGestureLock(board); <canvas ref={board} />`
+ */
+export function useGestureLock(ref: { readonly current: HTMLElement | null }): void {
+  useEffect(() => lockGestures(ref.current), [ref]);
 }
 
 /** Keeps the latest handler without re-subscribing on every render. */

@@ -21,18 +21,18 @@ export const metadata: Metadata = {
     template: "%s · XApps",
   },
   description:
-    "Sign in with X and go head-to-head: reflex duels, meme battles, hot-take showdowns and more. Build your own app with the XApps SDK.",
+    "Sign in with X and go head-to-head: reflex duels, meme battles, robot brawls and more. Build your own app with the XApps SDK.",
   applicationName: "XApps",
   openGraph: {
     type: "website",
     siteName: "XApps",
     title: "XApps — challenge anyone on X",
-    description: "Mini games, meme duels and hot-take showdowns against anyone on X.",
+    description: "Mini games and meme duels against anyone on X.",
   },
   twitter: {
     card: "summary_large_image",
     title: "XApps — challenge anyone on X",
-    description: "Mini games, meme duels and hot-take showdowns against anyone on X.",
+    description: "Mini games and meme duels against anyone on X.",
   },
 };
 

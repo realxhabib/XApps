@@ -4,6 +4,19 @@ All notable changes to `@xapps/sdk`. The wire protocol is still version 1:
 every release is additive, and apps built against an older SDK keep working on
 newer hosts (and the other way round, minus the new features).
 
+## 0.7.0
+
+Touch & drag.
+
+- **`connect()` calms the page inside XApps**: `overscroll-behavior: none` on
+  `html` and `body`, so drags never bounce or pull-to-refresh (scrolling still
+  works). Opt out with `connect({ gestures: false })`.
+- **`xapps.ui.lockGestures(element)`** makes an element a drag surface: no
+  page scroll, zoom, bounce or text selection while touching it, iOS Safari
+  included (non-passive touch listeners plus `touch-action: none`). Returns an
+  undo function. React: `useGestureLock(ref)`. Also exported as
+  `lockGestures` / `calmPage`.
+
 ## 0.6.0
 
 Stat leaderboards and standings.

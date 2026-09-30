@@ -11,7 +11,7 @@ import { haptic } from "@/lib/haptics";
 import { play } from "@/lib/sfx";
 import { spring } from "@/lib/motion";
 import { cn, timeAgo } from "@/lib/utils";
-import { getOfficialApp } from "@/platform/catalog";
+import { appForSlug } from "@/platform/retired-apps";
 import { formatTimeLeft, isMultiplayer, ordinal, seatedPlayers, tableSizeLabelForMatch, teamOf, teamStyle, viewerOutcome } from "@/components/play/match-view";
 import { groupResultLine, isYourTurn, MODE_LABEL, matchHeadline, playerOf } from "@/platform/match-utils";
 import type { AppManifest, Match } from "@/platform/types";
@@ -94,7 +94,7 @@ export function MatchCard({
   /** Describe the match from this player's side, in third person (profile pages). */
   subject?: { id: string; handle: string };
 }) {
-  const app = apps?.find((a) => a.slug === match.appSlug) ?? getOfficialApp(match.appSlug);
+  const app = appForSlug(match.appSlug, apps);
   const swipeable = !!onAccept && !!onDecline;
   const x = useMotionValue(0);
   const acceptOpacity = useTransform(x, [20, 110], [0, 1]);
@@ -189,7 +189,7 @@ export function MatchCard({
 
 /** "⚡ @maya beat @leo in Reflexes" pill for tickers. */
 export function ActivityPill({ match, apps }: { match: Match; apps?: AppManifest[] }) {
-  const app = apps?.find((a) => a.slug === match.appSlug) ?? getOfficialApp(match.appSlug);
+  const app = appForSlug(match.appSlug, apps);
   const seated = seatedPlayers(match);
   const winner = match.players.find((p) => p.userId === match.winnerId);
   const loser = seated.find((p) => p.userId !== match.winnerId);

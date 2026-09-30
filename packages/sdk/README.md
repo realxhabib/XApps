@@ -153,6 +153,19 @@ No `ready()`, no `onStart`, no `submit`: render as soon as `connect()` resolves.
 
 A complete one-file example lives in [`examples/notes`](../../examples/notes/index.html).
 
+## Touch & drag
+
+On phones a drag can turn into a page scroll, a rubber-band bounce or pull-to-refresh. XApps switches that off on the host page for every app. Inside your own page:
+
+- `connect()` sets `overscroll-behavior: none` on your `html` and `body` when running inside XApps, so the page never bounces or pulls-to-refresh (long pages still scroll). Opt out with `connect({ gestures: false })`.
+- For anything people drag on (a canvas, a board, a slider), call `xapps.ui.lockGestures(element)`: touches on it never scroll or zoom the page, even on iOS Safari (which ignores `touch-action` alone mid-gesture), and long-press doesn't select text. Pointer events keep working. It returns a function that undoes it. In React: `useGestureLock(ref)`. Both also exist as plain exports (`lockGestures`, `calmPage`) if you haven't connected yet.
+
+```ts
+const board = document.querySelector("canvas")!;
+xapps.ui.lockGestures(board);
+board.addEventListener("pointermove", draw);           // no page drag while drawing
+```
+
 ## Matches for 2–8 players
 
 Everything in this section is additive: 1v1 apps written for v1 keep working unchanged (`opponent`, `submit`, `onEnd` behave as before).

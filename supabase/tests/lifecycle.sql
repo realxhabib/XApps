@@ -152,7 +152,7 @@ end $$;
 
 -- ---------------------------------------------------------------- Practice vs bot
 select set_config('request.jwt.claim.sub', '33333333-3333-4333-8333-333333333333', false);
-insert into ctx values ('practice', (select public.start_practice('hot-takes')::text));
+insert into ctx values ('practice', (select public.start_practice('meme-duel')::text));
 select public.submit_entry((select v from ctx where k = 'practice')::uuid, null, null, '{}', '{"kind":"text","body":"mine"}');
 select public.submit_entry((select v from ctx where k = 'practice')::uuid, '00000000-0000-4000-8000-00000000b075', null, '{}', '{"kind":"text","body":"bot"}');
 do $$
@@ -204,7 +204,7 @@ end $$;
 
 -- ---------------------------------------------------------------- Open challenge links
 select set_config('request.jwt.claim.sub', '33333333-3333-4333-8333-333333333333', false);
-insert into ctx values ('open', (select public.create_challenge('emoji-decode', 'async', null)::text));
+insert into ctx values ('open', (select public.create_challenge('four-in-a-row', 'async', null)::text));
 select public.submit_entry((select v from ctx where k = 'open')::uuid, null, 900);
 select set_config('request.jwt.claim.sub', '22222222-2222-4222-8222-222222222222', false);
 do $$
@@ -1917,13 +1917,18 @@ begin
             'audio/webm', 'audio/wav', 'video/mp4', 'video/webm', 'video/quicktime']
             from storage.buckets where id = 'app-media'), 'app-media bucket';
   assert (select bool_and(stats = '[]'::jsonb and achievements = '[]'::jsonb) from public.apps
-           where slug not in ('quick-draw', 'four-in-a-row', 'trivia-royale', 'emoji-decode', 'hot-takes', 'wedge-wars', 'gregs-face', 'perfect-circle')),
+           where slug not in ('quick-draw', 'four-in-a-row', 'trivia-royale', 'emoji-decode', 'hot-takes', 'wedge-wars', 'gregs-face', 'perfect-circle', 'cup-pong', 'darts', 'eight-ball', 'mini-golf')),
     'other existing apps declare nothing';
   -- First-party progress (20261002000200): valid lists, matching the web catalog (its test compares them).
   assert (select jsonb_object_agg(slug, jsonb_build_array(jsonb_array_length(stats), jsonb_array_length(achievements)))
-            from public.apps where official and stats <> '[]'::jsonb)
-       = '{"quick-draw":[4,8],"four-in-a-row":[3,9],"trivia-royale":[4,9],"emoji-decode":[4,8],"hot-takes":[3,8],"wedge-wars":[4,9],"gregs-face":[3,10],"perfect-circle":[3,9]}'::jsonb,
+            from public.apps where official and status = 'published' and stats <> '[]'::jsonb)
+       = '{"quick-draw":[4,8],"four-in-a-row":[3,9],"wedge-wars":[4,9],"gregs-face":[3,10],"perfect-circle":[3,9],"cup-pong":[4,10],"darts":[4,10],"eight-ball":[4,9],"mini-golf":[4,10]}'::jsonb,
     'first-party stats + achievements';
+  -- Retired first-party apps (official_apps.sql: sync-apps retires what the catalog dropped) keep theirs.
+  assert (select jsonb_object_agg(slug, jsonb_build_array(jsonb_array_length(stats), jsonb_array_length(achievements)))
+            from public.apps where official and status = 'rejected')
+       = '{"trivia-royale":[4,9],"emoji-decode":[4,8],"hot-takes":[3,8]}'::jsonb,
+    'retired first-party apps keep their progress definitions';
   assert (select bool_and(public.app_stats_error(stats) is null and public.app_achievements_error(achievements) is null
                           and (select sum((e->>'xp')::int) from jsonb_array_elements(achievements) e) <= 500
                           and exists (select 1 from jsonb_array_elements(achievements) e where (e->>'secret')::boolean))
@@ -2533,22 +2538,21 @@ begin
   assert (public.app_stat_leaderboard('quick-draw', 'best_reaction')->0->>'value')::int = 231, 'reflexes board';
   r := public.report_stats('four-in-a-row', '{"wins":1,"fastest_win":4,"longest_line":4}');
   assert r = '{"wins":1,"fastest_win":4,"longest_line":4}'::jsonb, r::text;
-  r := public.report_stats('trivia-royale', '{"best_score":7420,"correct_answers":7,"best_streak":5,"crowns":1}');
-  assert r ->> 'best_score' = '7420', r::text;
-  r := public.report_stats('emoji-decode', '{"best_score":1240,"puzzles_decoded":7,"fastest_decode":1830,"wins":1}');
-  assert r ->> 'fastest_decode' = '1830', r::text;
-  r := public.report_stats('hot-takes', '{"takes":1,"wins":1,"votes":5}');
-  assert r = '{"takes":1,"wins":1,"votes":5}'::jsonb, r::text;
+  r := public.report_stats('wedge-wars', '{"damage_dealt":420,"kos":2,"wins":1,"best_flip":180}');
+  assert r ->> 'best_flip' = '180', r::text;
   assert public.unlock_achievement('quick-draw', 'under_200') = '{"unlocked":true}'::jsonb, 'reflexes badge';
   assert public.unlock_achievement('quick-draw', 'under_200') = '{"unlocked":false}'::jsonb, 'once';
-  assert public.unlock_achievement('trivia-royale', 'gloriously_wrong') = '{"unlocked":true}'::jsonb, 'secret badge';
-  assert pg_temp.xp('carol') = pg_temp.cv('xp_fp')::int + 40 + 30, 'under_200 40 + gloriously_wrong 30';
+  assert public.unlock_achievement('wedge-wars', 'pulverized') = '{"unlocked":true}'::jsonb, 'secret badge';
+  assert pg_temp.xp('carol') = pg_temp.cv('xp_fp')::int + 40 + 25, 'under_200 40 + pulverized 25';
   assert public.list_user_achievements(pg_temp.uid('carol'))
-         @> '[{"appSlug":"quick-draw","achievementId":"under_200"},{"appSlug":"trivia-royale","achievementId":"gloriously_wrong"}]',
+         @> '[{"appSlug":"quick-draw","achievementId":"under_200"},{"appSlug":"wedge-wars","achievementId":"pulverized"}]',
     'on the profile';
 end $$;
 select pg_temp.expect($q$select public.report_stats('four-in-a-row', '{"best_reaction":1}')$q$, '22023', 'Unknown stat best_reaction');
-select pg_temp.expect($q$select public.unlock_achievement('hot-takes', 'under_200')$q$, '22023', 'Unknown achievement under_200');
+select pg_temp.expect($q$select public.unlock_achievement('wedge-wars', 'under_200')$q$, '22023', 'Unknown achievement under_200');
+-- A retired first-party app takes no new progress.
+select pg_temp.expect($q$select public.report_stats('trivia-royale', '{"crowns":1}')$q$, 'P0002', 'App not found');
+select pg_temp.expect($q$select public.unlock_achievement('hot-takes', 'first_win')$q$, 'P0002', 'App not found');
 reset role;
 
 -- Internal stage 3 helpers are not callable by clients

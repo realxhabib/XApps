@@ -5,7 +5,7 @@ import { useEffect, useRef } from "react";
 import { AppGlyph } from "@/components/marketplace/app-glyph";
 import { play } from "@/lib/sfx";
 import { formatTimeLeft, ordinal, seatedPlayers, viewerOutcome } from "@/components/play/match-view";
-import { getOfficialApp } from "@/platform/catalog";
+import { appForSlug } from "@/platform/retired-apps";
 import { isYourTurn } from "@/platform/match-utils";
 import { useViewer } from "@/platform/client";
 import { useApps, useMyMatches } from "@/platform/queries";
@@ -41,7 +41,7 @@ export function InboxWatcher() {
       const before = previous.get(match.id);
       if (before === signature(match)) continue;
       if (pathname === `/play/${match.id}`) continue;
-      const app = apps?.find((a) => a.slug === match.appSlug) ?? getOfficialApp(match.appSlug);
+      const app = appForSlug(match.appSlug, apps);
       const me = match.players.find((p) => p.userId === viewerId);
       const opponent = seatedPlayers(match).find((p) => p.userId !== viewerId);
       const icon = app ? <AppGlyph app={app} size={28} /> : undefined;

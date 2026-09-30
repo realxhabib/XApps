@@ -139,57 +139,6 @@ function DrawnArt({ app, className }: { app: AppManifest; className?: string }) 
           </div>
         </div>
       );
-    case "emoji-decode":
-      return (
-        <div className={className} aria-hidden>
-          <div className="flex size-full items-center justify-center gap-2">
-            {["🌧️", "🐱", "🐶"].map((e, i) => (
-              <motion.span
-                key={e}
-                className="flex size-14 items-center justify-center rounded-2xl bg-white/10 text-3xl shadow-lg backdrop-blur"
-                animate={{ y: [0, -10, 0], rotate: [i * 4 - 4, i * -4 + 4, i * 4 - 4] }}
-                transition={loop(2.2, i * 0.25)}
-              >
-                {e}
-              </motion.span>
-            ))}
-            <motion.span className="ml-1 font-mono text-2xl font-bold" style={{ color: a }} animate={{ opacity: [0.3, 1, 0.3] }} transition={loop(1.6)}>
-              ?
-            </motion.span>
-          </div>
-        </div>
-      );
-    case "trivia-royale": {
-      const tiles = ["#ff4d6d", "#3d7bff", "#ffc93d", "#1fd1b2"];
-      return (
-        <div className={className} aria-hidden>
-          <div className="flex size-full items-center justify-center gap-4 py-4">
-            <div className="grid aspect-square h-full grid-cols-2 gap-[8%]">
-              {tiles.map((color, i) => (
-                <motion.span
-                  key={color}
-                  className="rounded-[22%] shadow-lg"
-                  style={{ background: color, boxShadow: "inset 0 -4px 0 rgb(0 0 0 / 0.22)" }}
-                  animate={i === 2 ? { scale: [1, 1.12, 1], opacity: 1 } : { scale: 1, opacity: [1, 0.45, 1] }}
-                  transition={loop(2.4, 0.9)}
-                />
-              ))}
-            </div>
-            <div className="flex -space-x-2">
-              {[a, b, "#c6ff3d", "#ffffff"].map((color, i) => (
-                <motion.span
-                  key={i}
-                  className="size-6 rounded-full ring-2 ring-ink-950"
-                  style={{ background: color }}
-                  animate={{ y: [0, -6, 0] }}
-                  transition={loop(1.8, i * 0.15)}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-      );
-    }
     case "wedge-wars":
       return (
         <div className={className} aria-hidden>
@@ -278,31 +227,6 @@ function DrawnArt({ app, className }: { app: AppManifest; className?: string }) 
           </div>
         </div>
       );
-    case "hot-takes":
-      return (
-        <div className={className} aria-hidden>
-          <div className="relative flex size-full items-end justify-center overflow-hidden">
-            {Array.from({ length: 7 }).map((_, i) => (
-              <motion.span
-                key={i}
-                className="absolute bottom-0 rounded-full blur-md"
-                style={{
-                  left: `${10 + i * 12}%`,
-                  width: `${14 + (i % 3) * 6}%`,
-                  height: "60%",
-                  background: `linear-gradient(to top, ${b}, ${a}, transparent)`,
-                  transformOrigin: "bottom",
-                }}
-                animate={{ scaleY: [0.6, 1.1, 0.7], opacity: [0.6, 1, 0.6] }}
-                transition={loop(1 + (i % 3) * 0.3, i * 0.1)}
-              />
-            ))}
-            <span className="relative mb-[22%] rounded-2xl bg-ink-950/80 px-3 py-2 text-center font-display text-sm font-bold leading-tight backdrop-blur">
-              “Cereal is a soup.”
-            </span>
-          </div>
-        </div>
-      );
     case "gregs-face":
       return (
         <div className={className} aria-hidden>
@@ -331,6 +255,222 @@ function DrawnArt({ app, className }: { app: AppManifest; className?: string }) 
           </div>
         </div>
       );
+    case "darts": {
+      const ring = (r: number, width: number, offset: number, color: string) => (
+        <circle
+          r={r}
+          fill="none"
+          stroke={color}
+          strokeWidth={width}
+          strokeDasharray={`${(Math.PI * r) / 10} ${(Math.PI * r) / 10}`}
+          strokeDashoffset={offset * ((Math.PI * r) / 10) + (Math.PI * r) / 20}
+          transform="rotate(-90)"
+        />
+      );
+      return (
+        <div className={className} aria-hidden>
+          <div className="relative flex size-full items-center justify-center py-3">
+            <svg viewBox="-60 -60 120 120" className="h-full overflow-visible">
+              <circle r="57" fill="#121110" stroke="#9aa1aa" strokeWidth="1.2" />
+              {Array.from({ length: 20 }, (_, i) => {
+                const a0 = ((i * 18 - 99) * Math.PI) / 180;
+                const a1 = a0 + (18 * Math.PI) / 180;
+                return (
+                  <path
+                    key={i}
+                    // Rounded: server and browser trig can differ in the last digit (a hydration mismatch).
+                    d={`M0 0 L${(Math.cos(a0) * 44).toFixed(2)} ${(Math.sin(a0) * 44).toFixed(2)} A44 44 0 0 1 ${(Math.cos(a1) * 44).toFixed(2)} ${(Math.sin(a1) * 44).toFixed(2)} Z`}
+                    fill={i % 2 ? "#e8d9b5" : "#221f1b"}
+                  />
+                );
+              })}
+              {ring(42, 4, 0, "#d0262c")}
+              {ring(42, 4, 1, "#12824a")}
+              {ring(26.5, 3.4, 0, "#d0262c")}
+              {ring(26.5, 3.4, 1, "#12824a")}
+              <circle r="5" fill="#12824a" />
+              <circle r="2.3" fill="#d0262c" />
+              {([[1.5, -27], [-4, -25.5], [0.5, 0.5]] as const).map(([x, y], i) => (
+                <motion.g
+                  key={i}
+                  initial={{ opacity: 0 }}
+                  animate={
+                    reduced
+                      ? { opacity: 1, x, y, scale: 1 }
+                      : { opacity: [0, 1, 1, 1, 0], x: [x * 0.3, x, x, x, x], y: [70, y, y, y, y], scale: [3, 1, 1, 1, 1], rotate: [0, 0, 8, 0, 0] }
+                  }
+                  transition={
+                    reduced ? { duration: 0 } : { duration: 3.6, times: [0, 0.1, 0.15, 0.9, 1], delay: i * 0.55, repeat: Infinity, repeatDelay: 0.6 }
+                  }
+                >
+                  <path d="M0 0 L0 -9" stroke="#d6dbe1" strokeWidth="1.8" strokeLinecap="round" />
+                  <g transform="translate(0 -11) rotate(45)">
+                    {[0, 90, 180, 270].map((r) => (
+                      <path key={r} d="M0 0 L2.4 -1.6 L2.8 -7 L0.3 -8 Z" transform={`rotate(${r})`} fill={i === 2 ? b : a} />
+                    ))}
+                  </g>
+                </motion.g>
+              ))}
+            </svg>
+          </div>
+        </div>
+      );
+    }
+    case "eight-ball": {
+      // A break on loop: the cue ball runs into the rack and the balls fan out.
+      const rack: [string, number, number, boolean][] = [
+        ["#f8c414", 0, 0, false], ["#1c4cc4", 1, -0.5, true], ["#d62822", 1, 0.5, false],
+        ["#602c96", 2, -1, false], ["#141418", 2, 0, false], ["#f67818", 2, 1, true],
+        ["#128448", 3, -1.5, true], ["#801e26", 3, -0.5, false], ["#f8c414", 3, 0.5, true], ["#1c4cc4", 3, 1.5, false],
+      ];
+      return (
+        <div className={className} aria-hidden>
+          <div className="flex size-full items-center justify-center py-3">
+            <svg viewBox="0 0 200 110" className="size-full">
+              <rect x="0" y="0" width="200" height="110" rx="12" fill="#5c2c13" />
+              <rect x="9" y="9" width="182" height="92" rx="3" fill="#17744e" />
+              {[[10, 10], [100, 7], [190, 10], [10, 100], [100, 103], [190, 100]].map(([cx, cy], i) => (
+                <circle key={i} cx={cx} cy={cy} r="6.5" fill="#050505" />
+              ))}
+              {rack.map(([color, col, row, stripe], i) => {
+                const x = 128 + col * 8.2;
+                const y = 55 + row * 9.4;
+                const dx = (col + 1) * 6 + (i % 3) * 3;
+                const dy = row * 12 + (i % 2 ? 5 : -5);
+                return (
+                  <motion.g
+                    key={i}
+                    animate={reduced ? { x: 0, y: 0 } : { x: [0, 0, dx, dx, 0], y: [0, 0, dy, dy, 0] }}
+                    transition={reduced ? { duration: 0 } : { duration: 3.4, times: [0, 0.3, 0.45, 0.9, 1], repeat: Infinity, ease: "easeOut" }}
+                  >
+                    <circle cx={x} cy={y} r="4.6" fill={stripe ? "#f6f3ea" : color} />
+                    {stripe && <rect x={x - 4.6} y={y - 2.2} width="9.2" height="4.4" fill={color} clipPath="circle(4.6px)" />}
+                    <circle cx={x - 1.4} cy={y - 1.6} r="1.3" fill="#fff" opacity="0.55" />
+                  </motion.g>
+                );
+              })}
+              <motion.g
+                animate={reduced ? { x: 0 } : { x: [0, 64, 50, 50, 0], opacity: [1, 1, 1, 1, 0] }}
+                transition={reduced ? { duration: 0 } : { duration: 3.4, times: [0, 0.3, 0.45, 0.9, 1], repeat: Infinity, ease: "easeIn" }}
+              >
+                <circle cx="54" cy="55" r="4.6" fill="#f6f3ea" />
+                <circle cx="52.6" cy="53.4" r="1.3" fill="#fff" opacity="0.7" />
+              </motion.g>
+              <motion.rect
+                x="-60"
+                y="54"
+                width="104"
+                height="2.4"
+                rx="1.2"
+                fill={b}
+                animate={reduced ? { x: 0 } : { x: [-14, 4, 4, -14, -14], opacity: [1, 1, 0, 0, 1] }}
+                transition={reduced ? { duration: 0 } : { duration: 3.4, times: [0, 0.28, 0.35, 0.95, 1], repeat: Infinity }}
+              />
+            </svg>
+          </div>
+        </div>
+      );
+    }
+    case "mini-golf":
+      return (
+        <div className={className} aria-hidden>
+          <div className="relative flex size-full items-center justify-center py-2">
+            <svg viewBox="0 0 160 110" className="h-full overflow-visible">
+              <defs>
+                <linearGradient id="mg-art-green" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stopColor={a} />
+                  <stop offset="1" stopColor="#2f9a45" />
+                </linearGradient>
+              </defs>
+              <path d="M44 8 H116 L148 100 H12 Z" fill="rgb(0 0 0 / 0.3)" transform="translate(0 5)" />
+              <path d="M44 8 H116 L148 100 H12 Z" fill="url(#mg-art-green)" stroke="#fff4e2" strokeWidth="5" strokeLinejoin="round" />
+              {[0, 1, 2, 3].map((i) => (
+                <path key={i} d={`M${40 - i * 8} ${20 + i * 22} H${120 + i * 8}`} stroke="rgb(255 255 255 / 0.12)" strokeWidth="10" />
+              ))}
+              <ellipse cx="88" cy="28" rx="7" ry="3.2" fill="#0d0d0d" stroke="#fff" strokeWidth="1.2" />
+              <motion.g
+                animate={{ rotate: [-5, 5, -5] }}
+                transition={loop(1.8)}
+                style={{ originX: "89px", originY: "28px" }}
+              >
+                <line x1="89" y1="28" x2="89" y2="-4" stroke="#fff" strokeWidth="2" />
+                <path d="M90 -4 l18 6 l-18 6 z" fill={b} />
+              </motion.g>
+              <path d="M70 92 Q52 60 86 32" fill="none" stroke="#fff" strokeOpacity="0.6" strokeWidth="2.2" strokeDasharray="0.1 7" strokeLinecap="round" />
+              <motion.circle
+                r="5.2"
+                fill="#fff"
+                stroke="rgb(0 0 0 / 0.15)"
+                animate={reduced ? { cx: 70, cy: 92 } : { cx: [70, 58, 70, 86, 88], cy: [92, 70, 48, 32, 29], opacity: [1, 1, 1, 1, 0] }}
+                transition={reduced ? { duration: 0 } : { duration: 2.6, repeat: Infinity, repeatDelay: 0.8, ease: "easeOut" }}
+              />
+            </svg>
+          </div>
+        </div>
+      );
+    case "cup-pong": {
+      // A triangle of red cups seen from the thrower; a ball lobs in and the front cup splashes.
+      const cups = [
+        [52, 40], [72, 40], [92, 40], [112, 40],
+        [62, 50], [82, 50], [102, 50],
+        [72, 60], [92, 60],
+        [82, 70],
+      ] as const;
+      return (
+        <div className={className} aria-hidden>
+          <div className="relative flex size-full items-center justify-center py-2">
+            <svg viewBox="0 0 164 110" className="h-full overflow-visible">
+              <defs>
+                <linearGradient id="cp-art-cup" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0" stopColor="#a50f1f" />
+                  <stop offset="0.45" stopColor={a} />
+                  <stop offset="1" stopColor="#b3121f" />
+                </linearGradient>
+                <linearGradient id="cp-art-table" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stopColor="#8a5128" />
+                  <stop offset="1" stopColor="#c7864b" />
+                </linearGradient>
+              </defs>
+              <path d="M40 30 H124 L160 108 H4 Z" fill="url(#cp-art-table)" />
+              <path d="M40 30 H124 L160 108 H4 Z" fill="none" stroke="#fff4e2" strokeOpacity="0.8" strokeWidth="2" />
+              <path d="M82 30 V108" stroke="#fff4e2" strokeOpacity="0.6" strokeWidth="1.2" />
+              {cups.map(([x, y], i) => {
+                const w = 8 + (y - 40) * 0.08;
+                const front = i === cups.length - 1;
+                return (
+                  <motion.g
+                    key={i}
+                    animate={front && !reduced ? { y: [0, 0, -10, 0, 0], opacity: [1, 1, 0, 0, 1], scale: [1, 1, 0.4, 0.4, 1] } : undefined}
+                    transition={front ? { duration: 3.2, times: [0, 0.42, 0.55, 0.9, 1], repeat: Infinity, ease: "easeInOut" } : undefined}
+                    style={{ originX: `${x}px`, originY: `${y}px` }}
+                  >
+                    <path d={`M${x - w} ${y - 14} L${x + w} ${y - 14} L${x + w * 0.7} ${y} L${x - w * 0.7} ${y} Z`} fill="url(#cp-art-cup)" />
+                    <ellipse cx={x} cy={y - 14} rx={w + 0.6} ry={w * 0.32} fill="#f7f3ee" />
+                    <ellipse cx={x} cy={y - 13.6} rx={w * 0.78} ry={w * 0.22} fill="#43b6ff" />
+                  </motion.g>
+                );
+              })}
+              <motion.circle
+                r="4.2"
+                fill="#fbf8f1"
+                animate={reduced ? { cx: 82, cy: 52 } : { cx: [82, 82, 82], cy: [104, 10, 55], opacity: [1, 1, 0] }}
+                transition={reduced ? { duration: 0 } : { duration: 1.4, times: [0, 0.55, 1], repeat: Infinity, repeatDelay: 1.8, ease: "easeInOut" }}
+              />
+              {!reduced &&
+                [-1, 0, 1].map((d) => (
+                  <motion.circle
+                    key={d}
+                    r="1.8"
+                    fill={b}
+                    animate={{ cx: [82, 82 + d * 9], cy: [56, 44 - Math.abs(d) * 2], opacity: [0, 1, 0] }}
+                    transition={{ duration: 0.7, delay: 1.3, repeat: Infinity, repeatDelay: 2.5, ease: "easeOut" }}
+                  />
+                ))}
+            </svg>
+          </div>
+        </div>
+      );
+    }
     default:
       return (
         <div className={className} aria-hidden>
