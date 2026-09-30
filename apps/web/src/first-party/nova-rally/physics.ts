@@ -51,7 +51,8 @@ export type PhysEvent =
   | { type: "turbo"; tier: 1 | 2 | 3 }
   | { type: "tier"; tier: 1 | 2 | 3 }
   | { type: "fall" }
-  | { type: "respawn" };
+  | { type: "respawn" }
+  | { type: "chargeJump" };
 
 export interface Tuning {
   top: number;
@@ -105,6 +106,8 @@ export class Ship {
   trick = 0;
   private trickQueued = false;
   private driftHeld = false;
+  /** Seconds drift has been held going straight (charge jump). */
+  charge = 0;
   offroad = false;
   /** Visual spin angle (spin-outs) and lean. */
   spinAngle = 0;
@@ -259,6 +262,14 @@ export class Ship {
       this.driftTier = 0;
       this.events.push({ type: "driftStart" });
     }
+    // Charge jump: hold drift while going straight, release for a big hop (trick it for a boost).
+    if (c.drift && this.driftDir === 0 && grounded && this.state === "drive" && Math.abs(steer) < 0.3) this.charge += dt;
+    else if (!c.drift && this.charge > 0.55 && grounded && this.state === "drive") {
+      this.vh = 13 * Math.sqrt(track.def.gravity);
+      this.airborne = true;
+      this.charge = 0;
+      this.events.push({ type: "chargeJump" });
+    } else if (!c.drift || this.driftDir !== 0) this.charge = 0;
     this.driftHeld = c.drift;
     if (this.driftDir !== 0 && (!c.drift || this.speed < 16 || this.state !== "drive")) {
       if (!c.drift && this.driftTier > 0 && this.state === "drive") {

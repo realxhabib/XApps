@@ -12,6 +12,7 @@ import {
   EffectPass,
   RenderPass,
   SMAAEffect,
+  ShaderPass,
   ToneMappingEffect,
   ToneMappingMode,
   VignetteEffect,
@@ -450,6 +451,20 @@ export class RaceScene {
     // Post-processing.
     this.composer = new EffectComposer(this.renderer, { frameBufferType: HalfFloatType, multisampling: quality.level === "low" ? 0 : 4 });
     this.composer.addPass(new RenderPass(this.scene, this.camera));
+    // Additive stacks can overflow half floats (Inf/NaN), which bloom would smear over the whole frame.
+    this.composer.addPass(
+      new ShaderPass(
+        new ShaderMaterial({
+          uniforms: { inputBuffer: { value: null } },
+          vertexShader: "varying vec2 vUv; void main() { vUv = position.xy * 0.5 + 0.5; gl_Position = vec4(position.xy, 1.0, 1.0); }",
+          fragmentShader:
+            "uniform sampler2D inputBuffer; varying vec2 vUv; void main() { vec4 c = texture2D(inputBuffer, vUv); bvec4 bad = isnan(c); if (any(bad) || any(isinf(c))) c = vec4(0.0); gl_FragColor = clamp(c, 0.0, 24.0); }",
+          depthWrite: false,
+          depthTest: false,
+        }),
+        "inputBuffer",
+      ),
+    );
     this.bloom = new BloomEffect({ mipmapBlur: true, intensity: 1.1, luminanceThreshold: 0.72, luminanceSmoothing: 0.25, radius: 0.72 });
     this.chroma = new ChromaticAberrationEffect({ offset: new Vector2(0, 0), radialModulation: true, modulationOffset: 0.25 });
     const vignette = new VignetteEffect({ offset: 0.28, darkness: 0.55 });
@@ -789,7 +804,7 @@ export class RaceScene {
       const tail = this.v3.copy(pos).addScaledVector(ship.fwd, -1.7).addScaledVector(f.up, 0.2);
       const speed01 = Math.min(1.4, Math.max(0, ship.speed) / ship.tune.top);
       const trailColor = this.c1.set(ship.driftDir !== 0 && ship.driftTier > 0 ? DRIFT_SPARK[ship.driftTier]! : new Color(r.livery.glow));
-      view.trail.update(tail, f.up, right, 0.45 + boosting * 0.35, (ship.cloak > 0 ? 0.1 : 1) * Math.min(1, speed01 * 1.2) * (0.55 + boosting * 0.9), trailColor);
+      view.trail.update(tail, f.up, right, 0.22 + boosting * 0.2, (ship.cloak > 0 ? 0.05 : 1) * Math.min(1, speed01) * (0.12 + boosting * 0.6 + (ship.driftTier > 0 && ship.driftDir !== 0 ? 0.35 : 0)), trailColor);
 
       // Particles: exhaust, drift sparks, offroad dust.
       const nearCam = root.position.distanceToSquared(this.camera.position) < 120 * 120;

@@ -925,6 +925,10 @@ export class RaceRuntime {
         case "ramp":
           if (me) this.audio.play("jump");
           break;
+        case "chargeJump":
+          this.fx.push({ type: "land", racer: r.idx, strength: 0.5 });
+          if (me) this.audio.play("jump");
+          break;
         case "land":
           this.fx.push({ type: "land", racer: r.idx, strength: e.strength });
           if (e.trick) {

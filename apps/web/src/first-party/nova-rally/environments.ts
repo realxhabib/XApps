@@ -59,6 +59,7 @@ import {
   TorusGeometry,
   Vector2,
   Vector3,
+  Vector4,
   WebGLCubeRenderTarget,
   type WebGLRenderer,
   type WebGLRenderTarget,
@@ -384,18 +385,18 @@ void main() {
   vec3 nc = mix(purple, pink, smoothstep(0.42, 0.78, m));
   nc = mix(nc, teal, smoothstep(0.5, 0.75, t));
   vec3 col = mix(deep, deep + vec3(0.04, 0.0, 0.07), smoothstep(0.2, 0.7, n));
-  col += nc * neb * 1.1;
+  col += nc * neb * 0.72;
   float fil = 1.0 - abs(fbm(q * 4.2 + 2.0) * 2.0 - 1.0);
-  col += mix(pink, teal, t) * pow(fil, 9.0) * neb * 1.6;
+  col += mix(pink, teal, t) * pow(fil, 9.0) * neb * 1.1;
   col *= 1.0 - 0.8 * smoothstep(0.52, 0.78, fbm(q * 5.5 + 40.0)) * smoothstep(0.2, 0.7, n);
   float cd = max(dot(d, uA), 0.0);
-  col += vec3(1.0, 0.72, 0.95) * pow(cd, 60.0) * 2.5 + vec3(0.7, 0.3, 0.95) * pow(cd, 7.0) * 0.45;
+  col += vec3(1.0, 0.72, 0.95) * pow(cd, 80.0) * 1.2 + vec3(0.7, 0.3, 0.95) * pow(cd, 9.0) * 0.25;
   float cd2 = max(dot(d, uB), 0.0);
   col += vec3(0.4, 0.9, 1.0) * pow(cd2, 90.0) * 1.6 + vec3(0.1, 0.5, 0.7) * pow(cd2, 10.0) * 0.3;
   float cluster = pow(cd, 10.0) + pow(cd2, 14.0);
   float s = starLayer(d, 230.0, 0.975 - cluster * 0.2) * 1.5 + starLayer(d, 540.0, 0.955 - neb * 0.03 - cluster * 0.15) * 0.8;
   col += mix(starTint(d), vec3(1.0, 0.85, 1.0), neb * 0.5) * s;
-  col += sunGlow(sd, 40.0, 3.0, 0.4);
+  col += sunGlow(sd, 40.0, 3.0, 0.12);
   gl_FragColor = vec4(col, 1.0);
 }
 `,
@@ -616,9 +617,9 @@ function detailTexture(ctx: Ctx, seed: number, kind: "mars" | "luna"): DataTextu
       if (kind === "mars") {
         // Wind ripples plus grit.
         const rip = Math.sin((u * 48 + fbm2(u * 4, v * 4, seed + 9, 3, 4) * 6) * Math.PI * 2) * 0.5 + 0.5;
-        h = h * 0.8 + rip * rip * 0.14 + noise2(x, y, seed + 3, S) * 0.05;
+        h = h * 0.82 + rip * rip * 0.14 + noise2(x, y, seed + 3, S) * 0.03;
       } else {
-        h = h * 0.8 + noise2(x, y, seed + 3, S) * 0.14;
+        h = h * 0.85 + noise2(x, y, seed + 3, S) * 0.03;
       }
       hgt[y * S + x] = h;
     }
@@ -729,6 +730,8 @@ interface PlanetOpts {
   scale?: Vector3;
   segments?: number;
   lightBoost?: number;
+  /** Atmosphere in front of the body (daytime skies): colour and mix. */
+  haze?: [Color, number];
 }
 
 const PLANET_VERT = /* glsl */ `
@@ -760,6 +763,7 @@ uniform float uSpin;
 uniform float uTime;
 uniform float uR;
 uniform float uBoost;
+uniform vec4 uHaze;
 #ifdef CLOUDS
 uniform sampler2D uClouds;
 #endif
@@ -811,6 +815,7 @@ void main() {
   col += uAtmo * fres * uAtmoK * smoothstep(-0.3, 0.45, ndl);
   col += uAtmo * 0.18 * uAtmoK * smoothstep(-0.25, 0.0, ndl) * smoothstep(0.35, 0.0, ndl);
   col += night;
+  col = mix(col, uHaze.rgb, uHaze.a);
   gl_FragColor = vec4(col, 1.0);
   ${FRAG_TAIL}
 }
@@ -926,6 +931,7 @@ function addPlanet(ctx: Ctx, dir: Vector3, dist: number, opts: PlanetOpts, order
       uTime: ctx.uTime,
       uR: { value: opts.radius },
       uBoost: { value: opts.lightBoost ?? 1 },
+      uHaze: { value: new Vector4(opts.haze?.[0].r ?? 0, opts.haze?.[0].g ?? 0, opts.haze?.[0].b ?? 0, opts.haze?.[1] ?? 0) },
     },
     depthTest: false,
     depthWrite: false,
@@ -1422,7 +1428,12 @@ function rockGeometry(s: RockShape): BufferGeometry {
   return g;
 }
 
-function rockMaterial(ctx: Ctx, opts: { rough: number; metal?: number; glow?: Color; flat?: boolean; envI?: number; emissive?: Color }): MeshStandardMaterial {
+const ROCK_NOISE = GLSL_NOISE.replace(/FBM_OCT/g, "3");
+
+function rockMaterial(
+  ctx: Ctx,
+  opts: { rough: number; metal?: number; glow?: Color; flat?: boolean; envI?: number; emissive?: Color; bump?: number; freq?: number },
+): MeshStandardMaterial {
   const m = new MeshStandardMaterial({
     vertexColors: true,
     roughness: opts.rough,
@@ -1431,24 +1442,58 @@ function rockMaterial(ctx: Ctx, opts: { rough: number; metal?: number; glow?: Co
     envMapIntensity: opts.envI ?? 1,
     emissive: opts.emissive ?? new Color(0),
   });
-  const glow = opts.glow;
-  if (glow) {
-    const uTime = ctx.uTime;
-    m.onBeforeCompile = (s: WebGLProgramParametersWithUniforms) => {
-      s.uniforms.uGlowColor = { value: glow };
-      s.uniforms.uTime = uTime;
-      s.vertexShader = s.vertexShader
-        .replace("#include <common>", "#include <common>\nattribute float aGlow;\nvarying float vGlow;")
-        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvGlow = aGlow;");
-      s.fragmentShader = s.fragmentShader
-        .replace("#include <common>", "#include <common>\nuniform vec3 uGlowColor;\nuniform float uTime;\nvarying float vGlow;")
-        .replace(
-          "#include <emissivemap_fragment>",
-          "#include <emissivemap_fragment>\ntotalEmissiveRadiance += uGlowColor * vGlow * (0.7 + 0.3 * sin(uTime * 1.7 + vGlow * 9.0));",
-        );
-    };
-    m.customProgramCacheKey = () => "nova-glow-rock";
-  }
+  const glow = opts.glow ?? null;
+  const uTime = ctx.uTime;
+  const bump = opts.bump ?? 1;
+  const freq = opts.freq ?? 3.2;
+  m.onBeforeCompile = (s: WebGLProgramParametersWithUniforms) => {
+    s.uniforms.uGlowColor = { value: glow ?? new Color(0) };
+    s.uniforms.uTime = uTime;
+    s.uniforms.uRockBump = { value: bump };
+    s.uniforms.uRockFreq = { value: freq };
+    s.vertexShader = s.vertexShader
+      .replace("#include <common>", `#include <common>\nvarying vec3 vRockP;\n${glow ? "attribute float aGlow;\nvarying float vGlow;" : ""}`)
+      .replace("#include <begin_vertex>", `#include <begin_vertex>\nvRockP = position;\n${glow ? "vGlow = aGlow;" : ""}`);
+    s.fragmentShader = s.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>
+uniform vec3 uGlowColor;
+uniform float uTime;
+uniform float uRockBump;
+uniform float uRockFreq;
+varying vec3 vRockP;
+${glow ? "varying float vGlow;" : ""}
+${ROCK_NOISE}`,
+      )
+      .replace(
+        "#include <map_fragment>",
+        `float rockH = fbm(vRockP * uRockFreq);
+float rockPit = smoothstep(0.7, 0.85, vnoise(vRockP * uRockFreq * 3.3 + 7.0));
+diffuseColor.rgb *= (0.62 + 0.7 * rockH) * (1.0 - 0.2 * rockPit);
+rockH -= rockPit * 0.15;`,
+      )
+      .replace(
+        "#include <normal_fragment_maps>",
+        `#include <normal_fragment_maps>
+{
+  vec3 dpx = dFdx(-vViewPosition);
+  vec3 dpy = dFdy(-vViewPosition);
+  float dhx = dFdx(rockH) * uRockBump;
+  float dhy = dFdy(rockH) * uRockBump;
+  vec3 r1 = cross(dpy, normal);
+  vec3 r2 = cross(normal, dpx);
+  float det = dot(dpx, r1) * faceDirection;
+  vec3 grad = sign(det) * (dhx * r1 + dhy * r2);
+  normal = normalize(abs(det) * normal - grad);
+}`,
+      )
+      .replace(
+        "#include <emissivemap_fragment>",
+        glow ? "#include <emissivemap_fragment>\ntotalEmissiveRadiance += uGlowColor * vGlow * (0.7 + 0.3 * sin(uTime * 1.7 + vGlow * 9.0));" : "#include <emissivemap_fragment>",
+      );
+  };
+  m.customProgramCacheKey = () => (glow ? "nova-rock-glow" : "nova-rock");
   return m;
 }
 
@@ -1775,7 +1820,7 @@ function buildTerrain(ctx: Ctx, spec: TerrainSpec): Terrain {
           if (nf.i >= 0 && floating[nf.i]) continue;
         }
         const lat = clamp((dx * rx3 + dz * rz3) / (rh * rh), -w, w);
-        const bed = py + ry3 * lat - 0.6;
+        const bed = py + ry3 * lat - 0.8;
         const t = smooth(F, F + B, d - w);
         if (t <= 0) flatMin[k] = Math.min(flatMin[k], bed);
         else if (t < tBest[k]) {
@@ -2289,14 +2334,14 @@ function buildMars(ctx: Ctx): ThemeLook {
     const n1 = fbm2(x / 160, z / 160, seed + 3, 3);
     const w = smooth(60 + 60 * n1, 150 + 90 * n1, edge);
     const wallAmp = 0.35 + 0.9 * fbm2(x / 240, z / 240, seed + 4, 3);
-    const wall = terrace(clamp(w * wallAmp, 0, 1), 3) * 85;
+    const wall = (terrace(clamp(w * wallAmp + (fbm2(x / 70, z / 70, seed + 13, 3) - 0.5) * 0.22, 0, 1), 3) + (ridge2(x / 45, z / 45, seed + 14, 3) - 0.5) * 0.12 * smooth(0.05, 0.3, w * wallAmp)) * 85;
     const dunes = (dune * 2.8 + (fbm2(x / 30, z / 30, seed + 1, 3) - 0.5) * 1.4) * smooth(6, 50, edge) * (1 - smooth(0.02, 0.2, w * wallAmp));
     const hills = (fbm2(x / 260, z / 260, seed + 2, 4) - 0.45) * 40 * far;
     const m = ridge2(x / 520, z / 520, seed + 5, 3);
     const plateau = terrace(clamp((m - 0.42) * 3.2, 0, 1), 3) * 95 * smooth(140, 420, edge);
     const rr = Math.hypot(x - cx, z - cz);
     const rim = smooth(TERRAIN_HALF * 0.55, TERRAIN_HALF * 0.95, rr) * (120 + 140 * fbm2(x / 200, z / 200, seed + 6, 4));
-    return base - 0.6 + dunes + hills + wall + plateau + rim;
+    return base - 0.8 + dunes + hills + wall + plateau + rim;
   };
   const paint = (x: number, z: number, h: number, ny: number, edge: number, base: number, out: Color) => {
     const rel = h - base;
@@ -2320,7 +2365,7 @@ function buildMars(ctx: Ctx): ThemeLook {
     paint,
     chasmDepth: 70,
     detail: detailTexture(ctx, 21, "mars"),
-    scales: [1 / 9, 1 / 43],
+    scales: [1 / 14, 1 / 60],
     bump: 1.6,
     roughness: 0.96,
   });
@@ -2375,8 +2420,9 @@ function buildMars(ctx: Ctx): ThemeLook {
       },
       true,
     );
-  addPlanet(ctx, azEl(200, 38), SKY_R, { radius: 9, map: moonTex(3), atmo: new Color(0), atmoK: 0, ambient: 0.02, spin: 0.004, scale: new Vector3(1.35, 0.95, 1.05), segments: 40 }, -960);
-  addPlanet(ctx, azEl(130, 22), SKY_R, { radius: 4.2, map: moonTex(8), atmo: new Color(0), atmoK: 0, ambient: 0.02, spin: 0.003, scale: new Vector3(1.15, 0.95, 1), segments: 28 }, -962);
+  const skyHaze: [Color, number] = [new Color(0.62, 0.3, 0.15), 0.5];
+  addPlanet(ctx, azEl(-20, 36), SKY_R, { radius: 9, map: moonTex(3), atmo: new Color(0), atmoK: 0, ambient: 0.05, haze: skyHaze, spin: 0.004, scale: new Vector3(1.35, 0.95, 1.05), segments: 40 }, -960);
+  addPlanet(ctx, azEl(-105, 28), SKY_R, { radius: 4.2, map: moonTex(8), atmo: new Color(0), atmoK: 0, ambient: 0.05, haze: [skyHaze[0], 0.6], spin: 0.003, scale: new Vector3(1.15, 0.95, 1), segments: 28 }, -962);
 
   // Dust: a near swirl of motes plus big soft drifting veils.
   const dustCol = new Color(0xe0a070);
@@ -2579,7 +2625,7 @@ function buildBelt(ctx: Ctx): ThemeLook {
   return {
     fog: new FogExp2(new Color(0x0b1024).getHex(), 0.00055),
     sunIntensity: 3.4,
-    hemi: { sky: new Color(0x6a7cc8), ground: new Color(0x2a1830), intensity: 0.55 },
+    hemi: { sky: new Color(0x5a6cc0), ground: new Color(0x2a1426), intensity: 0.38 },
     exposure: 1.05,
     bloom: { strength: 0.6, threshold: 0.8, radius: 0.6 },
     skyA: dir(0.2, 0.9, -0.4),
@@ -2659,11 +2705,11 @@ function buildSaturn(ctx: Ctx): ThemeLook {
     },
     true,
   );
-  addPlanet(ctx, azEl(-70, 40), SKY_R, { radius: 6, map: ice, atmo: new Color(0), atmoK: 0, ambient: 0.004, spin: 0.001, segments: 32 }, -965);
+  addPlanet(ctx, azEl(-95, 42), SKY_R, { radius: 6, map: ice, atmo: new Color(0), atmoK: 0, ambient: 0.02, spin: 0.001, segments: 32 }, -965);
 
   // Ice shards: we race through a thin layer of the rings.
-  const iceMat = new MeshStandardMaterial({ vertexColors: true, roughness: 0.12, metalness: 0.05, flatShading: true, envMapIntensity: 1.6, emissive: new Color(0x0a2233) });
-  const shade: [Color, Color] = [new Color(0x9fc4dd), new Color(0xf4fbff)];
+  const iceMat = new MeshStandardMaterial({ vertexColors: true, roughness: 0.06, metalness: 0.35, flatShading: true, envMapIntensity: 2.2, emissive: new Color(0x061a2a) });
+  const shade: [Color, Color] = [new Color(0x3f6f94), new Color(0xcdeaff)];
   const shapes: RockShape[] = [
     { seed: 31, detail: 0, lumpy: 0.25, stretch: [0.6, 1.8, 0.7], facets: true, shade },
     { seed: 32, detail: 0, lumpy: 0.3, stretch: [1, 1, 1], facets: true, shade },
@@ -2855,12 +2901,14 @@ function buildNebula(ctx: Ctx): ThemeLook {
   const o = ctx.outline;
   // Ring habitat megastructure.
   const hab = new Group();
-  const R = 420;
-  const Wd = 70;
+  const R = 480;
+  const Wd = 80;
   const habDir = new Vector3(-0.7, 0, 0.72).normalize();
-  hab.position.set(ctx.cx + habDir.x * (ctx.extent + 700), ctx.cy + 120, ctx.cz + habDir.z * (ctx.extent + 700));
-  hab.lookAt(ctx.cx, ctx.cy + 40, ctx.cz);
-  hab.rotateY(0.5);
+  hab.position.set(ctx.cx + habDir.x * (ctx.extent + 620), ctx.cy + 170, ctx.cz + habDir.z * (ctx.extent + 620));
+  // Wheel face turned towards the course, tilted for a dramatic ellipse.
+  const toTrack = new Vector3(ctx.cx, ctx.cy, ctx.cz).sub(hab.position).normalize();
+  const habAxis = toTrack.clone().multiplyScalar(0.75).add(new Vector3(0.25, 0.6, 0)).normalize();
+  hab.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), habAxis);
   const spinner = new Group();
   hab.add(spinner);
   const winTex = windowTexture(ctx, 17, 256, 12, ["#ffcf8a", "#ffe6c0", "#8af0ff", "#ff9ad8"], 0.5);
@@ -2913,7 +2961,7 @@ function buildNebula(ctx: Ctx): ThemeLook {
   const right = new Vector3();
   const fwd = new Vector3();
   const p = new Vector3();
-  const poleMat = new MeshStandardMaterial({ color: 0x30344a, metalness: 0.9, roughness: 0.35 });
+  const poleMat = new MeshStandardMaterial({ color: 0x8890b8, metalness: 0.75, roughness: 0.3, emissive: 0x2a1650, emissiveIntensity: 0.6 });
   const boards = Math.min(12, Math.floor(o.count / 140));
   let kind = 0;
   for (let b = 0; b < boards; b++) {
@@ -2959,7 +3007,7 @@ function buildNebula(ctx: Ctx): ThemeLook {
   // Pylons with chase lights running along the road.
   const pyl: { p: Vector3; q: Quaternion }[] = [];
   const Y = new Vector3(0, 1, 0);
-  for (let i = 0; i < o.count; i += 24) {
+  for (let i = 0; i < o.count; i += 36) {
     p.fromArray(o.pos, i * 3);
     up.fromArray(o.up, i * 3);
     right.fromArray(o.right, i * 3);
@@ -3148,11 +3196,11 @@ function buildLuna(ctx: Ctx): ThemeLook {
     const hills = (fbm2(x / 300, z / 300, seed, 5) - 0.45) * 60 * far + (fbm2(x / 50, z / 50, seed + 1, 3) - 0.5) * 3;
     const cr = craterAt(x, z).h * smooth(4, 40, edge);
     const rr = Math.hypot(x - cx, z - cz);
-    const rim = smooth(TERRAIN_HALF * 0.55, TERRAIN_HALF * 0.97, rr) * (90 + 130 * ridge2(x / 260, z / 260, seed + 3, 4));
-    return base - 0.6 + hills + cr + rim;
+    const rim = smooth(TERRAIN_HALF * 0.55, TERRAIN_HALF * 0.97, rr) * (80 + 150 * fbm2(x / 240, z / 240, seed + 3, 4));
+    return base - 0.8 + hills + cr + rim;
   };
-  const light = new Color(0xb9b5ae);
-  const darkM = new Color(0x55534f);
+  const light = new Color(0x9a9791);
+  const darkM = new Color(0x4c4a47);
   const paint = (x: number, z: number, h: number, ny: number, edge: number, base: number, out: Color) => {
     const mare = smooth(0.45, 0.62, fbm2(x / 500, z / 500, seed + 9, 4));
     out.copy(light).lerp(darkM, mare * 0.75);
@@ -3168,7 +3216,7 @@ function buildLuna(ctx: Ctx): ThemeLook {
     paint,
     chasmDepth: 60,
     detail: detailTexture(ctx, 44, "luna"),
-    scales: [1 / 9, 1 / 37],
+    scales: [1 / 20, 1 / 75],
     bump: 1.3,
     roughness: 0.98,
   });
@@ -3194,7 +3242,7 @@ function buildLuna(ctx: Ctx): ThemeLook {
   addDust(ctx, { count: ctx.hi ? 500 : 200, box: 120, color: new Color(0xcfcac2), size: [0.15, 0.45], wind: new Vector3(0.3, 0.05, 0.2), swirl: 1, opacity: 0.35, additive: false, soft: 0 });
   return {
     fog: null,
-    sunIntensity: 4.2,
+    sunIntensity: 3.7,
     hemi: { sky: new Color(0x8aa6d8), ground: new Color(0x2a2a2a), intensity: 0.16 },
     exposure: 1.0,
     bloom: { strength: 0.4, threshold: 0.9, radius: 0.4 },
@@ -3206,7 +3254,7 @@ function buildLuna(ctx: Ctx): ThemeLook {
 const SUN: Record<ThemeId, { dir: Vector3; color: Color }> = {
   mars: { dir: azEl(-60, 24), color: new Color(0xfff0dc) },
   belt: { dir: azEl(-130, 30), color: new Color(0xfff4e2) },
-  saturn: { dir: azEl(-120, 34), color: new Color(0xfff6ea) },
+  saturn: { dir: azEl(-75, 32), color: new Color(0xfff6ea) },
   nebula: { dir: azEl(150, 26), color: new Color(0xffd6f2) },
   luna: { dir: azEl(-15, 17), color: new Color(0xffffff) },
 };

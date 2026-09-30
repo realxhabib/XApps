@@ -98,8 +98,9 @@ function strip(track: CompiledTrack, o: StripOpts): BufferGeometry {
     for (let c = 0; c < o.across; c++) {
       const a = r * cols + c;
       const b = rn * cols + c;
-      if (o.flip) index.push(a, a + 1, b, b, a + 1, b + 1);
-      else index.push(a, b, a + 1, b, b + 1, a + 1);
+      // Along × across = −up, so the default winding is (a, a+1, b) to face up.
+      if (o.flip) index.push(a, b, a + 1, b, b + 1, a + 1);
+      else index.push(a, a + 1, b, b, a + 1, b + 1);
     }
   }
   const g = new BufferGeometry();
@@ -139,8 +140,8 @@ void main() {
   float scan = 0.5 + 0.5 * sin(vUv.y * 1.3 - uTime * 6.0);
   float fade = (1.0 - vUv.x);
   float base = smoothstep(0.0, 0.08, vUv.x) * smoothstep(0.35, 0.0, vUv.x);
-  float a = fade * (0.05 + near * 0.35) + h * fade * (0.08 + near * 0.55) + base * 0.35 + scan * 0.03 * fade;
-  gl_FragColor = vec4(uColor * (1.2 + near), a);
+  float a = fade * (0.03 + near * 0.12) + h * fade * (0.05 + near * 0.3) + base * 0.22 + scan * 0.02 * fade;
+  gl_FragColor = vec4(uColor * (0.7 + near * 0.5), a);
 }`;
 
 const PAD_FS = /* glsl */ `
@@ -152,7 +153,7 @@ void main() {
   vec4 t = texture2D(uMap, vec2(vUv.x, fract(vUv.y * 1.5 - uTime * 1.8)));
   float edge = smoothstep(0.0, 0.1, vUv.x) * smoothstep(1.0, 0.9, vUv.x);
   float glow = 0.25 + 0.75 * t.r;
-  gl_FragColor = vec4(uColor * glow * 2.2, (0.35 + t.r * 0.65) * edge);
+  gl_FragColor = vec4(uColor * glow * 1.3, (0.25 + t.r * 0.6) * edge);
 }`;
 
 const SIMPLE_VS = /* glsl */ `
