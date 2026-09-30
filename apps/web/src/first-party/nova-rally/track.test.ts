@@ -1,10 +1,10 @@
 import { Vector3 } from "three";
 import { describe, expect, it } from "vitest";
 import { compileTrack, frameAt, locate, newFrame, trackPoint } from "./track";
-import { TRACKS } from "./tracks";
+import { TRACKS, mirrored } from "./tracks";
 
 describe("tracks", () => {
-  for (const def of TRACKS) {
+  for (const def of [...TRACKS, ...TRACKS.map(mirrored)]) {
     describe(def.name, () => {
       const t = compileTrack(def);
 
