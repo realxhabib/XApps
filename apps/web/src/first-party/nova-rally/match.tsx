@@ -140,7 +140,7 @@ export function MatchView({ choice, trial, onExit, onRetry }: { choice: ShipChoi
         el.style.opacity = tag.visible ? String(Math.max(0.35, 1 - tag.dist / 90)) : "0";
         if (tag.visible) el.style.transform = `translate(${tag.x}px, ${tag.y}px) translate(-50%, -100%) scale(${Math.max(0.7, 1.2 - tag.dist / 80)})`;
       }
-      if (flashRef.current) flashRef.current.style.opacity = String(rt.empFlash * 0.55);
+      if (flashRef.current) flashRef.current.style.opacity = String(rt.empFlash * 0.22);
 
       // Minimap.
       const mini = miniRef.current;

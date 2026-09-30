@@ -164,8 +164,8 @@ export class AiPilot {
 export function rubberBand(skill: number, progressVsHuman: number, lapLength: number): number {
   const base = 0.9 + skill * 0.1;
   const gap = progressVsHuman / lapLength;
-  if (gap > 0.08) return base * Math.max(0.88, 1 - (gap - 0.08) * 0.35);
-  if (gap < -0.05) return base * Math.min(1.12, 1 + (-gap - 0.05) * 0.45);
+  if (gap > 0.12) return base * Math.max(0.93, 1 - (gap - 0.12) * 0.25);
+  if (gap < -0.1) return base * Math.min(1.06, 1 + (-gap - 0.1) * 0.3);
   return base;
 }
 

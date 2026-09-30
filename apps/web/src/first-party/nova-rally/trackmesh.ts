@@ -360,7 +360,7 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
     tmp.copy(f.pos).addScaledVector(f.right, spot.side * (f.wallOffset + 0.65)).addScaledVector(f.up, 1.35);
     m4.makeTranslation(tmp.x, tmp.y, tmp.z);
     lamps.setMatrixAt(k, m4);
-    const c = (Math.floor(spot.s / 10) % 2 === 0 ? accent : accent2).clone().multiplyScalar(2.2);
+    const c = (Math.floor(spot.s / 10) % 2 === 0 ? accent : accent2).clone().multiplyScalar(1.3);
     lamps.setColorAt(k, c);
   });
   group.add(lamps);

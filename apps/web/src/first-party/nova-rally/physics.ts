@@ -410,7 +410,7 @@ export class Ship {
             this.driftTier = 0;
           }
         }
-      } else if (!hasWall(track, this.s, side) && Math.abs(this.d) > F2.wallOffset + 1.2 && !this.airborne) {
+      } else if (!hasWall(track, this.s, side) && Math.abs(this.d) > F2.wallOffset + 2.4 && !this.airborne) {
         this.airborne = true;
         this.vh = -1;
       }

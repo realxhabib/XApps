@@ -525,7 +525,7 @@ export function mirrored(def: TrackDef): TrackDef {
 }
 
 export function trackById(id: string): TrackDef {
-  return TRACKS.find((t) => t.id === id) ?? MARS;
+  return TRACKS.find((t) => t.id === id) ?? ARENAS.find((t) => t.id === id) ?? MARS;
 }
 
 export interface Cup {
@@ -540,4 +540,80 @@ export const CUPS: readonly Cup[] = [
   { id: "void", name: "Void Cup", icon: "🌌", tracks: ["nebula", "luna", "europa"] },
   { id: "star", name: "Star Cup", icon: "🌟", tracks: ["sun", "europa", "nebula"] },
   { id: "grand", name: "Galaxy Cup", icon: "🪐", tracks: ["mars", "saturn", "sun", "europa"] },
+];
+
+/** A lumpy ring of nodes for a battle bowl. */
+function bowl(radius: number, wobble: number, lift: number, count = 12, seed = 1): TrackNode[] {
+  return Array.from({ length: count }, (_, k) => {
+    const a = (k / count) * Math.PI * 2;
+    const r = radius + Math.sin(a * 3 + seed) * wobble + Math.cos(a * 2 - seed) * wobble * 0.5;
+    return n(Math.sin(a) * r, Math.sin(a * 2 + seed) * lift, -Math.cos(a) * r);
+  });
+}
+
+const arenaBase = {
+  shoulder: 2,
+  autoBank: 1.2,
+  gravity: 1,
+  arena: true,
+  gaps: [],
+  open: [],
+  ramps: [],
+} as const;
+
+/** Battle arenas: short, wide bowls where everyone meets again and again. */
+export const ARENAS: readonly TrackDef[] = [
+  {
+    ...arenaBase,
+    id: "arena-crater",
+    name: "Crater Bowl",
+    theme: "luna",
+    blurb: "A lunar crater ringed with ramps. Three orbs each; last ship flying wins.",
+    accent: ["#d9e4ff", "#5ab0ff"],
+    halfWidth: 22,
+    floating: false,
+    gravity: 0.62,
+    nodes: bowl(120, 18, 6, 12, 0.4),
+    boostPads: [{ at: 1.5, d: 0 }, { at: 4.5, d: 0.5 }, { at: 7.5, d: -0.5 }, { at: 10.5, d: 0 }],
+    itemRows: [0.5, 2.5, 4.5, 6.5, 8.5, 10.5],
+    coins: [{ at: 1, d: -0.5, n: 4 }, { at: 5, d: 0.5, n: 4 }, { at: 9, d: 0, n: 4 }],
+    ramps: [{ at: 3.5, lift: 13 }, { at: 9.5, lift: 13 }],
+    hazards: [{ kind: "meteor", at: 6, d: 0, period: 7, phase: 2 }],
+  },
+  {
+    ...arenaBase,
+    id: "arena-dust",
+    name: "Dust Bowl",
+    theme: "mars",
+    blurb: "A Martian dust bowl with roaming dust devils. Three orbs each; last ship flying wins.",
+    accent: ["#ff8a4c", "#ffd166"],
+    halfWidth: 22,
+    floating: false,
+    nodes: bowl(115, 22, 4, 12, 1.7),
+    boostPads: [{ at: 0.5, d: 0 }, { at: 3.5, d: 0.4 }, { at: 6.5, d: -0.4 }, { at: 9.5, d: 0 }],
+    itemRows: [1, 3, 5, 7, 9, 11],
+    coins: [{ at: 2, d: 0.4, n: 4 }, { at: 6, d: -0.4, n: 4 }, { at: 10, d: 0, n: 4 }],
+    hazards: [
+      { kind: "dust", at: 2.5, period: 5, phase: 0 },
+      { kind: "dust", at: 8.5, period: 6, phase: 2 },
+    ],
+  },
+  {
+    ...arenaBase,
+    id: "arena-neon",
+    name: "Neon Colosseum",
+    theme: "nebula",
+    blurb: "A floating neon ring in the nebula, banked and fast. Three orbs each; last ship flying wins.",
+    accent: ["#ff4fd8", "#36f3ff"],
+    halfWidth: 20,
+    floating: true,
+    nodes: bowl(110, 14, 10, 12, 2.9),
+    boostPads: [{ at: 1, d: 0 }, { at: 4, d: 0 }, { at: 7, d: 0 }, { at: 10, d: 0 }],
+    itemRows: [0.5, 2.5, 4.5, 6.5, 8.5, 10.5],
+    coins: [{ at: 1.5, d: 0.5, n: 4 }, { at: 5.5, d: -0.5, n: 4 }, { at: 9.5, d: 0, n: 4 }],
+    hazards: [
+      { kind: "arc", at: 3, period: 3.4, phase: 0 },
+      { kind: "arc", at: 9, period: 3, phase: 1.5 },
+    ],
+  },
 ];

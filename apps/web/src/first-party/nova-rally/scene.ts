@@ -31,6 +31,7 @@ import {
   HalfFloatType,
   HemisphereLight,
   IcosahedronGeometry,
+  LatheGeometry,
   InstancedMesh,
   Matrix4,
   Mesh,
@@ -53,17 +54,19 @@ import {
   SpriteMaterial,
   SRGBColorSpace,
   ExtrudeGeometry,
+  MeshPhysicalMaterial,
   TorusGeometry,
   Vector2,
   Vector3,
   WebGLRenderer,
   type Texture,
 } from "three";
+import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { buildEnvironment, type EnvironmentHandle } from "./environments";
 import { BOX_LANES } from "./items";
 import type { RaceRuntime, Racer } from "./race";
 import { buildShip, type ShipModel } from "./ships";
-import { paintDot, paintItemFace, rng } from "./textures";
+import { paintDot, paintItemFace, paintSign, rng } from "./textures";
 import { frameAt, locate, newFrame, trackPoint, wrapS, type CompiledTrack } from "./track";
 import { buildTrackView, type TrackView } from "./trackmesh";
 
@@ -365,10 +368,10 @@ export class RaceScene {
   private empDome: Mesh;
 
   /* Shared geometry & materials */
-  private readonly boxGeo = new OctahedronGeometry(1.1, 0);
-  private readonly boxInnerGeo = new IcosahedronGeometry(0.55, 0);
-  private readonly boxMat: MeshStandardMaterial;
-  private readonly boxInnerMat = new MeshBasicMaterial({ color: new Color("#ffffff").multiplyScalar(2), toneMapped: false });
+  private readonly boxGeo = new RoundedBoxGeometry(1.7, 1.7, 1.7, 4, 0.32);
+  private readonly boxInnerGeo = new OctahedronGeometry(0.2, 0);
+  private readonly boxMat: MeshPhysicalMaterial;
+  private readonly boxInnerMat = new SpriteMaterial({ color: "#ffffff", transparent: true, depthWrite: false, toneMapped: false });
   private readonly itemFace: Texture;
   private readonly coinGeo = starCoinGeometry();
   private readonly warpGeo = new CylinderGeometry(3.2, 1.4, 18, 32, 1, true);
@@ -425,16 +428,22 @@ export class RaceScene {
 
     this.dot = paintDot();
     this.itemFace = paintItemFace();
-    this.boxMat = new MeshStandardMaterial({
-      map: this.itemFace,
+    // Iridescent glassy capsule with a floating "?" inside, like a kart racer's item box.
+    this.boxMat = new MeshPhysicalMaterial({
+      color: "#ffffff",
       transparent: true,
-      opacity: 0.82,
-      roughness: 0.1,
-      metalness: 0.3,
-      emissive: new Color("#ffffff"),
-      emissiveMap: this.itemFace,
-      emissiveIntensity: 0.6,
+      opacity: 0.55,
+      roughness: 0.05,
+      metalness: 0.1,
+      iridescence: 1,
+      iridescenceIOR: 1.6,
+      iridescenceThicknessRange: [120, 820],
+      clearcoat: 1,
+      emissive: new Color("#6a5cff"),
+      emissiveIntensity: 0.25,
+      depthWrite: false,
     });
+    this.boxInnerMat.map = this.itemFace;
     const rock = new IcosahedronGeometry(1, 2);
     const rp = rock.getAttribute("position") as BufferAttribute;
     const rr = rng(7);
@@ -546,7 +555,7 @@ export class RaceScene {
     this.hemi.color.copy(this.env.hemi.sky);
     this.hemi.groundColor.copy(this.env.hemi.ground);
     this.hemi.intensity = this.env.hemi.intensity;
-    this.bloom.intensity = this.env.bloom.strength;
+    this.bloom.intensity = this.env.bloom.strength * 0.75;
     this.bloom.luminanceMaterial.threshold = this.env.bloom.threshold;
     this.bloom.mipmapBlurPass.radius = this.env.bloom.radius;
     this.exposure = this.env.exposure;
@@ -561,7 +570,8 @@ export class RaceScene {
       const i = Math.floor(wrapS(s, track.length) / track.step) % track.count;
       return BOX_LANES.map((lane) => {
         const m = new Mesh(this.boxGeo, this.boxMat);
-        const inner = new Mesh(this.boxInnerGeo, this.boxInnerMat);
+        const inner = new Sprite(this.boxInnerMat);
+        inner.scale.setScalar(1.05);
         m.add(inner);
         trackPoint(track, s, lane * track.halfWidth[i]!, 1.5, m.position);
         this.pickupGroup.add(m);
@@ -645,9 +655,7 @@ export class RaceScene {
       g.add(rock);
       const fire = new Mesh(new SphereGeometry(2.8, 16, 12), new MeshBasicMaterial({ color: new Color("#ff6a1a").multiplyScalar(2.5), transparent: true, opacity: 0.7, blending: AdditiveBlending, depthWrite: false, toneMapped: false }));
       g.add(fire);
-      const tail = new Mesh(new ConeGeometry(2.4, 16, 16, 1, true), new MeshBasicMaterial({ color: new Color("#ffb347").multiplyScalar(2), transparent: true, opacity: 0.45, blending: AdditiveBlending, depthWrite: false, toneMapped: false }));
-      tail.position.y = 9;
-      g.add(tail);
+
     }
     return g;
   }
@@ -802,7 +810,10 @@ export class RaceScene {
 
     // Sun + shadow box follow the focus ship.
     if (this.env) {
-      this.sun.position.copy(focus).addScaledVector(this.env.sunDirection, 120);
+      // Shadows come from a high sun so they stay short and under the ships, whatever the sky's sun angle.
+      this.shadowDir.copy(this.env.sunDirection);
+      this.shadowDir.y = Math.max(this.shadowDir.y, 0.85);
+      this.sun.position.copy(focus).addScaledVector(this.shadowDir.normalize(), 120);
       this.sun.target.position.copy(focus);
     }
     if (this.empLife > 0) {
@@ -860,7 +871,10 @@ export class RaceScene {
       model.setThrottle(Math.max(0.15, throttle), boosting, this.time);
       model.setDriftGlow(ship.driftDir !== 0 ? ship.driftTier : 0);
       model.setShield(ship.shield > 0, this.time);
-      model.setGhost(r.kind === "ghost" ? 0.35 : ship.cloak > 0 ? (r.isMe ? 0.4 : 0.12) : 1);
+      // Rivals right in front of the lens fade out instead of filling the screen.
+      const lensDist = r === rt.focus ? 99 : pos.distanceTo(this.camera.position);
+      const lensFade = lensDist < 7 ? Math.max(0.15, (lensDist - 3) / 4) : 1;
+      model.setGhost(r.kind === "ghost" ? 0.35 : ship.cloak > 0 ? (r.isMe ? 0.4 : 0.12) : lensFade);
       root.visible = !r.out && (ship.state !== "fall" || ship.h > -30);
       view.trail.mesh.visible = !r.out;
       root.scale.setScalar(ship.shocked > 0 ? 0.6 : 1);
@@ -941,7 +955,7 @@ export class RaceScene {
           const ex = model.exhausts[Math.floor(Math.random() * model.exhausts.length)] ?? new Vector3(0, 0.4, 1.5);
           const wp = ex.clone().applyMatrix4(root.matrixWorld);
           const vel = ship.fwd.clone().multiplyScalar(-(8 + Math.random() * 8) + ship.speed * 0.6).addScaledVector(f.up, Math.random() * 1.5);
-          this.particles.emit(wp, vel, flame, boosting ? 1.3 : 0.7, 0.18 + Math.random() * 0.12, 3, -2);
+          this.particles.emit(wp, vel, flame, boosting ? 0.55 : 0.35, 0.12 + Math.random() * 0.08, 3, -1.5);
         }
       }
       if (ship.driftDir !== 0 && !ship.airborne) {
@@ -983,7 +997,7 @@ export class RaceScene {
         const scale = left > 0 ? Math.max(0, 1 - left / 0.35) * 0.001 : 1;
         m.scale.setScalar(Math.max(0.001, scale * grow + (1 - grow) * 0.001));
         m.rotation.set(this.time * 0.9 + k, this.time * 1.3 + ri, 0);
-        (m.children[0] as Mesh).rotation.set(-this.time * 2, this.time * 1.7, 0);
+        m.children[0]!.position.y = Math.sin(this.time * 3 + k + ri) * 0.08;
       });
     });
     const coins = this.coinMesh;
@@ -1054,7 +1068,12 @@ export class RaceScene {
       } else if (kind === "meteor") {
         const ground = this.v1.copy(f.pos).addScaledVector(f.right, h.d);
         view.position.copy(ground).addScaledVector(f.up, h.h + 1).addScaledVector(f.right, h.h * 0.3);
-        view.visible = h.h > 0.5;
+        view.visible = h.h > 0.5 && h.h < 26;
+        if (view.visible && !this.reduced) {
+          const p = view.position.clone();
+          this.particles.emit(p, new Vector3((Math.random() - 0.5) * 3, 8, (Math.random() - 0.5) * 3), new Color("#ff8a2a"), 2.2, 0.5, 1, 2);
+          this.particles.emit(p, new Vector3((Math.random() - 0.5) * 2, 5, (Math.random() - 0.5) * 2), new Color("#5a4a44"), 2.8, 1.1, 0.8, 3);
+        }
         view.children[0]!.rotation.set(this.time * 2, this.time, 0);
         const mark = this.meteorMarks[k]!;
         mark.position.copy(ground).addScaledVector(f.up, 0.15);
@@ -1265,6 +1284,7 @@ export class RaceScene {
   }
 
   private fovKick = 0;
+  private readonly shadowDir = new Vector3();
   private podium: Group | null = null;
   private podiumSnap = false;
   private podiumAnchor = new Vector3();
@@ -1290,7 +1310,20 @@ export class RaceScene {
       ring.rotation.x = Math.PI / 2;
       ring.position.set(xs[i]!, heights[i]!, 0);
       g.add(ring);
+      // Big step number on the front face.
+      const num = paintSign(String(i + 1), colors[i]!, 128, 128);
+      const plate = new Mesh(new PlaneGeometry(1.4, 1.4), new MeshBasicMaterial({ map: num, toneMapped: false }));
+      plate.position.set(xs[i]!, heights[i]! / 2, 2.15);
+      g.add(plate);
     }
+    // A trophy floats over the winner's step.
+    const cupProfile = [
+      [0, 0], [0.55, 0], [0.55, 0.12], [0.18, 0.22], [0.14, 0.7], [0.5, 0.9], [0.72, 1.5], [0.66, 1.52], [0.44, 0.98], [0, 0.9],
+    ].map(([x, y]) => new Vector2(x!, y!));
+    const trophy = new Mesh(new LatheGeometry(cupProfile, 32), new MeshStandardMaterial({ color: "#ffd24a", metalness: 1, roughness: 0.15, emissive: "#ff9a00", emissiveIntensity: 0.35 }));
+    trophy.position.set(xs[0]!, heights[0]! + 3.3, 0);
+    trophy.name = "trophy";
+    g.add(trophy);
     g.position.copy(this.podiumAnchor);
     g.quaternion.setFromRotationMatrix(this.podiumBasis);
     g.userData.heights = heights;
@@ -1322,6 +1355,8 @@ export class RaceScene {
       this.podiumSnap = true;
     }
     const order = rt.getSnapshot().standings.slice(0, 3).map((row) => row.idx);
+    const trophy = this.podium.getObjectByName("trophy");
+    if (trophy) trophy.rotation.y = this.time * 1.4;
     const heights = this.podium.userData.heights as number[];
     const xs = this.podium.userData.xs as number[];
     for (const view of this.ships.values()) {
@@ -1333,7 +1368,7 @@ export class RaceScene {
       view.warp.visible = false;
       view.drone.visible = false;
       if (!onPodium) continue;
-      const local = new Vector3(xs[place]!, heights[place]! + 0.55 + Math.sin(this.time * 3 + place) * 0.08, 0.3);
+      const local = new Vector3(xs[place]!, heights[place]! + 0.12 + Math.abs(Math.sin(this.time * 3 + place)) * 0.25, 0);
       view.model.root.position.copy(local).applyMatrix4(new Matrix4().makeRotationFromQuaternion(this.podium.quaternion)).add(this.podium.position);
       // Face the camera side (+z of the podium), nose slightly turned.
       const q = this.podium.quaternion.clone().multiply(new Quaternion().setFromAxisAngle(UP, Math.PI + (place === 1 ? 0.35 : place === 2 ? -0.35 : 0)));
@@ -1412,9 +1447,8 @@ export class RaceScene {
       const center = this.podiumAnchor.clone().add(new Vector3(0, 2.4, 0));
       const back = new Vector3(0, 0, 1).applyQuaternion(this.podium.quaternion);
       const side = new Vector3(1, 0, 0).applyQuaternion(this.podium.quaternion);
-      targetPos = center.clone().addScaledVector(back, 12 + Math.cos(a) * 1.2).addScaledVector(side, Math.sin(a) * 4).add(new Vector3(0, 0.8, 0));
-      // Aim a little below the podium so it sits in the upper part of the frame, clear of the table.
-      targetLook = center.clone().add(new Vector3(0, -1.6, 0));
+      targetPos = center.clone().addScaledVector(back, 11 + Math.cos(a) * 1.2).addScaledVector(side, Math.sin(a) * 3.5).add(new Vector3(0, 4.2, 0));
+      targetLook = center.clone().add(new Vector3(0, -0.6, 0));
       targetUp = UP;
       rate = this.podiumSnap ? 1000 : 4;
       this.podiumSnap = false;

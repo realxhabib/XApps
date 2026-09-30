@@ -19,7 +19,7 @@ import { MatchView } from "./match";
 import { ShipPreview } from "./preview";
 import { bestTrialTime, liveryFor, type ShipChoice } from "./race";
 import { LIVERY_SWATCHES, PILOTS, SHIPS, pilotPortraitSvg, shipIconSvg } from "./ships";
-import { CUPS, TRACKS, trackById } from "./tracks";
+import { ARENAS, CUPS, TRACKS, trackById } from "./tracks";
 
 const CHOICE_KEY = "nova-rally:ship";
 
@@ -400,12 +400,20 @@ function Setup() {
   const [mirror, setMirror] = useState(start.mirror);
   const [knockout, setKnockout] = useState(start.knockout);
   const [battle, setBattle] = useState(start.battle);
+  const [arena, setArena] = useState<string>(start.battle && start.cup.tracks.length === 1 ? start.cup.tracks[0]! : "all");
   const [busy, setBusy] = useState(false);
   const single = TRACKS.some((t) => t.id === cup);
   const name = single ? trackById(cup).name : (CUPS.find((c) => c.id === cup)?.name ?? "Solar Cup");
 
   const send = () => {
     setBusy(true);
+    if (battle) {
+      const arenaName = ARENAS.find((a) => a.id === arena)?.name ?? "Battle Cup";
+      const bs: { [key: string]: string | number | boolean } = { mode: "battle", cc };
+      if (arena !== "all") bs.track = arena;
+      submit(bs, `⚔️ Battle · ${arenaName} · ${cc}cc`).catch(() => setBusy(false));
+      return;
+    }
     const settings: { [key: string]: string | number | boolean } = single ? { track: cup, cc, laps } : { cup, cc, laps };
     if (mirror) settings.mirror = true;
     if (knockout) settings.mode = "knockout";
@@ -421,7 +429,23 @@ function Setup() {
     <div className="mx-auto flex h-full max-w-lg flex-col gap-4 overflow-y-auto px-5 py-6 text-white">
       <h1 className="text-3xl font-black italic">Set up the race</h1>
       <section className="flex flex-col gap-2">
-        <div className="text-xs font-bold uppercase tracking-wider text-white/60">Grand Prix</div>
+        {battle ? (
+          <>
+            <div className="text-xs font-bold uppercase tracking-wider text-white/60">Battle arena</div>
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" className={option(arena === "all")} onClick={() => setArena("all")}>
+                ⚔️ Battle Cup
+                <span className="block text-xs font-medium text-white/60">All three arenas</span>
+              </button>
+              {ARENAS.map((a) => (
+                <button key={a.id} type="button" className={option(arena === a.id)} onClick={() => setArena(a.id)}>
+                  {a.name}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : null}
+        <div className={battle ? "hidden" : "text-xs font-bold uppercase tracking-wider text-white/60"}>Grand Prix</div>
         {CUPS.map((c) => (
           <button key={c.id} type="button" className={option(cup === c.id)} onClick={() => setCup(c.id)}>
             {c.icon} {c.name}

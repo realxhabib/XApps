@@ -244,7 +244,7 @@ export function RaceHud({ hud, minimap, onExit, onRetry }: { hud: HudSnapshot; m
           ↺ WRONG WAY
         </motion.div>
       ) : null}
-      <AnimatePresence>{hud.phase === "intro" ? <TitleCard key={`t${hud.raceIndex}`} hud={hud} /> : null}</AnimatePresence>
+      {hud.phase === "intro" ? <TitleCard key={`t${hud.raceIndex}`} hud={hud} /> : null}
       <AnimatePresence>
         {hud.phase === "results" ? (
           hud.trial ? <TrialResults key="trial" hud={hud} onExit={onExit} onRetry={onRetry} /> : <Results key={`r${hud.raceIndex}`} hud={hud} />
@@ -260,7 +260,11 @@ export function RaceHud({ hud, minimap, onExit, onRetry }: { hud: HudSnapshot; m
       ) : null}
       <AnimatePresence>{hud.phase === "podium" ? <Podium key="podium" hud={hud} /> : null}</AnimatePresence>
       <AnimatePresence>
-        {hud.phase === "finished" && hud.finishedPlace !== null ? (
+        {hud.phase === "finished" && hud.out ? (
+          <motion.div key="out" className="absolute inset-x-0 top-[18%] text-center text-[clamp(34px,9vw,68px)] font-black italic text-[#ff6b6b]" style={{ WebkitTextStroke: "2px #1b0b3a", filter: "drop-shadow(0 4px 0 rgba(0,0,0,0.5))" }} initial={{ scale: 0.4, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ opacity: 0 }} transition={spring.bouncy}>
+            {hud.battle ? "OUT OF ORBS" : "KNOCKED OUT"}
+          </motion.div>
+        ) : hud.phase === "finished" && hud.finishedPlace !== null ? (
           <motion.div key="fin" className="absolute inset-x-0 top-[18%] flex flex-col items-center gap-1" initial={{ scale: 0.4, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ opacity: 0 }} transition={spring.bouncy}>
             <div className="text-[clamp(34px,9vw,68px)] font-black italic text-white" style={{ WebkitTextStroke: "2px #1b0b3a", filter: "drop-shadow(0 4px 0 rgba(0,0,0,0.5))" }}>
               FINISH!
@@ -394,7 +398,7 @@ function Results({ hud }: { hud: HudSnapshot }) {
               </span>
               <RacerFace row={row} size={26} />
               <span className="min-w-0 flex-1 truncate text-sm font-bold">{row.name}</span>
-              <span className="font-mono text-[11px] opacity-80">{row.time !== null ? formatTime(row.time) : "--"}</span>
+              <span className="font-mono text-[11px] opacity-80">{row.out ? "OUT" : row.time !== null ? formatTime(row.time) : "--"}</span>
               <motion.span className="w-10 text-right text-sm font-black" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 + 0.08 * i }}>
                 +{row.gain}
               </motion.span>

@@ -218,6 +218,7 @@ export interface StandingRow {
   gain: number;
   time: number | null;
   isMe: boolean;
+  out: boolean;
   designIndex: number;
   liveryIndex: number;
   pilotIndex: number;
@@ -650,7 +651,8 @@ export class RaceRuntime {
       place: i,
       points: r.points,
       gain: r.lastGain,
-      time: r.finished ? r.finishTime : null,
+      time: r.finished && !r.out ? r.finishTime : null,
+      out: r.out,
       isMe: r.isMe,
       designIndex: r.designIndex,
       pilotIndex: r.pilotIndex,

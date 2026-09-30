@@ -1,15 +1,15 @@
 import { Vector3 } from "three";
 import { describe, expect, it } from "vitest";
 import { compileTrack, frameAt, locate, newFrame, trackPoint } from "./track";
-import { TRACKS, mirrored } from "./tracks";
+import { ARENAS, TRACKS, mirrored } from "./tracks";
 
 describe("tracks", () => {
-  for (const def of [...TRACKS, ...TRACKS.map(mirrored)]) {
+  for (const def of [...TRACKS, ...TRACKS.map(mirrored), ...ARENAS]) {
     describe(def.name, () => {
       const t = compileTrack(def);
 
       it("is a sensible length", () => {
-        expect(t.length).toBeGreaterThan(1300);
+        expect(t.length).toBeGreaterThan(def.arena ? 500 : 1300);
         expect(t.length).toBeLessThan(2600);
       });
 

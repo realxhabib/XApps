@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { AiPilot } from "./ai";
 import { DT, Ship, tuningFor } from "./physics";
 import { compileTrack, deltaS } from "./track";
-import { TRACKS } from "./tracks";
+import { ARENAS, TRACKS } from "./tracks";
 
 function mulberry(seed: number) {
   return () => {
@@ -15,7 +15,7 @@ function mulberry(seed: number) {
 }
 
 describe("a CPU pilot laps every track", () => {
-  for (const def of TRACKS) {
+  for (const def of [...TRACKS, ...ARENAS]) {
     it(def.name, () => {
       const track = compileTrack(def);
       const g = track.grid(0);

@@ -4,7 +4,7 @@
  */
 
 import type { Json } from "@xapps/sdk";
-import { CUPS, TRACKS, type Cup } from "./tracks";
+import { ARENAS, CUPS, TRACKS, type Cup } from "./tracks";
 
 export const FIELD_SIZE = 8;
 export const LAPS = 3;
@@ -43,6 +43,13 @@ export function parseSettings(raw: { [key: string]: Json } | null | undefined): 
   let cup = CUPS.find((c) => c.id === cupId) ?? CUPS[0]!;
   if (typeof raw?.track === "string" && TRACKS.some((t) => t.id === raw.track)) {
     cup = { id: `single:${raw.track}`, name: "Single Race", icon: "🏁", tracks: [raw.track] };
+  }
+  if (raw?.mode === "battle") {
+    // Battles run in arenas: the chosen arena, or all three as a battle cup.
+    const arena = typeof raw?.track === "string" ? ARENAS.find((a) => a.id === raw.track) : undefined;
+    cup = arena
+      ? { id: `battle:${arena.id}`, name: "Battle", icon: "⚔️", tracks: [arena.id] }
+      : { id: "battle", name: "Battle Cup", icon: "⚔️", tracks: ARENAS.map((a) => a.id) };
   }
   const cc = raw?.cc === 100 || raw?.cc === 200 ? raw.cc : 150;
   const laps = typeof raw?.laps === "number" && raw.laps >= 1 && raw.laps <= 5 ? Math.round(raw.laps) : LAPS;

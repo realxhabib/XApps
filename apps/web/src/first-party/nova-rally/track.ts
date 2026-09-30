@@ -62,6 +62,8 @@ export interface TrackDef {
   /** Stretches without a wall on one side (or both, side 0): fall off and a drone tows you back. */
   open: readonly { from: At; to: At; side: Side }[];
   hazards: readonly HazardDef[];
+  /** A short, wide battle arena rather than a race circuit. */
+  arena?: boolean;
 }
 
 export interface Frame {
