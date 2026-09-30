@@ -259,7 +259,7 @@ export interface HudSnapshot {
   out: boolean;
   /** A seeker or singularity is closing in on you. */
   incoming: "seeker" | "singularity" | null;
-  battle: { left: number; orbs: number } | null;
+  battle: { left: number; orbs: number; alive: number } | null;
 }
 
 export interface Input {
@@ -706,7 +706,7 @@ export class RaceRuntime {
       mirror: this.settings.mirror,
       out: !!me?.out,
       incoming: this.incomingFor(me),
-      battle: this.settings.battle ? { left: Math.max(0, BATTLE_SECONDS - this.raceTime), orbs: me?.orbs ?? 0 } : null,
+      battle: this.settings.battle ? { left: Math.max(0, BATTLE_SECONDS - this.raceTime), orbs: me?.orbs ?? 0, alive: this.racers.filter((r) => !r.out && r.kind !== "ghost").length } : null,
     };
   }
 
@@ -1100,7 +1100,15 @@ export class RaceRuntime {
       });
     }
     const threatened = this.projectiles.some((p) => p.kind === "seeker" && p.target === r.id && deltaS(p.s, r.ship.s, track.length) < 50);
-    return { track, others, dangers, boxes, threatened, item: r.roulette > 0 ? null : (r.items[0]?.id ?? null), place: r.place, field: this.racers.length };
+    const coins: { s: number; d: number }[] = [];
+    if (r.ship.coins < MAX_COINS) {
+      track.coins.forEach((c, k) => {
+        if ((this.coins[k] ?? 0) > 0) return;
+        const i = Math.floor(wrapS(c.s, track.length) / track.step) % track.count;
+        coins.push({ s: c.s, d: c.d * track.halfWidth[i]! });
+      });
+    }
+    return { track, others, dangers, boxes, coins, threatened, item: r.roulette > 0 ? null : (r.items[0]?.id ?? null), place: r.place, field: this.racers.length };
   }
 
   private onShipEvents(r: Racer): void {
@@ -1141,6 +1149,7 @@ export class RaceRuntime {
           if (me) this.audio.play("driftStart", { volume: 0.6 });
           break;
         case "tier":
+          this.fx.push({ type: "turbo", racer: r.idx, tier: e.tier });
           if (me) this.audio.play(e.tier === 1 ? "miniTurbo1" : e.tier === 2 ? "miniTurbo2" : "miniTurbo3", { volume: 0.35 });
           break;
         case "turbo":
@@ -1897,6 +1906,10 @@ export class RaceRuntime {
 
   /** The racer the camera follows. */
   get focus(): Racer {
+    // Knocked out: spectate the leader instead of staring at the wreck.
+    if (this.me && this.me.out && this.phase !== "results" && this.phase !== "podium") {
+      return this.racers.filter((r) => !r.out && r.kind !== "ghost").sort((a, b) => a.place - b.place)[0] ?? this.me;
+    }
     if (this.me) return this.me;
     return [...this.racers].sort((a, b) => a.place - b.place)[0]!;
   }

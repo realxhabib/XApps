@@ -32,6 +32,8 @@ import {
   HemisphereLight,
   IcosahedronGeometry,
   LatheGeometry,
+  LineBasicMaterial,
+  LineSegments,
   InstancedMesh,
   Matrix4,
   Mesh,
@@ -416,6 +418,37 @@ export class RaceScene {
   private readonly speedLineData: { x: number; y: number; z: number; len: number }[] = [];
   private empRing: Mesh;
   private empLife = 0;
+  private empFrom = -1;
+  private empTargets: number[] = [];
+  private readonly lightningPos = new Float32Array(8 * 12 * 2 * 3);
+  private lightning!: LineSegments;
+
+  /** Jagged purple arcs from the EMP user to everyone it zapped, re-rolled every frame. */
+  private updateLightning(k: number): void {
+    const from = this.rt.racers[this.empFrom];
+    const arr = this.lightningPos;
+    arr.fill(0);
+    let w = 0;
+    if (from && k < 0.7) {
+      for (const idx of this.empTargets.slice(0, 8)) {
+        const to = this.rt.racers[idx];
+        if (!to) continue;
+        const a = from.ship.pos.clone().addScaledVector(from.ship.frame.up, 1.2);
+        const b = to.ship.pos.clone().addScaledVector(to.ship.frame.up, 1);
+        let prev = a;
+        for (let seg = 1; seg <= 12; seg++) {
+          const t = seg / 12;
+          const next = a.clone().lerp(b, t);
+          if (seg < 12) next.add(new Vector3((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 3, (Math.random() - 0.5) * 4));
+          arr.set([prev.x, prev.y, prev.z, next.x, next.y, next.z], w);
+          w += 6;
+          prev = next;
+        }
+      }
+    }
+    (this.lightning.geometry.getAttribute("position") as BufferAttribute).needsUpdate = true;
+    this.lightning.visible = w > 0;
+  }
   private empDome: Mesh;
 
   /* Shared geometry & materials */
@@ -534,10 +567,18 @@ export class RaceScene {
     this.scene.add(this.camera);
     this.shared.push(lineGeo, lineMat);
 
-    const ringGeo = new RingGeometry(0.8, 1, 64);
+    const ringGeo = new RingGeometry(0.86, 1, 64);
     const ringMat = new MeshBasicMaterial({ color: new Color("#b56bff").multiplyScalar(3), transparent: true, opacity: 0, side: DoubleSide, blending: AdditiveBlending, depthWrite: false, toneMapped: false });
     this.empRing = new Mesh(ringGeo, ringMat);
     this.scene.add(this.empRing);
+    const lgeo = new BufferGeometry();
+    lgeo.setAttribute("position", new BufferAttribute(this.lightningPos, 3).setUsage(DynamicDrawUsage));
+    const lmat = new LineBasicMaterial({ color: new Color("#d9b8ff").multiplyScalar(3), transparent: true, blending: AdditiveBlending, depthWrite: false, toneMapped: false });
+    this.lightning = new LineSegments(lgeo, lmat);
+    this.lightning.frustumCulled = false;
+    this.lightning.visible = false;
+    this.scene.add(this.lightning);
+    this.shared.push(lgeo, lmat);
     const domeGeo = new SphereGeometry(1, 32, 16);
     const domeMat = new MeshBasicMaterial({ color: new Color("#9a6bff").multiplyScalar(1.2), transparent: true, opacity: 0, blending: AdditiveBlending, depthWrite: false, side: DoubleSide, toneMapped: false });
     this.empDome = new Mesh(domeGeo, domeMat);
@@ -608,7 +649,7 @@ export class RaceScene {
     this.hemi.groundColor.copy(this.env.hemi.ground);
     this.hemi.intensity = this.env.hemi.intensity;
     this.bloom.intensity = this.env.bloom.strength * 0.75;
-    this.bloom.luminanceMaterial.threshold = this.env.bloom.threshold;
+    this.bloom.luminanceMaterial.threshold = Math.max(0.85, this.env.bloom.threshold);
     this.bloom.mipmapBlurPass.radius = this.env.bloom.radius;
     this.exposure = this.env.exposure;
 
@@ -871,7 +912,9 @@ export class RaceScene {
     if (this.empLife > 0) {
       this.empLife -= dt;
       const k = 1 - this.empLife / 1.1;
-      this.empRing.scale.setScalar(4 + k * 90);
+      this.empRing.quaternion.copy(this.camera.quaternion);
+      this.empRing.scale.setScalar(4 + k * 60);
+      this.updateLightning(k);
       (this.empRing.material as MeshBasicMaterial).opacity = Math.max(0, 1 - k);
       this.empDome.visible = true;
       this.empDome.position.copy(this.empRing.position);
@@ -880,6 +923,7 @@ export class RaceScene {
     } else {
       (this.empRing.material as MeshBasicMaterial).opacity = 0;
       this.empDome.visible = false;
+      this.lightning.visible = false;
     }
     this.warpMat.uniforms.uTime!.value = this.time;
 
@@ -925,7 +969,7 @@ export class RaceScene {
       model.setShield(ship.shield > 0, this.time);
       // Rivals right in front of the lens fade out instead of filling the screen.
       const lensDist = r === rt.focus ? 99 : pos.distanceTo(this.camera.position);
-      const lensFade = lensDist < 7 ? Math.max(0.15, (lensDist - 3) / 4) : 1;
+      const lensFade = lensDist < 12 ? Math.max(0.12, (lensDist - 4) / 8) : 1;
       model.setGhost(r.kind === "ghost" ? 0.35 : ship.cloak > 0 ? (r.isMe ? 0.4 : 0.12) : lensFade);
       root.visible = !r.out && (ship.state !== "fall" || ship.h > -30);
       view.trail.mesh.visible = !r.out;
@@ -1248,7 +1292,12 @@ export class RaceScene {
     if (this.reduced) count = Math.ceil(count / 3);
     for (let k = 0; k < count; k++) {
       const dir = new Vector3(Math.random() - 0.5, Math.random() - 0.3, Math.random() - 0.5).normalize();
-      this.particles.emit(p, dir.multiplyScalar(speed * (0.3 + Math.random() * 0.7)), color, size * (0.6 + Math.random() * 0.8), 0.5 + Math.random() * 0.5, 2.2, size * 0.5);
+      this.particles.emit(p, dir.multiplyScalar(speed * (0.3 + Math.random() * 0.7)), color, size * (0.35 + Math.random() * 0.5), 0.35 + Math.random() * 0.45, 2.6, size * 0.25);
+    }
+    // Hot sparks that streak outward.
+    for (let k = 0; k < Math.ceil(count / 2); k++) {
+      const dir = new Vector3(Math.random() - 0.5, Math.random() * 0.8, Math.random() - 0.5).normalize();
+      this.particles.emit(p, dir.multiplyScalar(speed * (1.2 + Math.random())), new Color("#fff4c8"), 0.18, 0.3 + Math.random() * 0.3, 1.5);
     }
   }
 
@@ -1302,8 +1351,9 @@ export class RaceScene {
           const r = rt.racers[e.from];
           if (r) {
             this.empRing.position.copy(r.ship.pos).addScaledVector(r.ship.frame.up, 1);
-            this.empRing.quaternion.setFromUnitVectors(new Vector3(0, 0, 1), r.ship.frame.up);
             this.empLife = 1.1;
+            this.empFrom = r.idx;
+            this.empTargets = rt.racers.filter((o) => o !== r && o.place < r.place && !o.out).map((o) => o.idx);
           }
           break;
         }
@@ -1578,7 +1628,7 @@ export class RaceScene {
     const ship = rt.focus.ship;
     const speed01 = Math.max(0, ship.speed) / Math.max(1, ship.tune.top);
     const boosting = ship.boost > 0 || ship.state === "warp";
-    const target = rt.phase === "race" ? Math.max(0, speed01 - 0.75) * 1.2 + (boosting ? 0.45 : 0) + (ship.state === "warp" ? 0.6 : 0) : 0;
+    const target = rt.phase === "race" && boosting ? 0.35 + (ship.state === "warp" ? 0.6 : 0) : 0;
     const mat = this.speedLines.material as MeshBasicMaterial;
     mat.opacity += (Math.min(ship.state === "warp" ? 0.6 : 0.3, target * 0.6) - mat.opacity) * (1 - Math.exp(-6 * dt));
     this.speedLines.visible = mat.opacity > 0.01 && !this.reduced;
@@ -1604,7 +1654,8 @@ export class RaceScene {
       const p = view.model.root.position.clone().addScaledVector(r.ship.frame.up, 2.6);
       const dist = p.distanceTo(this.camera.position);
       const ndc = p.clone().project(this.camera);
-      const visible = this.rt.phase !== "podium" && ndc.z < 1 && dist < 90 && Math.abs(ndc.x) < 1.1 && Math.abs(ndc.y) < 1.1 && r.ship.cloak <= 0 && this.rt.phase !== "intro";
+      const nearPlayer = r.ship.pos.distanceTo(focus.ship.pos) < 9;
+      const visible = !nearPlayer && this.rt.phase !== "podium" && ndc.z < 1 && dist < 90 && Math.abs(ndc.x) < 1.1 && Math.abs(ndc.y) < 1.1 && r.ship.cloak <= 0 && this.rt.phase !== "intro";
       out.push({ idx: r.idx, x: ((ndc.x + 1) / 2) * this.width, y: ((1 - ndc.y) / 2) * this.height, visible, dist });
     }
     return out;

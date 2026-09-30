@@ -18,6 +18,8 @@ export interface AiView {
   dangers: readonly { s: number; d: number; r: number }[];
   /** Item box lanes ahead (s, d) when the pilot has room for an item. */
   boxes: readonly { s: number; d: number }[];
+  /** Stardust still on the road, when the pilot isn't maxed out. */
+  coins?: readonly { s: number; d: number }[];
   /** Threat incoming (missile close behind). */
   threatened: boolean;
   item: ItemId | null;
@@ -70,6 +72,15 @@ export class AiPilot {
         if (gap > 8 && gap < 70 && (!best || Math.abs(b.d - ship.d) < Math.abs(best.d - ship.d))) best = b;
       }
       if (best) targetD = targetD * 0.3 + best.d * 0.7;
+    } else if (view.coins?.length) {
+      // Swing through stardust lines that are close to the racing line.
+      for (const c of view.coins) {
+        const gap = deltaS(ship.s, c.s, track.length);
+        if (gap > 6 && gap < 45 && Math.abs(c.d - targetD) < hw * 0.55) {
+          targetD = targetD * 0.35 + c.d * 0.65;
+          break;
+        }
+      }
     }
 
     // Line up straight for ramps.

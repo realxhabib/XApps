@@ -482,7 +482,7 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
   /* Start / finish */
   const checker = own(paintChecker());
   const checkerMat = own(new MeshStandardMaterial({ map: checker, roughness: 0.5 }));
-  {
+  if (!def.arena) {
     const w = track.wall[0]! * 2;
     const g = own(new PlaneGeometry(w, 4));
     const band = new Mesh(g, checkerMat);
@@ -531,9 +531,9 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
       gantry.add(housing);
     }
     place(gantry, 0, 0, 0);
-    // Face the grid (which sits behind the line).
+    // Face the grid (which sits behind the line). Arenas have no start line.
     gantry.rotateY(Math.PI);
-    group.add(gantry);
+    if (!def.arena) group.add(gantry);
   }
 
   /* Boost pads */

@@ -83,11 +83,7 @@ function ItemSlots({ hud }: { hud: HudSnapshot }) {
 }
 
 function EmptyGlyph({ size }: { size: number }) {
-  return (
-    <span className="grid place-items-center font-black italic text-white/25" style={{ width: size, height: size, fontSize: size * 0.9 }}>
-      ?
-    </span>
-  );
+  return <span className="block rounded-full border-2 border-dashed border-white/20" style={{ width: size, height: size }} />;
 }
 
 function Slot({ size, glow, spinning, children }: { size: number; glow: string | null; spinning: boolean; children: ReactNode }) {
@@ -218,7 +214,13 @@ export function RaceHud({ hud, minimap, onExit, onRetry }: { hud: HudSnapshot; m
       {showRace && !hud.spectator ? (
         <div className="absolute bottom-2 right-3 pr-2 max-sm:bottom-[168px]">
           <motion.div key={hud.place} initial={{ scale: 1.5, rotate: -8 }} animate={{ scale: 1, rotate: 0 }} transition={spring.bouncy} style={{ transformOrigin: "100% 100%" }}>
-            <PlaceBadge place={hud.place} big />
+            {hud.battle ? (
+              <span className="font-display text-[clamp(28px,6vw,44px)] font-black italic text-white" style={{ WebkitTextStroke: "1.5px #1b0b3a", filter: "drop-shadow(0 3px 0 rgba(0,0,0,0.5))" }}>
+                {hud.battle.alive} ships left
+              </span>
+            ) : (
+              <PlaceBadge place={hud.place} big />
+            )}
           </motion.div>
         </div>
       ) : null}

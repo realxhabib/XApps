@@ -402,7 +402,9 @@ export class Ship {
           this.vdir.addScaledVector(F2.right, -side * into * 1.35).normalize();
           const fInto = this.fwd.dot(F2.right) * side;
           if (fInto > 0) this.fwd.addScaledVector(F2.right, -side * fInto * 0.9).normalize();
-          this.speed *= 1 - Math.min(0.45, into * 0.6) / Math.max(0.8, this.tune.weight);
+          // Glancing scrapes (and drifting along a wall) cost little; head-on hits cost a lot.
+          const scrape = this.driftDir !== 0 ? 0.35 : 1;
+          this.speed *= 1 - (Math.min(0.45, into * 0.6) * scrape) / Math.max(0.8, this.tune.weight);
           if (strength > 4) this.events.push({ type: "wall", strength: Math.min(1, strength / 40), side });
           if (this.driftDir !== 0 && strength > 18) {
             this.driftDir = 0;

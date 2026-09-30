@@ -163,7 +163,8 @@ export function stepProjectile(p: Projectile, track: CompiledTrack, dt: number, 
     return;
   }
   if (p.kind === "seeker") {
-    let vs = p.vs;
+    // Launch slow enough to see leave the pod, then accelerate to full speed.
+    let vs = p.vs * Math.min(1, 0.45 + p.age * 0.9);
     if (target && target.visible) {
       const gap = deltaS(p.s, target.s, track.length);
       if (gap > 0 && gap < 90) {
