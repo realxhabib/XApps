@@ -83,4 +83,21 @@ node cards.mjs vcard-short end 2.5 "v=1&tag=Build%20any%20game.%3Cbr%3EWe%20wire
 python3 audio.py 13.57 0.5 11.07 work/sbed.wav
 ```
 
+`edl-short-sl.json` is the 15 s landscape launch clip with Starship League (`xapps-short-starship.mp4`): challenge
+@neon_nomad → VS → kickoff → goal → Victory/Share → end card. The capture stages the match from the harness only
+(the game is untouched): Starship League's All-Star AI flies our ship, the rival flies at Rookie, the clock starts
+at 75 s and jumps to 4 s once we lead. Needs Starship League on :4100.
+
+```bash
+node sl-challenge.mjs 1280 720 1.5 slc
+node cards.mjs hcap-chal cap 3 "dur=3&pos=top&e=Any%20game%20%C2%B7%20anyone%20on%20X&h=Send%20a%20challenge."
+node cards.mjs hcap-sl cap 3 "dur=3&e=Community%20app%20%C2%B7%20by%20%40realxhabib&h=Starship%20League."
+node cards.mjs hcap-share cap 2.8 "dur=2.8&side=right&e=Results%20%C2%B7%20XP%20%C2%B7%20Achievements&h=Share%20the%20win%20on%20X."
+node cards.mjs hcard-short end 2.5 "tag=Build%20any%20game.%20We%20wire%20it%20to%20%3Cspan%20class%3D%22grad%22%3EX.%3C%2Fspan%3E&chip=%3Cb%3E%E2%86%92%3C%2Fb%3E%20xapps.vercel.app"
+python3 compose.py edl-short-sl.json work/slcut.mp4 --crf=19
+python3 audio.py 15.2 0.5 12.7 work/slbed.wav
+```
+
+Capture at scale ≥ 1: below a device pixel ratio of 1 the site's confetti canvas smears.
+
 Frame indices depend on the run (GPU timing can change a seed's fight), so check a contact sheet before composing.

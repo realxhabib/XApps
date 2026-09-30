@@ -1,0 +1,8 @@
+{"size":[1920,1080],"clips":[
+ {"name":"1 Challenge a rival to Starship League","src":"slc","start":40,"end":147,"caption":{"dir":"hcap-chal","at":10}},
+ {"name":"2 Match starts: VS","src":"slc","start":226,"end":286,"xfade":6},
+ {"name":"3 Kickoff","src":"slc","start":452,"end":514,"xfade":8,"caption":{"dir":"hcap-sl","at":0}},
+ {"name":"4 Goal","src":"slc","start":778,"end":872,"xfade":6},
+ {"name":"5 Victory + Share on X","src":"slc","start":1232,"end":1324,"xfade":6,"caption":{"dir":"hcap-share","at":10}},
+ {"name":"6 End card","src":"hcard-short","start":0,"end":75,"xfade":8}
+]}
