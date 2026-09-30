@@ -873,7 +873,7 @@ void main() {
   float b = sqrt(max(dot(oc, oc) - tca * tca, 0.0)) / uR;
   float g = b > 1.0 ? exp(-(b - 1.0) / uH) : exp(-(1.0 - b) / (uH * 0.35)) * 0.55;
   vec3 cp = cameraPosition + rd * tca;
-  float l = smoothstep(-0.45, 0.6, dot(normalize(cp - c), uSun));
+  float l = mix(0.14, 1.0, smoothstep(-0.45, 0.6, dot(normalize(cp - c), uSun)));
   gl_FragColor = vec4(uCol * g * l * uK, 1.0);
   ${FRAG_TAIL}
 }
