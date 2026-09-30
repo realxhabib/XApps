@@ -31,6 +31,8 @@ import {
   jsonProblem,
   logProblem,
   mediaProblem,
+  clampStatLimit,
+  statLeaderboardProblem,
   statsProblem,
   storageKeyProblem,
   storagePrefixProblem,
@@ -49,6 +51,9 @@ export {
   mediaProblem,
   mediaUrlProblem,
   statsProblem,
+  statLeaderboardProblem,
+  clampStatLimit,
+  rankStatValues,
   achievementProblem,
   clampFrameHeight,
   isLogLevel,
@@ -67,8 +72,8 @@ export type HostHandler<M extends RequestMethod> = (
  * Request handlers, keyed by protocol method. Missing handlers answer
  * `unknown_method`. The v2/v3 methods can also be given by their friendly
  * names (`getState`, `setState`, `endTurn`, `setRound`, `submitSetup`,
- * `cancelSetup`, `uploadMedia`, `reportStats`, `unlockAchievement`,
- * `storageDelete`, `storageList`, `logEvent`, `resize`); the method-name key
+ * `cancelSetup`, `uploadMedia`, `reportStats`, `statLeaderboard`,
+ * `unlockAchievement`, `storageDelete`, `storageList`, `logEvent`, `resize`); the method-name key
  * wins when both are present.
  */
 export type HostHandlers = {
@@ -94,6 +99,14 @@ export type HostHandlers = {
   uploadMedia?: HostHandler<"media.upload">;
   /** `stats.report` → the new aggregated value of each reported stat. */
   reportStats?: HostHandler<"stats.report">;
+  /**
+   * `stats.leaderboard` → `StatStanding` (`top` best first by the stat's
+   * aggregate, ties share a rank; `me` is the viewer's rank or null; `total`
+   * people with a value). `params.limit` is already clamped to 1–50 (default
+   * 10) and `params.key` checked against the manifest when the context has
+   * stats. Read-only: allowed for every purpose and role.
+   */
+  statLeaderboard?: HostHandler<"stats.leaderboard">;
   /** `achievements.unlock` → `{ unlocked }`. Call `bridge.emitAchievement(id, userId)` when it's new. */
   unlockAchievement?: HostHandler<"achievements.unlock">;
   /** `storage.delete` → `null` (user scope). */
@@ -123,6 +136,7 @@ export const HANDLER_ALIASES = {
   "setup.cancel": "cancelSetup",
   "media.upload": "uploadMedia",
   "stats.report": "reportStats",
+  "stats.leaderboard": "statLeaderboard",
   "achievements.unlock": "unlockAchievement",
   "storage.delete": "storageDelete",
   "storage.list": "storageList",
@@ -164,7 +178,7 @@ export interface HostCoreOptions {
    * can't use `setup.*`. Standalone apps (purpose `app`) have no match: they
    * can't use room, submit/forfeit, `state.*`, `turn.end`, `round.set`,
    * `ui.scores`, `ui.turn` or `setup.*`, and roles don't apply to them.
-   * `log` and `ui.resize` are allowed everywhere, spectators included.
+   * `log`, `ui.resize` and `stats.leaderboard` are allowed everywhere, spectators included.
    * Defaults to reading `context()` on each request.
    */
   access?: () => { purpose?: LaunchContext["purpose"]; role?: LaunchContext["match"]["role"] };
@@ -260,15 +274,18 @@ export function createHostCore(transport: HostTransport, options: HostCoreOption
       return;
     }
     let problem = validateRequest(method, params);
-    if (!problem && (method === "stats.report" || method === "achievements.unlock")) {
+    if (!problem && (method === "stats.report" || method === "stats.leaderboard" || method === "achievements.unlock")) {
       // Declared in the manifest? (Only when the context carries the defs.)
       try {
         const app = options.context().app;
-        const p = params as { values?: unknown; id?: unknown };
+        const p = params as { values?: unknown; id?: unknown; key?: unknown };
+        const stats = Array.isArray(app?.stats) ? app.stats : null;
         problem =
           method === "stats.report"
-            ? statsProblem(p.values, Array.isArray(app?.stats) ? app.stats : null)
-            : achievementProblem(p.id, Array.isArray(app?.achievements) ? app.achievements : null);
+            ? statsProblem(p.values, stats)
+            : method === "stats.leaderboard"
+              ? statLeaderboardProblem(p.key, undefined, stats)
+              : achievementProblem(p.id, Array.isArray(app?.achievements) ? app.achievements : null);
       } catch {
         // No context to check against: leave it to the handler.
       }
@@ -287,6 +304,10 @@ export function createHostCore(transport: HostTransport, options: HostCoreOption
     }
     if (method === "ui.resize") {
       params = { height: clampFrameHeight((params as RequestParams<"ui.resize">).height) };
+    }
+    if (method === "stats.leaderboard") {
+      const p = params as RequestParams<"stats.leaderboard">;
+      params = { key: p.key, limit: clampStatLimit(p.limit) };
     }
     options.onRequest?.(method, params);
     const handler = resolveHostHandler(options.handlers, method) as
@@ -477,6 +498,8 @@ export function validateRequest(method: RequestMethod, params: unknown): string 
       return mediaProblem(params.file, params.alt);
     case "stats.report":
       return statsProblem(params.values);
+    case "stats.leaderboard":
+      return statLeaderboardProblem(params.key, params.limit);
     case "achievements.unlock":
       return achievementProblem(params.id);
     case "log":

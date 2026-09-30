@@ -145,7 +145,7 @@ export function drawShareCard(canvas: HTMLCanvasElement, { accuracy, stroke, han
   ctx.fillText("Can you beat it?", tx, 540);
   ctx.font = `600 24px ${sans}`;
   ctx.fillStyle = "#8a93a6";
-  ctx.fillText("XApps · challenge anyone on X", tx, 578);
+  ctx.fillText("XApps · draw yours, see where you rank", tx, 578);
 }
 
 export function canvasBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {

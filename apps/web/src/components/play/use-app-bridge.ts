@@ -2,10 +2,16 @@
 
 import { XAppsError } from "@xapps/sdk";
 import { createHostBridge, type HostBridge, type HostHandlers } from "@xapps/sdk/host";
-import { REQUEST_METHODS, type HostEvent, type HostEventData, type LaunchContext } from "@xapps/sdk/protocol";
+import {
+  REQUEST_METHODS,
+  type HostEvent,
+  type HostEventData,
+  type LaunchContext,
+  type StatStanding as SdkStatStanding,
+} from "@xapps/sdk/protocol";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { BackendError } from "@/platform/backend";
-import type { Match } from "@/platform/types";
+import { BackendError, type Backend } from "@/platform/backend";
+import type { Match, StatStanding } from "@/platform/types";
 
 /** Sandbox for every app iframe the host renders (play room, app room and challenge setup). */
 export const APP_SANDBOX = "allow-scripts allow-same-origin allow-popups allow-forms allow-downloads";
@@ -127,6 +133,40 @@ export function toSdkError(error: unknown): XAppsError {
     return new XAppsError(code, error.message);
   }
   return new XAppsError("internal", error instanceof Error ? error.message : "Something went wrong");
+}
+
+/** A platform stat standing as the SDK's `stats.leaderboard` result (profiles become SDK players). */
+export function toSdkStanding(standing: StatStanding): SdkStatStanding {
+  return {
+    key: standing.key,
+    top: standing.top.map((row) => ({
+      rank: row.rank,
+      player: { id: row.profile.id, handle: row.profile.handle, name: row.profile.name, avatarUrl: row.profile.avatarUrl },
+      value: row.value,
+    })),
+    me: standing.me ? { rank: standing.me.rank, value: standing.me.value } : null,
+    total: standing.total,
+  };
+}
+
+/**
+ * Answers `stats.leaderboard` from the backend. Test builds read the live app's board; a stat
+ * the live app doesn't declare yet (or an app that isn't live) reads as an empty board there.
+ */
+export async function readStatStanding(
+  backend: Backend,
+  appSlug: string,
+  params: { key: string; limit?: number },
+  testBuild = false,
+): Promise<SdkStatStanding> {
+  try {
+    return toSdkStanding(await backend.statStanding(appSlug, params.key, params.limit));
+  } catch (error) {
+    if (testBuild && error instanceof BackendError && (error.code === "invalid" || error.code === "not_found")) {
+      return { key: params.key, top: [], me: null, total: 0 };
+    }
+    throw toSdkError(error);
+  }
 }
 
 /** Serialized size in bytes (UTF-8), for host-side limit checks. */

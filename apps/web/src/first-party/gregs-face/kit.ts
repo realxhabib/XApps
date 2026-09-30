@@ -117,9 +117,11 @@ function grain(x: number, y: number): number {
 
 /**
  * Covers `rect` (plus `pad`) in `out` with skin interpolated from `src`'s
- * pixels just outside the padded box. `src` and `out` may be the same
- * buffer, but sampling from the untouched original keeps neighbouring
- * patches independent.
+ * pixels just outside the padded box, feathered into `src`. `src` and `out`
+ * may be the same buffer: that's how the blank face is built, one patch after
+ * another, so where padded boxes overlap (the nose's top edge runs into the
+ * eyes on a real photo) a later patch samples and fades into the skin of the
+ * earlier one instead of bringing the original feature back.
  */
 export function patchRect(src: Pixels, out: Pixels, rect: FaceRect, pad: number, fallback: RGB = [240, 200, 180]): void {
   const { width: W, height: H } = src;
@@ -160,7 +162,7 @@ export function patchRect(src: Pixels, out: Pixels, rect: FaceRect, pad: number,
   const skin: RGB = [median(all.map((c) => c[0])), median(all.map((c) => c[1])), median(all.map((c) => c[2]))];
   const dist = (c: RGB) => Math.hypot(c[0] - skin[0], c[1] - skin[1], c[2] - skin[2]);
   const spread = median(all.map(dist));
-  const limit = Math.max(24, spread * 3);
+  const limit = Math.max(20, spread * 2.2);
   const tame = (line: RGB[]) => line.map((c) => (dist(c) > limit ? skin : c));
   const soften = Math.max(1, Math.round(Math.min(pw, ph) / 6));
   top = blurLine(tame(top), soften);
@@ -174,7 +176,7 @@ export function patchRect(src: Pixels, out: Pixels, rect: FaceRect, pad: number,
   const c10 = corner(top[pw - 1]!, right[0]!);
   const c01 = corner(bottom[0]!, left[ph - 1]!);
   const c11 = corner(bottom[pw - 1]!, right[ph - 1]!);
-  const grainAmp = Math.min(5, Math.max(1, spread / 3));
+  const grainAmp = Math.min(6, Math.max(1, spread / 2.5));
   const buf = new Float32Array(pw * ph * 3);
   for (let j = 0; j < ph; j++) {
     const fy = ph === 1 ? 0.5 : j / (ph - 1);
@@ -184,16 +186,22 @@ export function patchRect(src: Pixels, out: Pixels, rect: FaceRect, pad: number,
       const b = bottom[i]!;
       const l = left[j]!;
       const r = right[j]!;
-      const n = grain(x0 + i, y0 + j) * grainAmp;
       for (let c = 0; c < 3; c++) {
         const edges = (1 - fy) * t[c]! + fy * b[c]! + (1 - fx) * l[c]! + fx * r[c]!;
         const bilinear =
           (1 - fx) * (1 - fy) * c00[c]! + fx * (1 - fy) * c10[c]! + (1 - fx) * fy * c01[c]! + fx * fy * c11[c]!;
-        buf[(j * pw + i) * 3 + c] = edges - bilinear + n;
+        buf[(j * pw + i) * 3 + c] = edges - bilinear;
       }
     }
   }
   blurBuffer(buf, pw, ph, Math.max(1, Math.round(pad / 4)));
+  // Grain after the blur, so the patch keeps a little of a photo's texture instead of reading as airbrushed.
+  for (let j = 0; j < ph; j++) {
+    for (let i = 0; i < pw; i++) {
+      const n = grain(x0 + i, y0 + j) * grainAmp;
+      for (let c = 0; c < 3; c++) buf[(j * pw + i) * 3 + c] += n;
+    }
+  }
 
   // Feather: opaque over the part rect, fading out across the pad.
   for (let j = 0; j < ph; j++) {
@@ -276,6 +284,9 @@ export function kitScale(face: Pick<FaceConfig, "width">): number {
   return clamp(Math.round(800 / face.width), 1, 4);
 }
 
+/** Order the blank face is patched in: the nose sits between the others, so it goes last. */
+export const PATCH_ORDER: readonly PartId[] = ["eyes", "mouth", "nose"];
+
 /** Loads the portrait and builds the blank face and the three sprites. */
 export async function buildFaceKit(face: FaceConfig): Promise<FaceKit> {
   const img = await loadImage(face.src);
@@ -290,11 +301,16 @@ export async function buildFaceKit(face: FaceConfig): Promise<FaceKit> {
   const original: Pixels = { data: ctx.getImageData(0, 0, W, H).data, width: W, height: H };
   const photoUrl = await toUrl(base);
 
+  // Patched in place, one after another (see `patchRect`): the nose last, so its long box
+  // samples and fades into the already-blank eyes and mouth above and below it.
   const blankPixels: Pixels = { data: new Uint8ClampedArray(original.data), width: W, height: H };
+  for (const id of PATCH_ORDER) {
+    const rect = scaleRect(face.parts[id], scale, W, H);
+    patchRect(blankPixels, blankPixels, rect, patchPad(rect, scale), hexToRgb(face.skin));
+  }
   const sprites = {} as Record<PartId, HTMLCanvasElement>;
   for (const id of PART_ORDER) {
     const rect = scaleRect(face.parts[id], scale, W, H);
-    patchRect(original, blankPixels, rect, patchPad(rect, scale), hexToRgb(face.skin));
     const crop = featherCrop(original, rect);
     const c = canvas(crop.width, crop.height);
     c.getContext("2d")!.putImageData(new ImageData(crop.data, crop.width, crop.height), 0, 0);

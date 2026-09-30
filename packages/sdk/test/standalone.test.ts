@@ -61,6 +61,7 @@ const APP_ACCESS: Record<RequestMethod, boolean> = {
   "storage.list": true,
   "media.upload": true,
   "stats.report": true,
+  "stats.leaderboard": true,
   "achievements.unlock": true,
   log: true,
   "state.get": false,

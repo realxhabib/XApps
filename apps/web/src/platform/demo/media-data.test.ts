@@ -221,6 +221,49 @@ describe("stats", () => {
     ]);
     await expectCode(backend.statLeaderboard("progress", "nope"), "invalid");
   });
+
+  it("stat standings: the board's top rows, the viewer's rank (ties shared) and the total", async () => {
+    await backend.reportStats("progress", { best_score: 50, best_time: 5000 });
+    await as("bob");
+    await backend.reportStats("progress", { best_score: 80, best_time: 7000 });
+    await as("carol");
+    await backend.reportStats("progress", { best_score: 50 });
+    await as("dave");
+    await backend.reportStats("progress", { best_score: 10 });
+
+    const high = await backend.statStanding("progress", "best_score");
+    expect(high.key).toBe("best_score");
+    expect(high.top).toEqual(await backend.statLeaderboard("progress", "best_score"));
+    expect(high.me).toEqual({ rank: 4, value: 10 });
+    expect(high.total).toBe(4);
+
+    await as("carol");
+    const top2 = await backend.statStanding("progress", "best_score", 2);
+    expect(top2.top.map((r) => [r.rank, r.profile.handle, r.value])).toEqual([
+      [1, "bob", 80],
+      [2, "alice", 50],
+    ]);
+    expect(top2.me).toEqual({ rank: 2, value: 50 });
+    expect(top2.total).toBe(4);
+    expect((await backend.statStanding("progress", "best_score", 0)).top).toHaveLength(1);
+    expect((await backend.statStanding("progress", "best_score", 500)).top).toHaveLength(4);
+
+    // min: lower is better; no value yet → me is null.
+    const low = await backend.statStanding("progress", "best_time");
+    expect(low.me).toBeNull();
+    expect(low.total).toBe(2);
+    await as("bob");
+    expect((await backend.statStanding("progress", "best_time")).me).toEqual({ rank: 2, value: 7000 });
+    expect(await backend.statStanding("progress", "runs")).toEqual({ key: "runs", top: [], me: null, total: 0 });
+
+    // Signed out: the board without a standing.
+    await backend.signOut();
+    const anon = await backend.statStanding("progress", "best_score");
+    expect(anon.me).toBeNull();
+    expect(anon.total).toBe(4);
+    await expectCode(backend.statStanding("progress", "nope"), "invalid", /Unknown stat/);
+    await expectCode(backend.statStanding("no-such-app", "best_score"), "not_found");
+  });
 });
 
 describe("achievements", () => {

@@ -68,10 +68,44 @@ describe("officialAppRow", () => {
   });
 
   it("syncs kind: official apps are games unless the catalog says otherwise", () => {
-    expect(OFFICIAL_APPS.filter((a) => a.official).every((a) => officialAppRow(a).kind === "game")).toBe(true);
+    for (const app of OFFICIAL_APPS.filter((a) => a.official)) expect(officialAppRow(app).kind, app.slug).toBe(app.kind ?? "game");
+    expect(officialAppRow(base).kind).toBe("game");
     expect(officialAppRow({ ...base, kind: "app" }).kind).toBe("app");
     expect(officialAppRowError({ ...officialAppRow(base), kind: "widget" as never })).toMatch(/kind/);
     expect(OFFICIAL_APP_COLUMNS).toContain("kind");
+  });
+
+  it("gives a standalone app (kind app) harmless match columns: it has no matches", () => {
+    const app: AppManifest = {
+      ...base,
+      kind: "app",
+      category: "tools",
+      modes: [],
+      players: { min: 1, max: 1 },
+      teams: 2,
+      setup: true,
+      turnBased: true,
+      spectators: false,
+      stats: [{ key: "best", label: "Best", aggregate: "max", format: "percent" }],
+    };
+    const row = officialAppRow(app);
+    expect(row).toMatchObject({
+      kind: "app",
+      modes: ["live", "practice"],
+      min_players: 2,
+      max_players: 2,
+      team_count: 0,
+      has_setup: false,
+      turn_based: false,
+      allow_spectators: false,
+      stats: [{ key: "best", label: "Best", aggregate: "max", format: "percent" }],
+    });
+    expect(officialAppRowError(row)).toBeNull();
+    expect(officialAppRows([app]).map((r) => r.slug)).toEqual(["test-app"]);
+    // Valid match fields are kept as declared.
+    expect(officialAppRow({ ...app, modes: ["live"], players: { min: 2, max: 4 } })).toMatchObject({ modes: ["live"], min_players: 2, max_players: 4 });
+    // Games are still held to the table's checks.
+    expect(() => officialAppRows([{ ...base, modes: [] }])).toThrow(/modes/);
   });
 
   it("carries v2 fields, votes and progress through", () => {

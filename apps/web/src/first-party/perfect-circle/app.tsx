@@ -1,273 +1,164 @@
 "use client";
 
-import type { MatchResult } from "@xapps/sdk";
-import { useMatch, useMatchResult, useMatchStarted, useXApps } from "@xapps/sdk/react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import type { StatStanding, XAppsClient } from "@xapps/sdk";
+import { useXApps } from "@xapps/sdk/react";
+import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Avatar } from "@/components/ui/avatar";
-import { useCountdown, useTimeouts } from "@/first-party/shared/hooks";
 import { reportStats, unlockAchievements } from "@/first-party/shared/progress";
-import { AnimatedDots, Eyebrow, Screen, TimerRing } from "@/first-party/shared/ui";
-import { ease, spring } from "@/lib/motion";
+import { spring } from "@/lib/motion";
 import { play } from "@/lib/sfx";
-import { cn } from "@/lib/utils";
+import { cn, formatNumber } from "@/lib/utils";
 import { getOfficialApp } from "@/platform/catalog";
 import { Board, type InkState } from "./board";
-import { CARD_PATH, circleSvg, encodeCard, shareText } from "./card";
+import { CARD_PATH, encodeCard, shareText } from "./card";
+import { IDLE_STANDING, StandingPanel, type StandingState } from "./leaderboard";
 import {
-  ATTEMPTS,
-  ATTEMPT_EVENT,
-  EMPTY_RUN,
-  MATCH_MS,
+  BOARD_STAT,
+  EMPTY_SESSION,
   PERFECT,
   SUPERB,
-  attemptsLeft,
+  TOP_N,
+  accuracyColor,
   bestScore,
+  circleStats,
   earnedAchievements,
   formatAccuracy,
   recordStroke,
-  resultProgress,
-  runStats,
-  toWire,
+  standingMoment,
+  totalAchievements,
   type Analysis,
   type Rejection,
-  type Run,
+  type Session,
 } from "./logic";
-import { AttemptPips, RejectOverlay, ScoreOverlay, ShareSheet, Standings, TableStrip, type Standing } from "./parts";
-import { useTable, type TableRow } from "./table";
+import { RecentPips, RejectOverlay, ScoreOverlay, ShareSheet } from "./parts";
 
 const TAG = "perfect-circle";
 const ignore = () => {};
 const ACCENT = (getOfficialApp("perfect-circle")?.accent ?? ["#ffcf3d", "#34e89e"]) as [string, string];
 
-/* ---------------------------------------------------------------------- */
-/* Root                                                                   */
-/* ---------------------------------------------------------------------- */
-
-export function PerfectCircle() {
-  const xapps = useXApps();
-  const started = useMatchStarted();
-  const readyRef = useRef(false);
-
-  useEffect(() => {
-    // Exactly once, even under StrictMode's double effects.
-    if (readyRef.current) return;
-    readyRef.current = true;
-    xapps.ready().catch((error: unknown) => console.warn(`[${TAG}] ready failed`, error));
-  }, [xapps]);
-
-  useEffect(() => {
-    if (!started) xapps.ui.setStatus("Get ready").catch(ignore);
-  }, [started, xapps]);
-
-  return (
-    <div className="relative flex h-dvh w-full flex-col overflow-hidden">
-      <AnimatePresence mode="wait">
-        {started ? (
-          <motion.div
-            key="game"
-            className="flex min-h-0 flex-1 flex-col"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.2 }}
-          >
-            <Game />
-          </motion.div>
-        ) : (
-          <motion.div
-            key="lobby"
-            className="flex min-h-0 flex-1 flex-col"
-            exit={{ opacity: 0, scale: 1.06, filter: "blur(12px)" }}
-            transition={{ duration: 0.3, ease: ease.inOutQuart }}
-          >
-            <PreGame />
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Pre-game                                                               */
-/* ---------------------------------------------------------------------- */
-
-function HeroCircle() {
-  const reduce = useReducedMotion();
-  return (
-    <div className="relative size-[clamp(120px,34vmin,190px)]" aria-hidden>
-      <svg viewBox="0 0 100 100" className="absolute inset-0 size-full -rotate-90 overflow-visible">
-        <defs>
-          <linearGradient id="pc-hero" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stopColor="#ff4d5e" />
-            <stop offset="0.5" stopColor="#ffc93d" />
-            <stop offset="1" stopColor="#37e39b" />
-          </linearGradient>
-        </defs>
-        <circle cx="50" cy="50" r="42" fill="none" stroke="rgb(255 255 255 / 0.06)" strokeWidth="1" strokeDasharray="2 3" />
-        <motion.path
-          d="M 92 50 C 92 74 73 92.5 50 92 C 26 91.5 8.5 73 8 50.5 C 7.5 27 26.5 8.3 50.5 8 C 74 7.7 92.2 26 92 49"
-          fill="none"
-          stroke="url(#pc-hero)"
-          strokeWidth="4.5"
-          strokeLinecap="round"
-          style={{ filter: "drop-shadow(0 0 6px rgb(55 227 155 / 0.5))" }}
-          initial={{ pathLength: reduce ? 1 : 0 }}
-          animate={reduce ? { pathLength: 1 } : { pathLength: [0, 1, 1, 0], opacity: [1, 1, 1, 0] }}
-          transition={reduce ? { duration: 0 } : { duration: 3.2, times: [0, 0.45, 0.85, 1], repeat: Infinity, ease: "easeInOut" }}
-        />
-      </svg>
-      <motion.span
-        className="absolute left-1/2 top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink-50 shadow-[0_0_16px_rgb(255_255_255/0.8)]"
-        animate={reduce ? undefined : { scale: [1, 1.4, 1] }}
-        transition={{ duration: 1.6, repeat: Infinity }}
-      />
-    </div>
-  );
-}
-
-function PreGame() {
-  const xapps = useXApps();
-  const match = useMatch();
-  const others = match.players.filter((p) => p.id !== xapps.me.id && p.role !== "spectator");
-  const toBeat = others.reduce<number | null>(
-    (best, p) => (p.submitted && typeof p.score === "number" && (best === null || p.score > best) ? p.score : best),
-    null,
-  );
-
-  return (
-    <Screen className="gap-6 text-center">
-      <motion.div initial={{ opacity: 0, scale: 0.6, rotate: -40 }} animate={{ opacity: 1, scale: 1, rotate: 0 }} transition={spring.wobbly}>
-        <HeroCircle />
-      </motion.div>
-
-      <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ ...spring.soft, delay: 0.25 }}>
-        <h1 className="font-display text-5xl font-extrabold tracking-tight [font-stretch:92%] sm:text-6xl">
-          Perfect{" "}
-          <span className="bg-[linear-gradient(100deg,var(--accent-from),var(--accent-to))] bg-clip-text text-transparent">
-            Circle
-          </span>
-        </h1>
-        <p className="mt-2 text-balance text-sm text-ink-300 sm:text-base">
-          One stroke around the dot · {ATTEMPTS} tries · best circle counts
-        </p>
-      </motion.div>
-
-      {others.length > 0 && (
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ ...spring.bouncy, delay: 0.45 }}
-          className="glass flex items-center gap-2 rounded-full py-1 pl-1 pr-4 text-sm"
-        >
-          <span className="flex -space-x-2">
-            {others.slice(0, 5).map((p) => (
-              <Avatar key={p.id} person={p} size={28} className="rounded-full ring-2 ring-ink-950" />
-            ))}
-          </span>
-          <span className="text-ink-200">
-            {others.length === 1 ? (
-              <>
-                vs <b className="text-ink-50">{others[0]!.isBot ? others[0]!.name : `@${others[0]!.handle}`}</b>
-              </>
-            ) : (
-              <>
-                vs <b className="text-ink-50">{others.length}</b> players
-              </>
-            )}
-          </span>
-          {toBeat !== null && (
-            <span className="text-ink-300">
-              · To beat <b className="font-mono tabular text-[var(--accent-from)]">{formatAccuracy(toBeat)}</b>
-            </span>
-          )}
-        </motion.div>
-      )}
-
-      <Eyebrow>
-        Get ready
-        <AnimatedDots />
-      </Eyebrow>
-    </Screen>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Game                                                                   */
-/* ---------------------------------------------------------------------- */
-
 type Feedback =
   | { kind: "score"; id: number; accuracy: number; isBest: boolean; n: number }
   | { kind: "reject"; id: number; reason: Rejection };
 
-function Game() {
-  const xapps = useXApps();
-  const result = useMatchResult();
-  const rows = useTable();
-  const later = useTimeouts();
-  const spectator = xapps.isSpectator;
+/** A scored circle whose standing we're fetching (kept so a retry can still tell its moment). */
+interface PendingCircle {
+  accuracy: number;
+  /** The standing before this circle, if we had one. */
+  prev: StatStanding | null;
+  /** Your best before this circle (null: none, or unknown). */
+  previousBest: number | null;
+}
 
-  const [run, setRun] = useState<Run>(EMPTY_RUN);
-  const runRef = useRef<Run>(EMPTY_RUN);
+/** The worldwide best-circle board. Never throws: a host that can't answer rejects. */
+function loadStanding(xapps: XAppsClient): Promise<StatStanding> {
+  try {
+    return xapps.stats.leaderboard(BOARD_STAT, { limit: TOP_N });
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+
+const maxOf = (...values: (number | null | undefined)[]): number | null =>
+  values.reduce<number | null>((best, v) => (typeof v === "number" && (best === null || v > best) ? v : best), null);
+
+/**
+ * Perfect Circle, a standalone app (purpose `app`): draw a circle around the
+ * dot, see its score and where your best stands worldwide, go again. No
+ * matches, no clock, no limit. Every scored circle reports its stats; the
+ * worldwide board is `stats.leaderboard("best_circle")`.
+ */
+export function PerfectCircle() {
+  const xapps = useXApps();
+
+  const [session, setSession] = useState<Session>(EMPTY_SESSION);
+  const sessionRef = useRef<Session>(EMPTY_SESSION);
   const [ink, setInk] = useState<InkState>({ kind: "empty" });
   const [feedback, setFeedback] = useState<Feedback | null>(null);
-  // Reopened after submitting: nothing left to draw.
-  const [done, setDone] = useState(() => xapps.me.submitted || spectator);
-  const doneRef = useRef(done);
-  const [submitState, setSubmitState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+  const [phase, setPhase] = useState<"draw" | "result">("draw");
+  const [standing, setStanding] = useState<StandingState>(IDLE_STANDING);
   const [shareOpen, setShareOpen] = useState(false);
   const strokeId = useRef(0);
 
-  const best = bestScore(run);
-  const live = xapps.match.mode === "live";
+  // Read by handlers: the latest standing, the best the platform reported back, the circle in flight.
+  const standingRef = useRef<StatStanding | null>(null);
+  const reportedBest = useRef<number | null>(null);
+  const pending = useRef<PendingCircle | null>(null);
+  const request = useRef(0);
 
-  const submitRun = (final: Run) => {
-    setSubmitState("sending");
-    const score = bestScore(final);
-    const stroke = final.bestStroke;
-    xapps
-      .submit({
-        score: score ?? 0,
-        data: { scores: final.scores, misses: final.misses },
-        display:
-          score !== null && stroke
-            ? { kind: "svg", svg: circleSvg(stroke, score), alt: `A ${formatAccuracy(score)} circle, drawn freehand` }
-            : { kind: "text", title: "No circle", body: "Ran out of time before a full circle." },
-      })
+  const best = bestScore(session);
+  const count = session.scores.length;
+  const mine = standing.data?.me ?? null;
+
+  /** Fetches the board; a newer request (another circle, a retry) wins over an older one. */
+  const fetchStanding = (circle: PendingCircle | null, after: Promise<unknown> = Promise.resolve()) => {
+    const req = ++request.current;
+    pending.current = circle;
+    setStanding((s) => ({ status: "loading", data: s.data, moment: null }));
+    after
+      .then(() => loadStanding(xapps))
       .then(
-        () => setSubmitState("sent"),
+        (next) => {
+          if (req !== request.current) return;
+          standingRef.current = next;
+          pending.current = null;
+          setStanding({
+            status: "ready",
+            data: next,
+            moment: circle ? standingMoment(circle.prev, next, circle.accuracy, circle.previousBest) : null,
+          });
+        },
         (error: unknown) => {
-          console.warn(`[${TAG}] submit failed`, error);
-          setSubmitState("failed");
+          if (req !== request.current) return;
+          console.warn(`[${TAG}] stats.leaderboard failed`, error);
+          setStanding((s) => ({ ...s, status: "error", moment: null }));
         },
       );
   };
 
-  const finish = (final: Run) => {
-    if (doneRef.current) return;
-    doneRef.current = true;
-    setDone(true);
-    play("whoosh");
-    reportStats(xapps, runStats(final), TAG);
-    const score = bestScore(final);
-    if (final.bestStroke && score !== null) {
-      setInk({ kind: "scored", stroke: final.bestStroke, id: ++strokeId.current });
-      setFeedback({ kind: "score", id: strokeId.current, accuracy: score, isBest: false, n: 0 });
-    } else {
-      setInk({ kind: "empty" });
-      setFeedback(null);
-    }
-    submitRun(final);
+  // Where you stand before your first circle (the header chip, and the baseline for "you climbed").
+  useEffect(() => {
+    let live = true;
+    loadStanding(xapps).then(
+      (data) => {
+        if (!live || request.current !== 0) return;
+        standingRef.current = data;
+        setStanding({ status: "ready", data, moment: null });
+      },
+      (error: unknown) => console.warn(`[${TAG}] stats.leaderboard failed`, error),
+    );
+    return () => {
+      live = false;
+    };
+  }, [xapps]);
+
+  const statusText = mine
+    ? `Best ${formatAccuracy(mine.value)} · #${formatNumber(mine.rank)} worldwide`
+    : best !== null
+      ? `Best so far ${formatAccuracy(best)}`
+      : "Draw a circle around the dot";
+  useEffect(() => {
+    xapps.ui.setStatus(statusText).catch(ignore);
+  }, [statusText, xapps]);
+
+  /** Reports a scored circle, then fetches where it puts you (even when the report failed). */
+  const settle = (accuracy: number, previousBest: number | null) => {
+    const circle: PendingCircle = { accuracy, prev: standingRef.current, previousBest };
+    const reported = reportStats(xapps, circleStats(accuracy), TAG).then((totals) => {
+      if (!totals) return;
+      reportedBest.current = maxOf(reportedBest.current, totals[BOARD_STAT]);
+      unlockAchievements(xapps, totalAchievements(totals), TAG);
+    });
+    fetchStanding(circle, reported);
   };
 
-  const remaining = useCountdown(MATCH_MS, !done, () => finish(runRef.current));
-
   const onStroke = (analysis: Analysis) => {
-    if (doneRef.current) return;
+    if (phase !== "draw") return;
     const id = ++strokeId.current;
-    const next = recordStroke(runRef.current, analysis);
-    runRef.current = next;
-    setRun(next);
+    const before = sessionRef.current;
+    const next = recordStroke(before, analysis);
+    sessionRef.current = next;
+    setSession(next);
 
     if (!analysis.ok) {
       setInk({ kind: "rejected", stroke: analysis.stroke, id });
@@ -281,6 +172,7 @@ function Game() {
     const isBest = next.bestIndex === n - 1;
     setInk({ kind: "scored", stroke: analysis.stroke, id });
     setFeedback({ kind: "score", id, accuracy: analysis.accuracy, isBest, n });
+    setPhase("result");
 
     if (analysis.accuracy >= PERFECT) {
       play("achievement");
@@ -295,13 +187,7 @@ function Game() {
       xapps.ui.haptic("medium").catch(ignore);
     }
     unlockAchievements(xapps, earnedAchievements(next), TAG);
-
-    if (live) {
-      xapps.room
-        .send(ATTEMPT_EVENT, { ...toWire(n, analysis.accuracy, analysis.stroke) })
-        .catch((error: unknown) => console.warn(`[${TAG}] broadcast failed`, error));
-    }
-    if (n >= ATTEMPTS) later(() => finish(next), 1_900);
+    settle(analysis.accuracy, maxOf(standingRef.current?.me?.value, reportedBest.current, bestScore(before)));
   };
 
   const onStart = () => {
@@ -309,42 +195,23 @@ function Game() {
     play("tick");
   };
 
-  // The match settled while we were here: a win (and how close) counts once.
-  const [settledAtOpen] = useState(() => xapps.finalResult !== null);
-  const resultCounted = useRef(false);
-  useEffect(() => {
-    if (!result || settledAtOpen || resultCounted.current || spectator) return;
-    resultCounted.current = true;
-    const progress = resultProgress(result, xapps.me.id);
-    reportStats(xapps, progress.stats, TAG);
-    unlockAchievements(xapps, progress.achievements, TAG);
-    if (result.winnerId === xapps.me.id) play("win");
-  }, [result, settledAtOpen, spectator, xapps]);
+  const again = () => {
+    setPhase("draw");
+    setInk({ kind: "empty" });
+    setFeedback(null);
+    play("pop");
+  };
 
-  // Host HUD: everyone's best + a status line.
-  const meId = xapps.me.id;
-  const scoresKey = `${best ?? 0}|${rows.map((r) => `${r.player.id}:${r.best ?? 0}`).join(",")}`;
-  useEffect(() => {
-    const scores: Record<string, number> = spectator ? {} : { [meId]: best ?? 0 };
-    for (const r of rows) scores[r.player.id] = r.best ?? 0;
-    xapps.ui.setScores(scores).catch(ignore);
-    // rows is rebuilt every render; the key tracks its content.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scoresKey, xapps]);
-
-  const waitingFor = rows.filter((r) => !r.done).length;
-  const statusText = spectator
-    ? "Watching"
-    : !done
-      ? `Circle ${Math.min(run.scores.length + 1, ATTEMPTS)} of ${ATTEMPTS}${best !== null ? ` · best ${formatAccuracy(best)}` : ""}`
-      : waitingFor > 0
-        ? `Waiting for ${waitingFor} ${waitingFor === 1 ? "player" : "players"}`
-        : best !== null
-          ? `Final · ${formatAccuracy(best)}`
-          : "Final";
-  useEffect(() => {
-    xapps.ui.setStatus(statusText).catch(ignore);
-  }, [statusText, xapps]);
+  // Your rank goes on the post when the circle you share is the one the board ranks.
+  const shareRank = mine && best !== null && mine.value === best ? { rank: mine.rank, total: standing.data?.total ?? 0 } : null;
+  const share = () => {
+    if (best === null || !session.bestStroke) return;
+    const url = new URL(CARD_PATH + encodeCard({ accuracy: best, stroke: session.bestStroke }), window.location.origin).toString();
+    xapps.social.share(shareText(best, shareRank), url).catch((error: unknown) => console.warn(`[${TAG}] share failed`, error));
+    unlockAchievements(xapps, ["show_off"], TAG);
+    play("whoosh");
+    setShareOpen(false);
+  };
 
   const overlay: ReactNode =
     feedback?.kind === "score" ? (
@@ -353,126 +220,136 @@ function Game() {
       <RejectOverlay key={`r${feedback.id}`} reason={feedback.reason} id={feedback.id} />
     ) : null;
 
-  const standings: Standing[] = [
-    ...(spectator ? [] : [{ player: xapps.me, best, stroke: run.bestStroke, done, me: true }]),
-    ...rows.map((r) => ({ player: r.player, best: r.best, stroke: r.bestStroke, done: r.done, me: false })),
-  ];
-
-  const share = () => {
-    if (best === null || !run.bestStroke) return;
-    const url = new URL(CARD_PATH + encodeCard({ accuracy: best, stroke: run.bestStroke }), window.location.origin).toString();
-    xapps.social.share(shareText(best), url).catch((error: unknown) => console.warn(`[${TAG}] share failed`, error));
-    unlockAchievements(xapps, ["show_off"], TAG);
-    play("whoosh");
-    setShareOpen(false);
-  };
+  const result = phase === "result";
 
   return (
-    <div className="relative mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-6">
-      {/* Header: you, your circles, the clock */}
-      <header className="flex items-center justify-between gap-3">
-        <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={spring.soft} className="flex min-w-0 items-center gap-2.5">
-          {!spectator && <Avatar person={xapps.me} size={32} />}
-          <div className="min-w-0">
-            <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-300">
-              {spectator ? "Watching" : done ? "Your best" : `Circle ${Math.min(run.scores.length + 1, ATTEMPTS)} of ${ATTEMPTS}`}
-            </p>
-            {!spectator && <AttemptPips scores={run.scores} bestIndex={run.bestIndex} active={!done} />}
-          </div>
-        </motion.div>
-        <AnimatePresence>
-          {!done && (
-            <motion.div
-              key="clock"
-              initial={{ scale: 0.4, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.3, opacity: 0 }}
-              transition={spring.bouncy}
-              aria-label={`${Math.ceil(remaining / 1000)} seconds left`}
-            >
-              <TimerRing fraction={remaining / MATCH_MS} size={48} label={Math.ceil(remaining / 1000)} />
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </header>
+    <div className="relative flex h-dvh w-full flex-col overflow-hidden">
+      <div className="relative mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-6">
+        {/* Header: you, this sitting's circles, your worldwide best */}
+        <header className="flex min-h-11 items-center justify-between gap-3">
+          <motion.div
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={spring.soft}
+            className="flex min-w-0 items-center gap-2.5"
+          >
+            <Avatar person={xapps.me} size={32} />
+            <div className="min-w-0">
+              <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-300">
+                {count === 0 ? "Perfect Circle" : `${formatNumber(count)} ${count === 1 ? "circle" : "circles"}`}
+              </p>
+              {count === 0 ? (
+                <p className="truncate text-sm font-semibold text-ink-100">One stroke around the dot</p>
+              ) : (
+                <RecentPips scores={session.scores} bestIndex={session.bestIndex} />
+              )}
+            </div>
+          </motion.div>
+          <AnimatePresence>
+            {mine && (
+              <motion.div
+                key="best"
+                initial={{ opacity: 0, scale: 0.6 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.6 }}
+                transition={spring.bouncy}
+                className="glass flex shrink-0 items-center gap-2 rounded-full py-1 pl-2.5 pr-3 text-sm"
+                aria-label={`Your best ${formatAccuracy(mine.value)}, number ${mine.rank} worldwide`}
+              >
+                <span aria-hidden>🌍</span>
+                <AnimatePresence mode="popLayout" initial={false}>
+                  <motion.b
+                    key={mine.rank}
+                    initial={{ y: 12, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    exit={{ y: -12, opacity: 0 }}
+                    transition={spring.bouncy}
+                    className="font-display font-extrabold tabular text-ink-50"
+                  >
+                    #{formatNumber(mine.rank)}
+                  </motion.b>
+                </AnimatePresence>
+                <span className="font-display font-extrabold tabular" style={{ color: accuracyColor(mine.value) }}>
+                  {formatAccuracy(mine.value)}
+                </span>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </header>
 
-      <div className={cn("flex min-h-0 flex-1 gap-4 pt-3", done && "flex-col md:flex-row md:items-center")}>
-        <Board
-          className={cn("flex-1", done && "max-md:max-h-[46%]")}
-          enabled={!done}
-          ink={ink}
-          overlay={overlay}
-          hint={!done && run.scores.length === 0 && run.misses === 0 && feedback === null}
-          onStart={onStart}
-          onStroke={onStroke}
-        />
-        <AnimatePresence>
-          {done && (
-            <FinalPanel
-              key="final"
-              best={best}
-              standings={standings}
-              rows={rows}
-              result={result}
-              meId={meId}
-              spectator={spectator}
-              submitState={submitState}
-              onRetry={() => submitRun(runRef.current)}
-              onShare={() => setShareOpen(true)}
-            />
-          )}
-        </AnimatePresence>
-      </div>
+        <div className={cn("flex min-h-0 flex-1 gap-4 pt-3", result && "flex-col md:flex-row md:items-center")}>
+          <Board
+            className={cn("flex-1", result && "max-md:max-h-[40%]")}
+            enabled={!result}
+            ink={ink}
+            overlay={overlay}
+            hint={count === 0 && session.misses === 0 && feedback === null}
+            onStart={onStart}
+            onStroke={onStroke}
+          />
+          <AnimatePresence>
+            {result && (
+              <StandingPanel
+                key="standing"
+                standing={standing}
+                meId={xapps.me.id}
+                me={xapps.me}
+                onRetry={() => fetchStanding(pending.current)}
+                actions={
+                  <div className="flex gap-2">
+                    <AgainButton onClick={again} />
+                    {best !== null && (
+                      <motion.button
+                        type="button"
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        transition={{ ...spring.bouncy, delay: 0.25 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={() => setShareOpen(true)}
+                        className="h-12 shrink-0 rounded-full border border-white/15 px-4 text-sm font-bold text-ink-50 hover:bg-white/[0.06]"
+                      >
+                        Share {formatAccuracy(best)}
+                      </motion.button>
+                    )}
+                  </div>
+                }
+              />
+            )}
+          </AnimatePresence>
+        </div>
 
-      {/* Footer while drawing: lock-in + the rest of the table */}
-      {!done && (
-        <div className="flex flex-col items-center gap-2 pt-2">
-          <div className="flex h-10 items-center justify-center gap-3">
-            <AnimatePresence mode="popLayout">
-              {best !== null && attemptsLeft(run) > 0 ? (
-                <motion.div
-                  key="actions"
-                  className="flex items-center gap-2"
+        {!result && (
+          <div className="flex h-12 items-center justify-center gap-3 pt-2">
+            <AnimatePresence mode="popLayout" initial={false}>
+              {best !== null ? (
+                <motion.button
+                  key="share"
+                  type="button"
                   initial={{ opacity: 0, y: 10, scale: 0.9 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, scale: 0.9 }}
                   transition={spring.bouncy}
+                  whileTap={{ scale: 0.94 }}
+                  onClick={() => setShareOpen(true)}
+                  className="h-10 rounded-full border border-white/15 px-4 text-sm font-bold text-ink-100 hover:bg-white/[0.06]"
                 >
-                  <motion.button
-                    type="button"
-                    whileTap={{ scale: 0.94 }}
-                    transition={spring.snappy}
-                    onClick={() => setShareOpen(true)}
-                    className="h-10 rounded-full border border-white/15 px-4 text-sm font-bold text-ink-100 hover:bg-white/[0.06]"
-                  >
-                    Share
-                  </motion.button>
-                  <motion.button
-                    type="button"
-                    whileTap={{ scale: 0.94 }}
-                    transition={spring.snappy}
-                    onClick={() => finish(runRef.current)}
-                    className="h-10 rounded-full bg-ink-50 px-4 text-sm font-bold text-ink-950 hover:bg-white"
-                  >
-                    Lock in {formatAccuracy(best)}
-                  </motion.button>
-                </motion.div>
+                  Share my {formatAccuracy(best)} circle
+                </motion.button>
               ) : (
                 <motion.p key="tip" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="text-xs text-ink-400">
-                  One stroke · all the way round · best of {ATTEMPTS}
+                  One stroke · all the way round · as many tries as you like
                 </motion.p>
               )}
             </AnimatePresence>
           </div>
-          <TableStrip rows={rows} />
-        </div>
-      )}
+        )}
+      </div>
 
-      {best !== null && run.bestStroke && (
+      {best !== null && session.bestStroke && (
         <ShareSheet
           open={shareOpen}
           accuracy={best}
-          stroke={run.bestStroke}
+          stroke={session.bestStroke}
           handle={xapps.me.isBot ? null : xapps.me.handle}
           accent={ACCENT}
           onPost={share}
@@ -483,107 +360,35 @@ function Game() {
   );
 }
 
-/* ---------------------------------------------------------------------- */
-/* Final panel                                                            */
-/* ---------------------------------------------------------------------- */
-
-function FinalPanel({
-  best,
-  standings,
-  rows,
-  result,
-  meId,
-  spectator,
-  submitState,
-  onRetry,
-  onShare,
-}: {
-  best: number | null;
-  standings: Standing[];
-  rows: TableRow[];
-  result: MatchResult | null;
-  meId: string;
-  spectator: boolean;
-  submitState: "idle" | "sending" | "sent" | "failed";
-  onRetry: () => void;
-  onShare: () => void;
-}) {
-  const waiting = rows.filter((r) => !r.done);
-  let banner: ReactNode;
-  if (result) {
-    const rank = result.ranks?.[meId];
-    banner =
-      result.winnerId === meId ? (
-        <>🏆 Roundest at the table!</>
-      ) : result.winnerId === null && rank === 1 ? (
-        <>🤝 Dead heat at the top</>
-      ) : rank ? (
-        <>
-          #{rank} of {standings.length}
-        </>
-      ) : (
-        <>Final standings</>
-      );
-  } else if (spectator) {
-    banner = <>Watching the table</>;
-  } else if (best === null) {
-    banner = <>⏰ Time&apos;s up — no full circle</>;
-  } else if (waiting.length > 0) {
-    banner = (
-      <span className="text-base font-semibold text-ink-200">
-        Waiting for {waiting.length === 1 ? (waiting[0]!.player.isBot ? waiting[0]!.player.name : `@${waiting[0]!.player.handle}`) : `${waiting.length} players`}
-        <AnimatedDots />
-      </span>
-    );
-  } else {
-    banner = <>Circle locked in</>;
-  }
-
+/** "Again": focused when it appears, so Enter or Space goes straight into the next circle. */
+function AgainButton({ onClick }: { onClick: () => void }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    ref.current?.focus({ preventScroll: true });
+  }, []);
   return (
-    <motion.section
-      className="flex w-full min-w-0 flex-col gap-3 md:w-80 md:shrink-0"
-      initial={{ opacity: 0, y: 24, filter: "blur(10px)" }}
-      animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-      transition={{ ...spring.soft, filter: { duration: 0.4 } }}
-      aria-label="Your result"
+    <motion.button
+      ref={ref}
+      type="button"
+      initial={{ opacity: 0, scale: 0.9 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ ...spring.bouncy, delay: 0.15 }}
+      whileTap={{ scale: 0.95 }}
+      whileHover={{ scale: 1.02 }}
+      onClick={onClick}
+      className="flex h-12 flex-1 items-center justify-center gap-2 rounded-full bg-[linear-gradient(120deg,var(--accent-from),var(--accent-to))] text-sm font-bold text-ink-950 shadow-[0_12px_40px_-12px_var(--accent-to)] outline-none focus-visible:ring-2 focus-visible:ring-ink-50"
     >
-      <AnimatePresence mode="popLayout" initial={false}>
-        <motion.p
-          key={result ? "result" : waiting.length > 0 ? "waiting" : "locked"}
-          initial={{ opacity: 0, y: 10, scale: 0.94 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: -8, transition: { duration: 0.14 } }}
-          transition={spring.bouncy}
-          className="glass-strong flex min-h-12 items-center justify-center rounded-2xl px-4 py-2 text-center font-display text-lg font-extrabold tracking-tight"
-          role="status"
-        >
-          {banner}
-        </motion.p>
-      </AnimatePresence>
-
-      <div className="no-scrollbar max-h-[34vh] overflow-y-auto md:max-h-none">
-        <Standings rows={standings} />
-      </div>
-
-      {!spectator && best !== null && (
-        <motion.button
-          type="button"
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ ...spring.bouncy, delay: 0.3 }}
-          whileTap={{ scale: 0.95 }}
-          whileHover={{ scale: 1.02 }}
-          onClick={onShare}
-          className="flex h-12 items-center justify-center gap-2 rounded-full bg-[linear-gradient(120deg,var(--accent-from),var(--accent-to))] text-sm font-bold text-ink-950 shadow-[0_12px_40px_-12px_var(--accent-to)]"
-        >
-          Share my {formatAccuracy(best)} circle
-        </motion.button>
-      )}
-      {submitState === "failed" && (
-        <button type="button" onClick={onRetry} className="text-xs font-semibold text-danger underline underline-offset-2">
-          Couldn&apos;t send your score. Try again
-        </button>
-      )}
-    </motion.section>
+      <svg viewBox="0 0 24 24" className="size-4" aria-hidden>
+        <path
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M20 12a8 8 0 1 1-2.34-5.66M20 4v4.5h-4.5"
+        />
+      </svg>
+      Again
+    </motion.button>
   );
 }

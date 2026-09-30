@@ -1922,7 +1922,7 @@ begin
   -- First-party progress (20261002000200): valid lists, matching the web catalog (its test compares them).
   assert (select jsonb_object_agg(slug, jsonb_build_array(jsonb_array_length(stats), jsonb_array_length(achievements)))
             from public.apps where official and stats <> '[]'::jsonb)
-       = '{"quick-draw":[4,8],"four-in-a-row":[3,9],"trivia-royale":[4,9],"emoji-decode":[4,8],"hot-takes":[3,8],"wedge-wars":[4,9],"gregs-face":[4,10],"perfect-circle":[4,9]}'::jsonb,
+       = '{"quick-draw":[4,8],"four-in-a-row":[3,9],"trivia-royale":[4,9],"emoji-decode":[4,8],"hot-takes":[3,8],"wedge-wars":[4,9],"gregs-face":[3,10],"perfect-circle":[3,9]}'::jsonb,
     'first-party stats + achievements';
   assert (select bool_and(public.app_stats_error(stats) is null and public.app_achievements_error(achievements) is null
                           and (select sum((e->>'xp')::int) from jsonb_array_elements(achievements) e) <= 500

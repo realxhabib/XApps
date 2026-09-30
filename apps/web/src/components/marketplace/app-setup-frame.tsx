@@ -5,7 +5,7 @@ import type { HostHandlers } from "@xapps/sdk/host";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useMemo, useRef, useState } from "react";
 import { toast } from "@/components/chrome/toasts";
-import { APP_ALLOW, APP_SANDBOX, jsonBytes, useAppBridge } from "@/components/play/use-app-bridge";
+import { APP_ALLOW, APP_SANDBOX, jsonBytes, readStatStanding, useAppBridge } from "@/components/play/use-app-bridge";
 import { haptic } from "@/lib/haptics";
 import { play } from "@/lib/sfx";
 import { spring } from "@/lib/motion";
@@ -176,6 +176,8 @@ export function AppSetupFrame({
       }
     },
     "stats.report": notHere("stats.report"),
+    // Read-only, so a setup screen may show where the challenger stands.
+    "stats.leaderboard": (params) => readStatStanding(backend, app.slug, params),
     "achievements.unlock": notHere("achievements.unlock"),
     "room.send": notHere("room.send"),
     "match.submit": notHere("match.submit"),

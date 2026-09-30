@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_FACE } from "./face";
-import { featherCrop, kitScale, patchPad, patchRect, scaleRect, type Pixels } from "./kit";
+import { DEFAULT_FACE, PART_ORDER } from "./face";
+import { PATCH_ORDER, featherCrop, kitScale, patchPad, patchRect, scaleRect, type Pixels } from "./kit";
 
 const SKIN = [230, 180, 150] as const;
 
@@ -43,6 +43,33 @@ describe("blank face patch", () => {
     expect(at(out, 30, 5)).toEqual(at(src, 30, 5));
     // The source is untouched.
     expect(at(src, 30, 30)).toEqual([20, 20, 30, 255]);
+  });
+});
+
+describe("blank face patches in place", () => {
+  it("a later patch whose box overlaps an earlier feature fades into the patched skin, not the old feature", () => {
+    // Eyes-like box at y 25–35, a tall nose-like box right under it (its pad reaches into the eyes).
+    const src = portrait();
+    const blank: Pixels = { ...src, data: new Uint8ClampedArray(src.data) };
+    for (let y = 37; y < 50; y++) for (let x = 27; x < 33; x++) blank.data.set([20, 20, 30, 255], (y * src.width + x) * 4);
+    patchRect(blank, blank, { x: 20, y: 25, w: 20, h: 10 }, 4);
+    patchRect(blank, blank, { x: 27, y: 37, w: 6, h: 13 }, 4);
+    for (const [x, y] of [
+      [24, 34],
+      [30, 36],
+      [36, 34],
+      [30, 45],
+    ] as const) {
+      const [r, g, b] = at(blank, x, y);
+      expect(Math.abs(r! - SKIN[0]), `${x},${y}`).toBeLessThan(12);
+      expect(Math.abs(g! - SKIN[1]), `${x},${y}`).toBeLessThan(12);
+      expect(Math.abs(b! - SKIN[2]), `${x},${y}`).toBeLessThan(12);
+    }
+  });
+
+  it("patches the nose last, between the eyes and the mouth", () => {
+    expect([...PATCH_ORDER].sort()).toEqual([...PART_ORDER].sort());
+    expect(PATCH_ORDER[PATCH_ORDER.length - 1]).toBe("nose");
   });
 });
 

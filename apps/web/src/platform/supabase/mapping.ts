@@ -29,6 +29,7 @@ import type {
   RegisterAppInput,
   Scoring,
   StatLeaderRow,
+  StatStanding,
   UserAchievement,
   UpvoteResult,
   UserStat,
@@ -449,6 +450,22 @@ export function toStatLeaderRows(data: unknown): StatLeaderRow[] {
     out.push({ rank: num(r.rank) ?? out.length + 1, profile, value });
   }
   return out;
+}
+
+/** `app_stat_standing` → `{ key, top, me, total }` (`me` null without a value; `total` at least the rows shown). */
+export function toStatStanding(data: unknown, key: string): StatStanding {
+  const r = data && typeof data === "object" && !Array.isArray(data) ? (data as Loose) : {};
+  const top = toStatLeaderRows(r.top);
+  const m = r.me && typeof r.me === "object" && !Array.isArray(r.me) ? (r.me as Loose) : null;
+  const rank = m ? num(m.rank) : null;
+  const value = m ? num(m.value) : null;
+  const total = num(r.total);
+  return {
+    key: str(r.key) ?? key,
+    top,
+    me: rank !== null && value !== null ? { rank, value } : null,
+    total: Math.max(total ?? 0, top.length),
+  };
 }
 
 /** `user_stats` → `[{ appSlug, key, value, updatedAt }]`. */

@@ -24,3 +24,4 @@ else
 fi
 "${psql_cmd[@]}" -d "$db" -f "$here/lifecycle.sql"
 "${psql_cmd[@]}" -d "$db" -f "$here/upvotes.sql"
+"${psql_cmd[@]}" -d "$db" -f "$here/stat_standing.sql"

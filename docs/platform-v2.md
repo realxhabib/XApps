@@ -342,6 +342,11 @@ all kinds.
   `report_stats(p_app, p_values)`, `app_api_report_stats(p_secret, p_user, p_values)`,
   `app_stat_leaderboard(p_app, p_key, p_limit)` (ordered by the stat's
   aggregate direction: min → ascending).
+- `xapps.stats.leaderboard(key, { limit? })` → `{ key, top, me, total }`: the
+  board's first `limit` rows (default 10, max 50), the viewer's `{ rank, value }`
+  ranked like the board (null without a value) and how many people have one.
+  Read-only: every purpose and role. SQL `app_stat_standing(p_app, p_key, p_limit)`
+  (20261006000300_stat_standing.sql); backends `statStanding(appSlug, key, limit?)`.
 - App pages show a tab per stat; profiles show a player's stats per app.
 
 ### Achievements

@@ -1,15 +1,11 @@
 "use client";
 
-import type { PlayerInfo } from "@xapps/sdk";
 import { AnimatePresence, motion, useReducedMotion, useSpring, useTransform } from "motion/react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Avatar } from "@/components/ui/avatar";
+import { useEffect, useRef, useState } from "react";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import { circleArt } from "./card";
-import { ATTEMPTS, PERFECT, REJECTION_TEXT, accuracyColor, formatAccuracy, resample, verdictFor, type Point, type Rejection } from "./logic";
+import { REJECTION_TEXT, accuracyColor, formatAccuracy, verdictFor, type Point, type Rejection } from "./logic";
 import { CARD_H, CARD_W, canvasBlob, drawShareCard } from "./render";
-import type { TableRow } from "./table";
 
 /* ---------------------------------------------------------------------- */
 /* Numbers                                                                */
@@ -65,7 +61,7 @@ export function ScoreOverlay({ accuracy, isBest, n }: { accuracy: number; isBest
             transition={{ ...spring.wobbly, delay: 0.55 }}
             className="rounded-full bg-[linear-gradient(120deg,var(--accent-from),var(--accent-to))] px-2 py-0.5 font-mono text-[10px] font-black uppercase tracking-wider text-ink-950"
           >
-            New best
+            Best yet
           </motion.span>
         )}
       </motion.span>
@@ -96,202 +92,43 @@ export function RejectOverlay({ reason, id }: { reason: Rejection; id: number })
 }
 
 /* ---------------------------------------------------------------------- */
-/* Attempt pips                                                           */
+/* Recent circles                                                         */
 /* ---------------------------------------------------------------------- */
 
-/** One pip per attempt: empty, current (breathing) or its score; the best one glows. */
-export function AttemptPips({ scores, bestIndex, active }: { scores: number[]; bestIndex: number; active: boolean }) {
+/** This sitting's latest circles as score pips (oldest left); the best one glows. */
+export function RecentPips({ scores, bestIndex, max = 5 }: { scores: number[]; bestIndex: number; max?: number }) {
+  const from = Math.max(0, scores.length - max);
+  const shown = scores.slice(from);
+  if (shown.length === 0) return null;
   return (
-    <ol className="flex items-center gap-1.5" aria-label={`Circles: ${scores.length} of ${ATTEMPTS} drawn`}>
-      {Array.from({ length: ATTEMPTS }, (_, i) => {
-        const score = scores[i];
-        const current = active && i === scores.length;
-        const best = i === bestIndex;
-        return (
-          <li key={i} className="relative">
-            <motion.div
+    <ol className="flex items-center gap-1.5" aria-label={`Your last ${shown.length === 1 ? "circle" : `${shown.length} circles`}`}>
+      <AnimatePresence initial={false} mode="popLayout">
+        {shown.map((score, i) => {
+          const index = from + i;
+          const best = index === bestIndex;
+          const color = accuracyColor(score);
+          return (
+            <motion.li
+              key={index}
               layout
+              initial={{ scale: 0, rotate: -30, opacity: 0 }}
+              animate={{ scale: 1, rotate: 0, opacity: 1 }}
+              exit={{ scale: 0.4, opacity: 0, transition: { duration: 0.12 } }}
+              transition={spring.wobbly}
               className={cn(
                 "flex h-7 min-w-7 items-center justify-center rounded-full px-2 font-mono text-[11px] font-bold tabular ring-1",
-                score === undefined ? "ring-white/10" : best ? "ring-2" : "ring-white/15",
+                best ? "ring-2" : "ring-white/15",
               )}
-              style={
-                score === undefined
-                  ? undefined
-                  : {
-                      color: accuracyColor(score),
-                      background: `color-mix(in oklab, ${accuracyColor(score)} ${best ? 22 : 10}%, transparent)`,
-                      ["--tw-ring-color" as string]: best ? accuracyColor(score) : undefined,
-                    }
-              }
-              animate={current ? { scale: [1, 1.12, 1] } : { scale: 1 }}
-              transition={current ? { duration: 1.4, repeat: Infinity } : spring.bouncy}
+              style={{
+                color,
+                background: `color-mix(in oklab, ${color} ${best ? 22 : 10}%, transparent)`,
+                ["--tw-ring-color" as string]: best ? color : undefined,
+              }}
             >
-              <AnimatePresence mode="popLayout" initial={false}>
-                {score === undefined ? (
-                  <motion.span key="empty" className={cn("size-1.5 rounded-full", current ? "bg-ink-100" : "bg-white/20")} />
-                ) : (
-                  <motion.span
-                    key="score"
-                    initial={{ scale: 0, rotate: -30 }}
-                    animate={{ scale: 1, rotate: 0 }}
-                    transition={spring.wobbly}
-                  >
-                    {score.toFixed(1)}
-                  </motion.span>
-                )}
-              </AnimatePresence>
-            </motion.div>
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Mini circles (the rest of the table)                                   */
-/* ---------------------------------------------------------------------- */
-
-/** A small rendition of someone's circle; it traces itself in when it arrives. */
-export function MiniCircle({ stroke, size = 40, className }: { stroke: Point[] | null; size?: number; className?: string }) {
-  const reduce = useReducedMotion();
-  const art = useMemo(() => (stroke ? circleArt(resample(stroke, 49), 100, 48) : null), [stroke]);
-  return (
-    <svg viewBox="0 0 100 100" width={size} height={size} className={className} aria-hidden>
-      <rect width="100" height="100" rx="22" fill="rgb(255 255 255 / 0.05)" />
-      {art && (
-        <motion.g
-          key={art.segments.length ? `${art.segments[0]!.x1}:${art.segments[0]!.y1}` : "none"}
-          initial={reduce ? false : { opacity: 0, scale: 0.6, rotate: -60 }}
-          animate={{ opacity: 1, scale: 1, rotate: 0 }}
-          style={{ transformOrigin: "50px 50px" }}
-          transition={spring.bouncy}
-        >
-          {art.segments.map((s, i) => (
-            <line key={i} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={s.color} strokeWidth="6" strokeLinecap="round" />
-          ))}
-        </motion.g>
-      )}
-      <circle cx="50" cy="50" r="4" fill="#f6f7fb" opacity={art ? 0.9 : 0.4} />
-    </svg>
-  );
-}
-
-function PencilDots() {
-  return (
-    <span className="inline-flex gap-0.5" aria-hidden>
-      {[0, 1, 2].map((i) => (
-        <motion.span
-          key={i}
-          className="size-1 rounded-full bg-ink-200"
-          animate={{ y: [0, -3, 0], opacity: [0.4, 1, 0.4] }}
-          transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.12 }}
-        />
-      ))}
-    </span>
-  );
-}
-
-function rowStatus(row: TableRow): string {
-  if (row.done && row.best !== null) return "done";
-  if (row.kind === "async" && !row.done) return "plays later";
-  if (row.drawing) return "drawing";
-  if (row.kind === "live" && !row.online) return "away";
-  return `${row.scores.length}/${ATTEMPTS}`;
-}
-
-/** Everyone else at the table: their best circle and score, live. */
-export function TableStrip({ rows, className }: { rows: TableRow[]; className?: string }) {
-  if (rows.length === 0) return null;
-  return (
-    <ul
-      className={cn("no-scrollbar mx-auto flex w-fit max-w-full gap-2 overflow-x-auto px-0.5 py-1 [scroll-snap-type:x_proximity]", className)}
-      aria-label="The rest of the table"
-    >
-      {rows.map((row, i) => (
-        <motion.li
-          key={row.player.id}
-          initial={{ opacity: 0, y: 14 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ ...spring.bouncy, delay: 0.1 + i * 0.05 }}
-          className="glass flex shrink-0 items-center gap-2 rounded-2xl py-1.5 pl-1.5 pr-3 [scroll-snap-align:start]"
-        >
-          <div className="relative">
-            <MiniCircle stroke={row.bestStroke} size={38} />
-            <Avatar person={row.player} size={18} className="absolute -bottom-1 -right-1 ring-2 ring-ink-950 rounded-full" />
-          </div>
-          <div className="min-w-0">
-            <p className="max-w-[7.5rem] truncate text-[11px] font-bold text-ink-200">
-              {row.player.isBot ? row.player.name : `@${row.player.handle}`}
-            </p>
-            <div className="flex h-5 items-center gap-1.5">
-              <AnimatePresence mode="popLayout" initial={false}>
-                <motion.span
-                  key={row.best ?? "none"}
-                  initial={{ scale: 0.4, opacity: 0 }}
-                  animate={{ scale: 1, opacity: 1 }}
-                  transition={spring.wobbly}
-                  className="font-display text-base font-extrabold leading-none tabular"
-                  style={{ color: row.best === null ? "var(--color-ink-400)" : accuracyColor(row.best) }}
-                >
-                  {row.best === null ? "—" : formatAccuracy(row.best)}
-                </motion.span>
-              </AnimatePresence>
-              <span className="font-mono text-[9px] font-bold uppercase tracking-wider text-ink-400">
-                {row.drawing ? <PencilDots /> : rowStatus(row)}
-              </span>
-            </div>
-          </div>
-        </motion.li>
-      ))}
-    </ul>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Final standings                                                        */
-/* ---------------------------------------------------------------------- */
-
-export interface Standing {
-  player: PlayerInfo;
-  best: number | null;
-  stroke: Point[] | null;
-  done: boolean;
-  me: boolean;
-}
-
-export function Standings({ rows }: { rows: Standing[] }) {
-  const sorted = [...rows].sort((a, b) => (b.best ?? -1) - (a.best ?? -1));
-  return (
-    <ol className="flex w-full flex-col gap-1.5" aria-label="Standings">
-      <AnimatePresence initial={false}>
-        {sorted.map((row, i) => (
-          <motion.li
-            layout
-            key={row.player.id}
-            initial={{ opacity: 0, x: -12 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={spring.layout}
-            className={cn(
-              "flex items-center gap-2.5 rounded-xl px-2.5 py-1.5 ring-1",
-              row.me ? "bg-white/[0.08] ring-white/15" : "bg-white/[0.03] ring-white/[0.06]",
-            )}
-          >
-            <span className="w-4 text-center font-mono text-xs font-bold text-ink-400 tabular">{row.best === null ? "·" : i + 1}</span>
-            <MiniCircle stroke={row.stroke} size={30} />
-            <span className="min-w-0 flex-1 truncate text-sm font-semibold text-ink-100">
-              {row.me ? "You" : row.player.isBot ? row.player.name : `@${row.player.handle}`}
-            </span>
-            <span
-              className="font-display text-base font-extrabold tabular"
-              style={{ color: row.best === null ? "var(--color-ink-400)" : accuracyColor(row.best) }}
-            >
-              {row.best === null ? (row.done ? "—" : <PencilDots />) : formatAccuracy(row.best)}
-            </span>
-            {row.best !== null && row.best >= PERFECT && <span aria-label="perfect">⭕</span>}
-          </motion.li>
-        ))}
+              {score.toFixed(1)}
+            </motion.li>
+          );
+        })}
       </AnimatePresence>
     </ol>
   );

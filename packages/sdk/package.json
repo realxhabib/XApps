@@ -1,6 +1,6 @@
 {
   "name": "@xapps/sdk",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Build head-to-head social apps for the XApps marketplace: identity, realtime rooms, matchmaking results, crowd voting and host UI in one tiny bridge.",
   "license": "MIT",
   "author": "XApps contributors",

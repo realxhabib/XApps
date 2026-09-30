@@ -27,8 +27,8 @@
  * That's it: no other file changes. `npm test` checks the rects are sane.
  * ──────────────────────────────────────────────────────────────────────────
  *
- * The default is an original illustrated stand-in (`greg.svg`), a cartoon
- * and not a photo of anyone, run through exactly the same pipeline.
+ * `FACE` is the meme photo (`greg.jpg`). `DEFAULT_FACE` is an illustrated
+ * stand-in (`greg.svg`) used if the photo fails to load.
  */
 
 export type PartId = "eyes" | "nose" | "mouth";
@@ -74,8 +74,22 @@ export const DEFAULT_FACE: FaceConfig = {
   skin: "#f5d2bb",
 };
 
-/** The face the game uses. Point this at the real photo (see above). */
-export const FACE: FaceConfig = DEFAULT_FACE;
+/** Greg himself: the meme photo (200×188 original, upscaled 3× so it draws smoothly). */
+export const PHOTO_FACE: FaceConfig = {
+  src: "/first-party/gregs-face/greg.jpg",
+  width: 600,
+  height: 564,
+  name: "Greg",
+  parts: {
+    eyes: { x: 188, y: 266, w: 200, h: 42 },
+    nose: { x: 238, y: 310, w: 90, h: 114 },
+    mouth: { x: 214, y: 432, w: 142, h: 36 },
+  },
+  skin: "#e7b49b",
+};
+
+/** The face the game uses (the cartoon stands in if the photo can't load). */
+export const FACE: FaceConfig = PHOTO_FACE;
 
 /** Problems with a face config (empty when it's usable). Pure, so tests can check `FACE`. */
 export function faceConfigProblems(face: FaceConfig): string[] {

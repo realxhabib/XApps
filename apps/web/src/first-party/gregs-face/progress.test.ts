@@ -6,11 +6,13 @@ import {
   PERFECT_WITHIN,
   ZERO_AT,
   buildSlides,
+  dropAt,
   earnedAchievements,
   faceScore,
-  planBot,
-  resultProgress,
+  nextCrossing,
+  nextStreak,
   runStats,
+  soloAchievements,
   type Drop,
   type FaceAchievement,
 } from "./logic";
@@ -25,36 +27,36 @@ const face = (...acc: number[]) => acc.map((a, i) => drop(PART_ORDER[i]!, a));
 describe("Greg's Face manifest", () => {
   const app = getOfficialApp("gregs-face");
 
-  it("is a 2–8 player score game with progress", () => {
+  it("is a standalone app (no matches) with progress", () => {
     expect(app).toBeDefined();
+    expect(app!.kind).toBe("app");
     expect(manifestShapeError(app!)).toBeNull();
-    expect(app!.scoring).toBe("high");
-    expect(app!.players).toEqual({ min: 2, max: 8 });
-    expect([...app!.modes].sort()).toEqual(["async", "live", "practice"]);
     expect(app!.url).toBe("/embed/gregs-face");
+    expect(app!.howTo.length).toBeLessThanOrEqual(3);
     expect(statDefsError(app!.stats)).toBeNull();
     expect(achievementDefsError(app!.achievements)).toBeNull();
     expect(app!.stats?.find((s) => s.key === "best_face")).toMatchObject({ aggregate: "max", format: "percent" });
     expect(app!.achievements?.some((a) => a.secret)).toBe(true);
+    expect(app!.achievements?.reduce((sum, a) => sum + a.xp, 0)).toBeLessThanOrEqual(500);
   });
 
   it("every id it can award is declared, and every stat it reports", () => {
     const declared = app?.achievements?.map((a) => a.id) ?? [];
     const all: FaceAchievement[] = [
       "first_face",
-      "first_win",
       "spitting_image",
       "pixel_perfect",
       "steady_hands",
       "real_greg",
       "hat_trick",
-      "head_of_table",
+      "face_factory",
+      "on_a_roll",
       "show_and_tell",
       "picasso",
     ];
     expect([...declared].sort()).toEqual([...all].sort());
     const keys = app?.stats?.map((s) => s.key).sort();
-    expect(keys).toEqual(["best_face", "faces_built", "perfect_parts", "wins"]);
+    expect(keys).toEqual(["best_face", "faces_built", "perfect_parts"]);
   });
 });
 
@@ -92,12 +94,33 @@ describe("Greg's Face achievements", () => {
     expect(earnedAchievements(face(40, 40, 40))).not.toContain("picasso");
   });
 
-  it("a real bot run earns something sensible", () => {
+  it("a real run earns something sensible", () => {
     const slides = buildSlides(createRandom("p"));
-    const run = planBot(FACE, slides, createRandom("p::bot:x"));
-    const earned = earnedAchievements(run.drops);
+    const run = PART_ORDER.map((part, i) => dropAt(FACE, slides, part, nextCrossing(FACE, slides, part, 800) + (i - 1) * 45));
+    const earned = earnedAchievements(run);
     expect(earned).toContain("first_face");
-    expect(earned.includes("picasso")).toBe(faceScore(run.drops) < 40);
+    expect(earned.includes("picasso")).toBe(faceScore(run) < 40);
+  });
+});
+
+describe("Greg's Face solo progress", () => {
+  it("counts 90 %+ faces in a row, and a weaker face resets the streak", () => {
+    expect(nextStreak(0, 90)).toBe(1);
+    expect(nextStreak(2, 97.5)).toBe(3);
+    expect(nextStreak(2, 89.9)).toBe(0);
+  });
+
+  it("face factory at 10 faces built; on a roll at three in a row", () => {
+    expect(soloAchievements({ facesBuilt: 9, streak: 2 })).toEqual([]);
+    expect(soloAchievements({ facesBuilt: 10, streak: 0 })).toEqual(["face_factory"]);
+    expect(soloAchievements({ facesBuilt: 3, streak: 3 })).toEqual(["on_a_roll"]);
+    expect(soloAchievements({ facesBuilt: 40, streak: 5 })).toEqual(["face_factory", "on_a_roll"]);
+  });
+
+  it("three spitting images in a row are on a roll", () => {
+    let streak = 0;
+    for (const score of [92, 95, 90.4]) streak = nextStreak(streak, score);
+    expect(soloAchievements({ facesBuilt: 3, streak })).toContain("on_a_roll");
   });
 });
 
@@ -105,23 +128,5 @@ describe("Greg's Face stats", () => {
   it("reports the face, one more built, and perfect parts only when there are some", () => {
     expect(runStats(face(100, 80, 60))).toEqual({ best_face: 80, faces_built: 1, perfect_parts: 1 });
     expect(runStats(face(90, 80, 70))).toEqual({ best_face: 80, faces_built: 1 });
-  });
-});
-
-describe("Greg's Face results", () => {
-  it("a win counts; a win at a table of four or more is head of the table", () => {
-    expect(resultProgress({ winnerId: "me", scores: { me: 90, b: 80 } }, "me")).toEqual({
-      achievements: ["first_win"],
-      stats: { wins: 1 },
-    });
-    expect(resultProgress({ winnerId: "me", scores: { me: 90, b: 80, c: 70, d: 60 } }, "me").achievements).toEqual([
-      "first_win",
-      "head_of_table",
-    ]);
-  });
-
-  it("losses and ties count for nothing", () => {
-    expect(resultProgress({ winnerId: "b", scores: { me: 70, b: 80 } }, "me")).toEqual({ achievements: [], stats: {} });
-    expect(resultProgress({ winnerId: null, scores: { me: 80, b: 80 } }, "me")).toEqual({ achievements: [], stats: {} });
   });
 });

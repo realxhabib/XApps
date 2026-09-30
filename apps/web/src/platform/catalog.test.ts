@@ -7,7 +7,10 @@ const WITH_PROGRESS = ["quick-draw", "four-in-a-row", "trivia-royale", "emoji-de
 describe("official catalog", () => {
   it("every official manifest is valid (strict one-emoji icons)", () => {
     for (const app of OFFICIAL_APPS) {
-      expect(manifestShapeError(app), app.slug).toBeNull();
+      // Standalone apps (kind app) have no matches: only their progress is checked here (the sync
+      // gives them harmless match columns, see official-apps.ts).
+      const shape = app.kind === "app" ? { stats: app.stats, achievements: app.achievements } : app;
+      expect(manifestShapeError(shape), app.slug).toBeNull();
     }
   });
 
@@ -26,8 +29,18 @@ describe("official catalog", () => {
 });
 
 describe("app kind", () => {
-  it("defaults to a game, and official apps are games", () => {
-    for (const app of OFFICIAL_APPS) expect(withManifestDefaults(app).kind).toBe("game");
+  it("defaults to a game; official apps are games unless they say kind app", () => {
+    for (const app of OFFICIAL_APPS) expect(withManifestDefaults(app).kind, app.slug).toBe(app.kind === "app" ? "app" : "game");
+    expect(withManifestDefaults({ ...OFFICIAL_APPS[0]!, kind: undefined }).kind).toBe("game");
     expect(withManifestDefaults({ ...OFFICIAL_APPS[0]!, kind: "app" }).kind).toBe("app");
+  });
+
+  it("official standalone apps are served from /embed and declare no match-only features", () => {
+    for (const app of OFFICIAL_APPS.filter((a) => a.kind === "app")) {
+      expect(app.url, app.slug).toBe(`/embed/${app.slug}`);
+      expect(app.setup ?? false, app.slug).toBe(false);
+      expect(app.turnBased ?? false, app.slug).toBe(false);
+      expect(app.teams ?? 0, app.slug).toBe(0);
+    }
   });
 });

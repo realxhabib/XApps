@@ -6,21 +6,17 @@ import {
   PART_MAX_MS,
   PERFECT_WITHIN,
   ZERO_AT,
-  botPilotId,
   buildSlides,
   distance,
   dropAt,
   faceScore,
   formatPct,
   nextCrossing,
-  parseDrop,
   partAccuracy,
-  planBot,
   runningScore,
   shareText,
   slideU,
   speedAt,
-  submission,
   trackX,
   trueU,
   trueX,
@@ -63,6 +59,13 @@ describe("slides", () => {
   it("are identical for the same seed and differ between seeds", () => {
     expect(buildSlides(createRandom("greg-seed"))).toEqual(slides);
     expect(buildSlides(createRandom("other-seed"))).not.toEqual(slides);
+  });
+
+  it("are fresh for every run forked from one open's random", () => {
+    const random = createRandom("an-open");
+    const first = buildSlides(random.fork("run:1"));
+    expect(buildSlides(random.fork("run:1"))).toEqual(first);
+    expect(buildSlides(random.fork("run:2"))).not.toEqual(first);
   });
 
   it("start near an end and move inwards, later features faster", () => {
@@ -163,64 +166,10 @@ describe("scoring", () => {
     expect(verdict(10).title).toBe("Picasso's Greg");
   });
 
-  it("submission carries the score, parts and a readable line", () => {
-    const drops = PART_ORDER.map((part, i) => dropAt(FACE, slides, part, nextCrossing(FACE, slides, part, 400) + i * 40));
-    const sub = submission(drops);
-    expect(sub.score).toBe(faceScore(drops));
-    expect(sub.display.body).toMatch(/^👀 .*% {2}👃 .*% {2}👄 .*%$/);
-    expect((sub.data as { parts: unknown[] }).parts).toHaveLength(3);
+  it("formats percentages and the share line", () => {
     expect(formatPct(87)).toBe("87%");
     expect(formatPct(87.46)).toBe("87.5%");
     expect(shareText(86.6)).toBe("I built Greg's face 87% right on XApps 🤪");
-  });
-
-  it("room payloads are validated", () => {
-    expect(parseDrop({ part: "nose", accuracy: 88.44 })).toEqual({ part: "nose", accuracy: 88.4 });
-    expect(parseDrop({ part: "ears", accuracy: 50 })).toBeNull();
-    expect(parseDrop({ part: "eyes", accuracy: 101 })).toBeNull();
-    expect(parseDrop([1])).toBeNull();
-    expect(parseDrop(null)).toBeNull();
-  });
-});
-
-describe("bots", () => {
-  it("are played by the lowest-seated human only", () => {
-    const table = [
-      { id: "bot1", seat: 0, isBot: true },
-      { id: "ann", seat: 2, isBot: false },
-      { id: "bob", seat: 1, isBot: false },
-    ];
-    expect(botPilotId(table)).toBe("bob");
-    expect(botPilotId(table.filter((p) => p.isBot))).toBeNull();
-  });
-
-  it("play deterministically per seed", () => {
-    const a = planBot(FACE, slides, createRandom("seed::bot:b1"));
-    const b = planBot(FACE, slides, createRandom("seed::bot:b1"));
-    expect(a).toEqual(b);
-    expect(a.drops.map((d) => d.part)).toEqual(PART_ORDER);
-    expect(a.times).toHaveLength(3);
-    expect(a.times[0]!).toBeLessThan(a.times[1]!);
-    expect(a.finishMs).toBeGreaterThan(a.times[2]!);
-  });
-
-  it("score like decent humans: mostly 70–98, rarely perfect", () => {
-    const scores: number[] = [];
-    let perfect = 0;
-    for (let i = 0; i < 300; i++) {
-      const seedSlides = buildSlides(createRandom(`m${i}`));
-      const run = planBot(FACE, seedSlides, createRandom(`m${i}::bot:x`));
-      scores.push(faceScore(run.drops));
-      perfect += run.drops.filter((d) => d.perfect).length;
-    }
-    scores.sort((x, y) => x - y);
-    const median = scores[150]!;
-    expect(median).toBeGreaterThan(80);
-    expect(median).toBeLessThan(97);
-    expect(scores[15]!).toBeGreaterThan(55);
-    expect(perfect / 900).toBeLessThan(0.35);
-    // Short matches: a bot is done well within half a minute.
-    const run = planBot(FACE, slides, createRandom("slow"));
-    expect(run.finishMs).toBeLessThan(25_000);
+    expect(shareText(93)).toBe("I built Greg's face 93% right on XApps 😎");
   });
 });

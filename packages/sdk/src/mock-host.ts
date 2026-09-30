@@ -14,6 +14,9 @@
  * - `?xapps-turns=1` starts with a turn (seat 0); `?xapps-role=spectator` watches bots play.
  * - `?xapps-stats=<json>` / `?xapps-achievements=<json>` declare manifest stats / achievements.
  *
+ * `stats.leaderboard` answers from the stats you reported plus a handful of
+ * made-up players (spread around your first value, or `leaderboard` values).
+ *
  * `xapps.log.*` entries are printed to the console as `[xapps log]` lines and
  * kept in `mock.logs`.
  */
@@ -34,10 +37,20 @@ import {
   type PlayerRole,
   type Scoring,
   type StatDef,
+  type StatLeaderEntry,
   type Submission,
 } from "./protocol";
-import { randomId } from "./random";
-import { aggregateStat, baseMime, cloneJson, isPlainObject, mediaKindOf, purposeOf, standaloneMatch } from "./rules";
+import { createRandom, randomId } from "./random";
+import {
+  aggregateStat,
+  baseMime,
+  cloneJson,
+  isPlainObject,
+  mediaKindOf,
+  purposeOf,
+  rankStatValues,
+  standaloneMatch,
+} from "./rules";
 import { createMemoryTransportPair, type AppTransport } from "./transport";
 
 export interface MockHostOptions {
@@ -76,6 +89,12 @@ export interface MockHostOptions {
   banner?: boolean;
   /** Manifest stats (`?xapps-stats=<json>` overrides). `stats.report` aggregates them in memory. */
   stats?: StatDef[];
+  /**
+   * Made-up players' values per stat for `stats.leaderboard` (you are ranked among them).
+   * By default each stat gets a handful of players spread around your first reported value
+   * (or a typical value for its format); `false` leaves you alone on every board.
+   */
+  leaderboard?: { [key: string]: number[] } | false;
   /** Manifest achievements (`?xapps-achievements=<json>` overrides). Each unlocks once per mock host. */
   achievements?: AchievementDef[];
   /** Seed for the read-only `app` storage scope (your server writes it on the real platform). */
@@ -191,6 +210,32 @@ const completeAchievement = (d: AchievementDef): AchievementDef => ({
   icon: typeof d.icon === "string" ? d.icon : "🏆",
   xp: typeof d.xp === "number" ? d.xp : 0,
 });
+
+/** The made-up players on the mock's leaderboards. */
+const CROWD = [
+  { id: "mock-ada", handle: "ada", name: "Ada" },
+  { id: "mock-grace", handle: "gracehopper", name: "Grace" },
+  { id: "mock-linus", handle: "linus", name: "Linus" },
+  { id: "mock-margaret", handle: "mham", name: "Margaret" },
+  { id: "mock-alan", handle: "turing", name: "Alan" },
+  { id: "mock-katherine", handle: "kjohnson", name: "Katherine" },
+  { id: "mock-dennis", handle: "dmr", name: "Dennis" },
+  { id: "mock-radia", handle: "radia", name: "Radia" },
+  { id: "mock-tim", handle: "timbl", name: "Tim" },
+] as const;
+
+/** A handful of believable values for `def`, spread around `anchor` (your value) when there is one. */
+function crowdValues(def: StatDef, anchor: number | undefined): number[] {
+  const random = createRandom(`xapps-mock-leaderboard:${def.key}`);
+  const base = anchor ?? (def.format === "ms" ? 2400 : def.format === "percent" ? 72 : def.aggregate === "min" ? 30 : 120);
+  const whole = Number.isInteger(base);
+  const factors = [0.45, 0.6, 0.74, 0.86, 0.95, 1.08, 1.2, 1.35, 1.55];
+  return factors.map((factor) => {
+    let value = Math.abs(base) < 1e-9 ? factor * 10 : base * (factor + random.float(-0.03, 0.03));
+    if (def.format === "percent") value = Math.min(99.9, Math.max(0, value));
+    return whole ? Math.round(value) : Math.round(value * 10) / 10;
+  });
+}
 
 const withTimeout = <T>(promise: Promise<T>, ms: number): Promise<T | null> =>
   Promise.race([promise, new Promise<null>((resolve) => setTimeout(() => resolve(null), ms))]);
@@ -314,6 +359,8 @@ export function createMockHost(input: MockHostOptions = {}): MockHost {
   let ended: MatchResult | null = null;
   let setupOutcome: MockSetupOutcome | null = null;
   const statValues: { [key: string]: number } = {};
+  // Made-up players per stat, fixed on the first leaderboard read so boards don't jump around.
+  const crowds = new Map<string, number[]>();
   const unlocked = new Set<string>();
   const uploads: Array<MediaRef & { alt: string | null; file: Blob; at: number }> = [];
   const logs: MockLogEntry[] = [];
@@ -623,6 +670,38 @@ export function createMockHost(input: MockHostOptions = {}): MockHost {
         }
         log("stats", out);
         return out;
+      },
+      "stats.leaderboard": ({ key, limit }) => {
+        const def = statDefs.find((d) => d.key === key);
+        if (!def) {
+          throw new XAppsError(
+            "invalid_params",
+            `stats.leaderboard: "${key}" is not a declared stat (mock: pass stats in connect({ mock }) or ?xapps-stats=)`,
+          );
+        }
+        let crowd = crowds.get(key);
+        if (!crowd) {
+          const given = options.leaderboard === false ? [] : options.leaderboard?.[key];
+          crowd = Array.isArray(given)
+            ? given.filter((v) => typeof v === "number" && Number.isFinite(v)).slice(0, CROWD.length)
+            : crowdValues(def, statValues[key]);
+          crowds.set(key, crowd);
+        }
+        const rows: Array<{ player: StatLeaderEntry["player"]; value: number }> = crowd.map((value, i) => {
+          const fake = CROWD[i]!;
+          return { player: { id: fake.id, handle: fake.handle, name: fake.name, avatarUrl: null }, value };
+        });
+        const mine = statValues[key];
+        // You go first among equal values, like a tie on the real board shares your rank anyway.
+        if (mine !== undefined) rows.unshift({ player: { ...user }, value: mine });
+        const ranked = rankStatValues(rows, def.aggregate);
+        const me = ranked.find((r) => r.player.id === user.id);
+        return {
+          key,
+          top: ranked.slice(0, limit ?? LIMITS.statLeaderboard.defaultLimit),
+          me: me ? { rank: me.rank, value: me.value } : null,
+          total: ranked.length,
+        };
       },
       "achievements.unlock": ({ id }) => {
         const def = achievementDefs.find((d) => d.id === id);

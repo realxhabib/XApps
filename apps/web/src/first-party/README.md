@@ -11,6 +11,7 @@ src/app/embed/<slug>/page.tsx  <EmbedRoot slug="<slug>"><App /></EmbedRoot>
 
 Open `/embed/<slug>` directly and the SDK's mock host kicks in: you play
 "You" vs a practice bot, and `match.start` fires shortly after `ready()`.
+Standalone apps (`kind: "app"`) open in app mode instead (see below).
 
 ## Adding a first-party app
 
@@ -74,17 +75,44 @@ What the host does:
 5. The host core refuses match-only requests for purpose `app` before any
    handler runs (`room.send`, `match.submit`, `match.forfeit`, `state.*`,
    `turn.end`, `round.set`, `ui.scores`, `ui.turn`, `setup.*` →
-   `forbidden`). Handled: `storage.*`, `stats.report`, `achievements.unlock`
+   `forbidden`). Handled: `storage.*`, `stats.report`, `stats.leaderboard`
+   (the stat's global board + the viewer's rank, `backend.statStanding`),
+   `achievements.unlock`
    (host achievement moment + `achievement.unlock` event), `media.upload`,
    `log` (`logAppEvent` with `matchId: null`), `social.share`, `ui.toast`,
    `ui.celebrate`, `ui.haptic`, `ui.status` (top bar) and `ui.resize`
    (no-op: the frame always fills the screen).
 6. Test builds echo stats and show achievements (0 XP) without saving them,
-   exactly like test-build matches.
+   exactly like test-build matches. `stats.leaderboard` reads the live app's
+   board (a stat it doesn't declare yet reads as an empty board).
 
-A first-party standalone app would follow the same layout as the games
-(`src/first-party/<slug>` + `src/app/embed/<slug>/page.tsx`, `kind: "app"` in
-`OFFICIAL_APPS`). Its mock should run as a standalone app so opening
-`/embed/<slug>` directly works like the host: pass `purpose: "app"` in
-`EmbedRoot`'s mock options for `kind: "app"` apps (not wired yet, since no
-first-party standalone app exists).
+### First-party standalone apps
+
+They use the same layout as the games: `src/first-party/<slug>` +
+`src/app/embed/<slug>/page.tsx`, and `kind: "app"` on the `OFFICIAL_APPS`
+entry. The entry still carries the manifest's match fields (`modes`,
+`players`, `scoring`…) because the type and the `apps` table have them, but
+they mean nothing for an app: keep the harmless defaults (`players` 2–2,
+`teams` 0, no `setup`/`turnBased`). `npm run sync-apps` writes the kind, and
+falls back to the column defaults for match fields that wouldn't pass the
+table's checks (`official-apps.ts`). People open it at `/apps/<slug>/open`.
+
+Opened directly, `/embed/<slug>` runs the mock host in app mode, like the
+host would: `EmbedRoot` launches the mock with `purpose: "app"` whenever the
+catalog entry says `kind: "app"`. A page can also say so explicitly, and pass
+extra mock options:
+
+```tsx
+<EmbedRoot slug="perfect-circle" purpose="app" mock={{ leaderboard: { best_circle: [97.1, 91, 84.5] } }}>
+  <PerfectCircle />
+</EmbedRoot>
+```
+
+(`?xapps-purpose=match|app` on the URL still overrides it.) In app mode the
+mock seats "You" alone, never fires `match.start`, refuses match-only calls,
+and keeps storage, stats, achievements and `stats.leaderboard` working: the
+board is your reported values ranked among a handful of made-up players.
+
+Solo games built as apps show where the player stands with
+`xapps.stats.leaderboard(key)` / `useStatStanding(key)` from the public SDK:
+`{ top, me: { rank, value } | null, total }`, e.g. "#14 of 2,380 · top 1%".

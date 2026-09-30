@@ -26,6 +26,7 @@ import type {
   Profile,
   RegisterAppInput,
   StatLeaderRow,
+  StatStanding,
   StorageScope,
   SubmitInput,
   UpvoteResult,
@@ -53,6 +54,7 @@ import {
   toReviewQueue,
   toBackendError,
   toStatLeaderRows,
+  toStatStanding,
   toStatValues,
   toStorageKeys,
   toUnlocked,
@@ -808,6 +810,12 @@ export class SupabaseBackend implements Backend {
 
   async statLeaderboard(appSlug: string, key: string): Promise<StatLeaderRow[]> {
     return toStatLeaderRows(await this.rpc("app_stat_leaderboard", { p_app: appSlug, p_key: key, p_limit: 50 }));
+  }
+
+  async statStanding(appSlug: string, key: string, limit?: number): Promise<StatStanding> {
+    const params: { p_app: string; p_key: string; p_limit?: number } = { p_app: appSlug, p_key: key };
+    if (limit !== undefined) params.p_limit = limit;
+    return toStatStanding(await this.rpc("app_stat_standing", params), key);
   }
 
   async userStats(userId: string): Promise<UserStat[]> {

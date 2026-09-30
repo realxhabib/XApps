@@ -23,6 +23,7 @@ from (values
   (16, '20261006000100_standalone_apps',      exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'apps' and column_name = 'kind')
                                               and exists (select 1 from pg_proc where proname = 'open_app')),
   (17, '20261006000200_app_upvotes',          to_regclass('public.app_upvotes') is not null
-                                              and exists (select 1 from pg_proc where proname = 'set_app_upvote'))
+                                              and exists (select 1 from pg_proc where proname = 'set_app_upvote')),
+  (18, '20261006000300_stat_standing',        exists (select 1 from pg_proc where proname = 'app_stat_standing'))
 ) as m(n, file, applied)
 order by n;

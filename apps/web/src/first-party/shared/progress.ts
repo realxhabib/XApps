@@ -4,23 +4,30 @@ import type { XAppsClient } from "@xapps/sdk";
  * Stats & achievements for first-party apps, through the public SDK only.
  *
  * Both helpers are fire-and-forget: they never throw, never block gameplay,
- * and do nothing for spectators, bots or outside a match (setup purpose).
+ * and do nothing for spectators, bots or on a setup screen. Standalone apps
+ * (purpose `app`) track progress for the viewer.
  * Each app decides *what* was earned in its pure `logic.ts`; these just send it.
  */
 
 type Client = Pick<XAppsClient, "purpose" | "isSpectator" | "me" | "stats" | "achievements">;
 
-/** Whether this client may record progress for its own player. */
+/** Whether this client may record progress for its own player (in a match or a standalone app). */
 export function canTrackProgress(xapps: Client): boolean {
-  return xapps.purpose === "match" && !xapps.isSpectator && !xapps.me.isBot;
+  return (xapps.purpose === "match" || xapps.purpose === "app") && !xapps.isSpectator && !xapps.me.isBot;
 }
 
 /**
  * Reports the finite values among `values` (null/undefined are skipped, and
  * keys the manifest doesn't declare are dropped when the host sent the defs).
+ * Resolves with the new aggregated values, or null when nothing was sent or
+ * the report failed (it never rejects).
  */
-export function reportStats(xapps: Client, values: { [key: string]: number | null | undefined }, tag = "xapps"): void {
-  if (!canTrackProgress(xapps)) return;
+export function reportStats(
+  xapps: Client,
+  values: { [key: string]: number | null | undefined },
+  tag = "xapps",
+): Promise<{ [key: string]: number } | null> {
+  if (!canTrackProgress(xapps)) return Promise.resolve(null);
   const declared = xapps.stats.defs;
   const clean: { [key: string]: number } = {};
   for (const [key, value] of Object.entries(values)) {
@@ -28,11 +35,15 @@ export function reportStats(xapps: Client, values: { [key: string]: number | nul
     if (declared.length > 0 && !declared.some((d) => d.key === key)) continue;
     clean[key] = value;
   }
-  if (Object.keys(clean).length === 0) return;
-  try {
-    xapps.stats.report(clean).catch((error: unknown) => console.warn(`[${tag}] stats.report failed`, error));
-  } catch (error) {
+  if (Object.keys(clean).length === 0) return Promise.resolve(null);
+  const failed = (error: unknown) => {
     console.warn(`[${tag}] stats.report failed`, error);
+    return null;
+  };
+  try {
+    return xapps.stats.report(clean).catch(failed);
+  } catch (error) {
+    return Promise.resolve(failed(error));
   }
 }
 

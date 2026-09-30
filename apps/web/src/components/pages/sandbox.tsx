@@ -1,6 +1,6 @@
 "use client";
 
-import { createHostBridge, decideWinner, type HostBridge, type HostHandlers } from "@xapps/sdk/host";
+import { createHostBridge, decideWinner, rankStatValues, type HostBridge, type HostHandlers } from "@xapps/sdk/host";
 import type { HostEvent, HostEventData, Json, LaunchContext, MatchResult, PlayerInfo, Scoring, SubmissionDisplay } from "@xapps/sdk/protocol";
 import { randomId, XAppsError } from "@xapps/sdk";
 import { AnimatePresence, motion } from "motion/react";
@@ -63,7 +63,8 @@ const blankSeat = (): SeatState => ({ connected: false, ready: false, status: nu
 
 const PRESETS = [
   { label: "RPS Showdown (vanilla example)", url: "/examples/rps/index.html", scoring: "high" as Scoring },
-  ...OFFICIAL_APPS.filter((a) => a.official).map((a) => ({ label: a.name, url: a.url, scoring: a.scoring })),
+  // The sandbox plays matches: standalone apps (kind app) open at /embed/<slug> in app mode instead.
+  ...OFFICIAL_APPS.filter((a) => a.official && a.kind !== "app").map((a) => ({ label: a.name, url: a.url, scoring: a.scoring })),
 ];
 
 function preview(value: unknown): string {
@@ -94,6 +95,8 @@ export function Sandbox() {
   const logRef = useRef<HTMLDivElement>(null);
   const storage = useRef(new Map<string, Json>());
   const unlocked = useRef(new Set<string>());
+  /** Last value each player reported per stat key, for `stats.leaderboard` (nothing is stored). */
+  const statBoards = useRef(new Map<string, Map<string, number>>());
   // Sources of truth for protocol handlers, which can fire back-to-back
   // before React re-renders (both seats saying ready at once, for example).
   const readyRef = useRef<boolean[]>([false, false]);
@@ -287,7 +290,27 @@ export function Sandbox() {
         },
         "stats.report": ({ values }) => {
           append({ seat, kind: "info", name: "stats (not stored in the sandbox)", detail: preview(values) });
+          for (const [key, value] of Object.entries(values)) {
+            const board = statBoards.current.get(key) ?? new Map<string, number>();
+            board.set(me.id, value);
+            statBoards.current.set(key, board);
+          }
           return values;
+        },
+        // The sandbox has no manifest: a board of this session's reports, highest first.
+        "stats.leaderboard": ({ key, limit }) => {
+          const rows = [...(statBoards.current.get(key) ?? new Map<string, number>())].map(([id, value]) => {
+            const p = players.find((x) => x.id === id);
+            return { player: { id, handle: p?.handle ?? id, name: p?.name ?? id, avatarUrl: null }, value };
+          });
+          const ranked = rankStatValues(rows, "max");
+          const mine = ranked.find((r) => r.player.id === me.id);
+          return {
+            key,
+            top: ranked.slice(0, limit ?? 10),
+            me: mine ? { rank: mine.rank, value: mine.value } : null,
+            total: ranked.length,
+          };
         },
         "achievements.unlock": ({ id }) => {
           const key = `${me.id}:achievement:${id}`;
@@ -372,6 +395,7 @@ export function Sandbox() {
     setLog([]);
     storage.current.clear();
     unlocked.current.clear();
+    statBoards.current.clear();
     setRun({ url, scoring, mode, seed: randomId(12), key: Date.now() });
   };
 

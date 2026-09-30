@@ -69,7 +69,7 @@ import { XAppsProvider, useXApps, useRoomEvent, useMatchStarted, useMatchResult 
 </XAppsProvider>;
 ```
 
-More hooks: `useUser()`, `useStandalone()`, `useMatch()`, `usePresence()`, `useReactions(fn)`, for v2 matches `useMatchState()`, `useTurn()`, `useRound()`, `usePlayers()`, `useSetup()`, for media and progression `useMediaUpload()`, `useStats()`, `useAchievements()`, `useAchievementEvents(fn)`, `useLogger()` and `useAutoResize()` (see below).
+More hooks: `useUser()`, `useStandalone()`, `useMatch()`, `usePresence()`, `useReactions(fn)`, for v2 matches `useMatchState()`, `useTurn()`, `useRound()`, `usePlayers()`, `useSetup()`, for media and progression `useMediaUpload()`, `useStats()`, `useStatStanding(key)`, `useAchievements()`, `useAchievementEvents(fn)`, `useLogger()` and `useAutoResize()` (see below).
 
 ## Lifecycle
 
@@ -99,7 +99,7 @@ More hooks: `useUser()`, `useStandalone()`, `useMatch()`, `usePresence()`, `useR
 | `social.share(text, url?)` | Opens the X composer. The player always confirms the post. |
 | `storage.get(key, { scope? })` · `storage.set(key, value)` · `storage.delete(key)` · `storage.list({ prefix?, scope? })` | ≤ 64 KB JSON per value, ≤ 200 keys per player. `scope: "user"` (default, private) or `"app"` (public, read-only here). See [Storage scopes](#storage-scopes) |
 | `media.upload(blob, { alt? })` · `media.kindOf(mime)` | Upload an image, audio or video file → `MediaRef { url, kind, mime, bytes, width?, height?, duration? }` |
-| `stats.defs` · `stats.report(values)` | Your manifest stats; report values, get the new aggregates |
+| `stats.defs` · `stats.report(values)` · `stats.leaderboard(key, { limit? })` | Your manifest stats; report values, get the new aggregates; read a stat's global board and the viewer's standing. See [Stats & leaderboards](#stats--leaderboards) |
 | `achievements.defs` · `achievements.unlock(id)` · `achievements.unlocked` · `onAchievement(fn)` | Your manifest achievements |
 | `state.current` · `state.version` · `state.get()` · `state.set(value, expectedVersion?)` · `state.update(fn, { retries? })` · `state.onChange(fn)` | Shared match state, ≤ 64 KB JSON, compare-and-set (error code `conflict`) |
 | `turn.current` · `turn.isMine` · `turn.deadline` · `turn.end(next?)` · `onTurn(fn)` | Turns (optional) |
@@ -130,16 +130,24 @@ async function pin(text: string) {
 }
 ```
 
+A solo game built as an app ranks people by a stat instead of settling matches:
+
+```ts
+await xapps.stats.report({ best_circle: 93.4 });           // max: keeps your best
+const { me, total } = await xapps.stats.leaderboard("best_circle");
+if (me) showBadge(`#${me.rank} of ${total.toLocaleString()} · top ${Math.max(1, Math.ceil((me.rank / total) * 100))}%`);
+```
+
 No `ready()`, no `onStart`, no `submit`: render as soon as `connect()` resolves. What purpose `app` gets:
 
 | Works | Refused (`forbidden`: there is no match) |
 | --- | --- |
-| `user`, `storage.*` (both scopes), `stats.report`, `achievements.unlock`, `onAchievement`, `media.upload`, `log.*`, `social.share`, `ui.toast`, `ui.celebrate`, `ui.haptic`, `ui.setStatus` (shown in the host's top bar), `ui.resize` (a no-op: the frame fills the screen), `ready()` (optional, starts nothing) | `room.*` sends, `submit`, `submitFor`, `forfeit`, `state.*`, `turn.end`, `round.set`, `ui.setScores`, `ui.setTurn`, `setup.*` |
+| `user`, `storage.*` (both scopes), `stats.report`, `stats.leaderboard`, `achievements.unlock`, `onAchievement`, `media.upload`, `log.*`, `social.share`, `ui.toast`, `ui.celebrate`, `ui.haptic`, `ui.setStatus` (shown in the host's top bar), `ui.resize` (a no-op: the frame fills the screen), `ready()` (optional, starts nothing) | `room.*` sends, `submit`, `submitFor`, `forfeit`, `state.*`, `turn.end`, `round.set`, `ui.setScores`, `ui.setTurn`, `setup.*` |
 
 - `xapps.match` is a one-player stub: you alone in seat 0 (`me`), no opponents, `minPlayers`/`maxPlayers` 1, never a spectator. `onStart`, `onEnd` and `useMatchStarted()` never fire.
 - `xapps.random` is seeded per open, not shared with anyone.
 - Test builds (`?version=<id>` for you and your testers) run with the version's manifest; their stats and achievements are shown but never saved.
-- Mock host: `connect({ mock: { purpose: "app", stats, achievements } })` or `?xapps-purpose=app` gives you the same one-player stub with storage (localStorage), stats, achievements and media working.
+- Mock host: `connect({ mock: { purpose: "app", stats, achievements } })` or `?xapps-purpose=app` gives you the same one-player stub with storage (localStorage), stats, achievements and media working. `stats.leaderboard` ranks what you reported among a handful of made-up players (`mock.leaderboard` to choose their values).
 - React: `useUser()` and `useStandalone()`; the storage, stats, achievements, media and log hooks work unchanged.
 - Hosts: the host core refuses the match-only methods for `purpose: "app"` contexts (or `access: () => ({ purpose: "app" })`). `standaloneMatch(user, { id, seed })` from `@xapps/sdk/host` builds the stub match.
 
@@ -275,6 +283,7 @@ Opened directly, `connect()` starts the mock host. Configure it through `connect
 | `settings: {…}` | `?xapps-settings=<json>` | `match.settings` for the mock match |
 | `state: {…}` | | Initial shared state |
 | `stats: [...]` | `?xapps-stats=<json>` | Manifest stats. `stats.report` aggregates them in memory. |
+| `leaderboard: { best: [98, 91, 77] }` · `leaderboard: false` | | Made-up players' values for `stats.leaderboard` (default: a handful spread around your first reported value); `false` leaves you alone on every board |
 | `achievements: [...]` | `?xapps-achievements=<json>` | Manifest achievements. Each unlocks once, with a small banner and an `achievement.unlock` event. |
 | `appStorage: {…}` | | Seeds the read-only `app` storage scope |
 | `probeMedia: false` | | Skip reading width/height/duration of uploads |
@@ -299,13 +308,14 @@ Opened directly, `connect()` starts the mock host. Configure it through `connect
 | `storage.list` | `storageList` | `{ prefix?, scope? }` → `string[]` |
 | `media.upload` | `uploadMedia` | `{ file: Blob, alt? }` → `MediaRef`. Type and size are already checked; enforce the daily quotas. |
 | `stats.report` | `reportStats` | `{ values }` → `{ [key]: newValue }` |
+| `stats.leaderboard` | `statLeaderboard` | `{ key, limit }` → `StatStanding { key, top: [{ rank, player, value }], me: { rank, value } \| null, total }`. `limit` arrives clamped to 1–50 (default 10). Read-only: allowed for every purpose and role. `rankStatValues(rows, aggregate)` ranks like XApps. |
 | `achievements.unlock` | `unlockAchievement` | `{ id }` → `{ unlocked }`. Call `bridge.emitAchievement(id, userId)` when it's new. |
 | `log` | `logEvent` | `{ level, message, data? }` → `null`. Validated (≤ 500 chars, data ≤ 4 KB); past 60 a minute per app instance the core answers `ok` and drops the entry without calling you. |
 | `ui.resize` | `resize` | `{ height }` → `null`. `height` arrives as whole CSS px clamped to 120–2000. |
 
 The core validates params and refuses by purpose and role (read from `context()`, or from an `access()` option) before calling your handler. Push changes with `bridge.emitState(state, version, by)`, `bridge.emitTurn(turn, deadline)` and `bridge.emitRound(round)`, or emit a `match.update`, from which the client derives the same events. Emit before you answer `turn.end` so the app sees the new turn first. `rankPlayers(entries, "high" | "low", { teams })` computes placements, ties and team sums.
 
-The `file` of a `media.upload` comes from the app's window, so it is a `Blob` of *another realm*: `instanceof Blob` is false on the host. Use `isBlobLike()` (duck-typed), `mediaKindOf(mime)` and `mediaProblem(file)` from `@xapps/sdk/host`; `displayProblem(display)`, `statsProblem(values, defs?)`, `achievementProblem(id, defs?)` and `aggregateStat(aggregate, previous, value)` are there too. When `context().app.stats` / `.achievements` are set, the core also refuses undeclared stat keys and achievement ids.
+The `file` of a `media.upload` comes from the app's window, so it is a `Blob` of *another realm*: `instanceof Blob` is false on the host. Use `isBlobLike()` (duck-typed), `mediaKindOf(mime)` and `mediaProblem(file)` from `@xapps/sdk/host`; `displayProblem(display)`, `statsProblem(values, defs?)`, `statLeaderboardProblem(key, limit?, defs?)`, `achievementProblem(id, defs?)` and `aggregateStat(aggregate, previous, value)` are there too. When `context().app.stats` / `.achievements` are set, the core also refuses undeclared stat keys and achievement ids.
 
 
 ## Media & data
@@ -421,6 +431,20 @@ const now = await xapps.stats.report({ best_time: 8_420, wins: 1 });
 
 Values must be finite numbers, and keys must be declared (the SDK checks against `stats.defs` when the host sends them). Server-authoritative apps report from their server with `reportStats(userId, values)` instead. `stats.report` isn't available in setup purpose or to spectators.
 
+Read a stat's global leaderboard and where the viewer stands on it with `stats.leaderboard(key, { limit? })`:
+
+```ts
+const standing = await xapps.stats.leaderboard("best_time", { limit: 5 });
+// {
+//   key: "best_time",
+//   top: [{ rank: 1, player: { id, handle, name, avatarUrl }, value: 6_120 }, …],  // best first, up to `limit` (default 10, max 50)
+//   me: { rank: 14, value: 7_900 },  // null until the viewer has a value (or when signed out)
+//   total: 2_380,                    // people with a value for this stat
+// }
+```
+
+`top` is ordered by the stat's aggregate (`min` stats lowest first, the others highest first); equal values share a rank ("1, 2, 2, 4"), and `me.rank` is ranked the same way (1 + everyone strictly ahead). The key must be a declared stat (`invalid_params` otherwise). It's read-only, so it works in every purpose (match, setup, app) and for spectators. Test builds read the live app's board.
+
 ### Achievements
 
 Declare up to 30 achievements: `{ id, name, description, icon (one emoji), xp (0–100), secret?: boolean }`, at most 500 XP in total. XP is awarded once, and secret achievements stay hidden on profiles until unlocked.
@@ -441,9 +465,10 @@ xapps.onAchievement(({ id, userId }, def) => {
 React:
 
 ```tsx
-import { useAchievementEvents, useAchievements, useStats } from "@xapps/sdk/react";
+import { useAchievementEvents, useAchievements, useStatStanding, useStats } from "@xapps/sdk/react";
 
 const { defs, report } = useStats();
+const { standing, loading, error, refresh } = useStatStanding("best_time", { limit: 5 }); // call refresh() after report()
 const { defs: badges, unlock, unlocked } = useAchievements();  // `unlocked` re-renders on change
 useAchievementEvents(({ id, userId }, def) => console.log(userId, "unlocked", def?.name ?? id));
 ```

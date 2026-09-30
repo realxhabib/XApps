@@ -8,7 +8,10 @@
  * The columns are exactly the ones the seeding migrations write (see
  * supabase/migrations/20261004000000_wedge_wars.sql) plus `votes_to_win` and
  * `kind` (20261006000100_standalone_apps.sql: official apps are games unless the
- * catalog says otherwise, so a first-party standalone app would sync as one).
+ * catalog says otherwise, so a first-party standalone app syncs as one). A
+ * standalone app (`kind: "app"`) has no matches, so its match columns only have
+ * to satisfy the table's checks: missing or out-of-range modes/players fall
+ * back to the column defaults, and it never has teams, setup or turns.
  * Everything else on the row is platform-owned and never sent: `play_count`,
  * `upvotes` (20261006000200_app_upvotes.sql), `created_at`, `developer_id` (null for official apps), `authority` (only
  * set_app_authority moves it) and `published_version_id` (official apps have no
@@ -90,8 +93,21 @@ export function catalogSlugs(apps: readonly AppManifest[] = OFFICIAL_APPS): stri
   return apps.map((app) => app.slug);
 }
 
+/** The `public.apps` column defaults for the match columns (what a standalone app falls back to). */
+const MATCH_COLUMN_DEFAULTS = { modes: ["live", "practice"] as PlayableMode[], players: { min: 2, max: 2 } };
+
 /** Maps a catalog app to its `public.apps` row. Absent v2 fields take the column defaults. */
 export function officialAppRow(app: AppManifest): OfficialAppRow {
+  if (app.kind === "app") {
+    // No matches: harmless defaults wherever the catalog's match fields wouldn't pass the table's checks.
+    const modes = app.modes?.length && app.modes.every((m) => MODES.includes(m)) ? [...new Set(app.modes)] : MATCH_COLUMN_DEFAULTS.modes;
+    const players = app.players && !manifestShapeError({ players: app.players }) ? app.players : MATCH_COLUMN_DEFAULTS.players;
+    return gameRow({ ...app, modes, players, teams: 0, setup: false, turnBased: false });
+  }
+  return gameRow(app);
+}
+
+function gameRow(app: AppManifest): OfficialAppRow {
   return {
     slug: app.slug,
     name: app.name,

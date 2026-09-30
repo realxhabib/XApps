@@ -52,7 +52,7 @@ export default async function PerfectCircleCard({ params }: PageProps<"/embed/pe
         </p>
       </div>
       <Link
-        href="/apps/perfect-circle"
+        href="/apps/perfect-circle/open"
         className="flex h-14 items-center rounded-full bg-[linear-gradient(120deg,#ffcf3d,#34e89e)] px-8 text-base font-bold text-ink-950"
       >
         Draw yours

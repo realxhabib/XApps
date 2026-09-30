@@ -1,6 +1,6 @@
 /**
- * Perfect Circle — the shareable bits, pure (used by the app, the entry
- * display and the server-rendered share card / OG image alike).
+ * Perfect Circle — the shareable bits, pure (used by the app and the
+ * server-rendered share page / OG image alike).
  *
  * A share link carries the circle itself: `/embed/perfect-circle/card/<code>`
  * where `code` is base64url of [version, accuracy×10 (2 bytes), x0, y0, x1, y1 …]
@@ -80,9 +80,12 @@ export function decodeCard(code: string): CardData | null {
 
 export const CARD_PATH = "/embed/perfect-circle/card/";
 
-export function shareText(accuracy: number): string {
+/** The post's text; `standing` (this circle's worldwide rank) is added when it's known. */
+export function shareText(accuracy: number, standing?: { rank: number; total: number } | null): string {
   const { emoji } = verdictFor(accuracy);
-  return `I drew a ${formatAccuracy(accuracy)} perfect circle on XApps ${emoji} Can you beat it?`;
+  const rank =
+    standing && standing.total > 1 ? ` That's #${standing.rank} of ${new Intl.NumberFormat("en").format(standing.total)} worldwide.` : "";
+  return `I drew a ${formatAccuracy(accuracy)} perfect circle on XApps ${emoji}${rank} Can you beat it?`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -129,7 +132,7 @@ export function circleArt(stroke: readonly Point[], size: number, maxSegments = 
 
 const r1 = (v: number) => Math.round(v * 10) / 10;
 
-/** Self-contained SVG of a circle and its score (the match entry's `display`). */
+/** Self-contained SVG of a circle and (optionally) its score, e.g. for the share page. */
 export function circleSvg(stroke: readonly Point[], accuracy: number | null, size = 400): string {
   const art = circleArt(stroke, size, 96);
   const w = Math.max(3, size / 70);

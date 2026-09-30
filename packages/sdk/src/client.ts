@@ -13,6 +13,7 @@ import {
   type AchievementDef,
   type MediaRef,
   type StatDef,
+  type StatStanding,
   type StorageScope,
   type LaunchContext,
   type LaunchPurpose,
@@ -43,6 +44,7 @@ import {
   jsonProblem,
   mediaKindOf,
   mediaProblem,
+  statLeaderboardProblem,
   statsProblem,
   storageKeyProblem,
   storagePrefixProblem,
@@ -202,6 +204,18 @@ export interface StatsApi {
    * aggregated value of each reported stat.
    */
   report(values: { [key: string]: number }): Promise<{ [key: string]: number }>;
+  /**
+   * A stat's global leaderboard and the viewer's standing: `top` (best first by
+   * the stat's aggregate, ties share a rank; `limit` rows, default 10, max 50),
+   * `me` (`{ rank, value }`, or null before their first value) and `total`
+   * (people with a value). Read-only: works in every purpose and for spectators.
+   */
+  leaderboard(key: string, options?: StatLeaderboardOptions): Promise<StatStanding>;
+}
+
+export interface StatLeaderboardOptions {
+  /** Rows in `top`: default 10, at most 50. */
+  limit?: number;
 }
 
 export interface AchievementUnlock {
@@ -836,6 +850,13 @@ export class XAppsClient {
         const problem = statsProblem(values, client.context.app.stats ?? null);
         if (problem) return Promise.reject(new XAppsError("invalid_params", `stats.report: ${problem}`));
         return client.request("stats.report", { values: { ...values } });
+      },
+      leaderboard(key: string, options: StatLeaderboardOptions = {}): Promise<StatStanding> {
+        const problem = statLeaderboardProblem(key, options.limit, client.context.app.stats ?? null);
+        if (problem) return Promise.reject(new XAppsError("invalid_params", `stats.leaderboard: ${problem}`));
+        const params: RequestParams<"stats.leaderboard"> =
+          options.limit === undefined ? { key } : { key, limit: Math.min(options.limit, LIMITS.statLeaderboard.maxLimit) };
+        return client.request("stats.leaderboard", params);
       },
     };
   }

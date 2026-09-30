@@ -290,6 +290,17 @@ export interface StatLeaderRow {
   value: number;
 }
 
+/** A stat's leaderboard plus the viewer's place on it (`app_stat_standing`, SDK `stats.leaderboard`). */
+export interface StatStanding {
+  key: string;
+  /** Best first (min stats ascending), ties share a rank; up to the limit (default 10, max 50). */
+  top: StatLeaderRow[];
+  /** The viewer's rank (1 + everyone strictly ahead) and value; null without a value or signed out. */
+  me: { rank: number; value: number } | null;
+  /** People with a value for the stat (bots excluded). */
+  total: number;
+}
+
 export interface UserStat {
   appSlug: string;
   key: string;

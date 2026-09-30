@@ -1,17 +1,18 @@
 /**
  * Greg's Face — pure game rules. No React, no DOM, no SDK side effects:
- * everything is deterministic given its inputs, so every client (and the
- * tests) agree on positions, scores and bot runs.
+ * everything is deterministic given its inputs, so the tests (and replays of
+ * a run) agree on positions and scores.
  *
  * Rules in one breath: a feature slides left↔right across the blank face at
  * exactly the right height (ping-pong, speeding up). Tap to drop it. Only the
  * horizontal miss counts, so it's a pure timing game. Eyes, then nose, then
  * mouth; the face scores the average accuracy of the three (100 = dead on).
  *
- * Every player gets the same slides (start, direction, speed, acceleration),
- * forked from the match seed, so a match is fair across devices.
+ * It's a solo game: build the face as often as you like and see where your
+ * best face ranks worldwide. Every run gets fresh slides (start, direction,
+ * speed, acceleration) from its own fork of the app's random.
  */
-import type { Json, MatchResult, PlayerInfo, Random } from "@xapps/sdk";
+import type { Random } from "@xapps/sdk";
 import { PART_ORDER, type FaceConfig, type PartId } from "./face";
 
 /* ---------------------------------------------------------------------- */
@@ -58,8 +59,8 @@ export interface Slide {
 export type Slides = Record<PartId, Slide>;
 
 /**
- * The match's slides, from forks of the shared seed only: identical on every
- * client and on every call (safe in a React initializer).
+ * One run's slides, from forks of `random` only: the same on every call with
+ * the same random (safe in a React initializer). Fork per run for fresh ones.
  */
 export function buildSlides(random: Random): Slides {
   const out = {} as Slides;
@@ -164,7 +165,7 @@ export function faceScore(drops: readonly Pick<Drop, "accuracy">[]): number {
   return round1(sum / PART_ORDER.length);
 }
 
-/** Average of the features dropped so far (for the live HUD). */
+/** Average of the features dropped so far. */
 export function runningScore(drops: readonly Pick<Drop, "accuracy">[]): number {
   if (drops.length === 0) return 0;
   return round1(drops.reduce((s, d) => s + d.accuracy, 0) / drops.length);
@@ -180,65 +181,13 @@ export function verdict(score: number): { title: string; emoji: string } {
   return { title: "Picasso's Greg", emoji: "🎨" };
 }
 
-const PART_EMOJI: Record<PartId, string> = { eyes: "👀", nose: "👃", mouth: "👄" };
-
 export function formatPct(n: number): string {
   return `${Number.isInteger(n) ? n : n.toFixed(1)}%`;
-}
-
-/** What goes into `xapps.submit`. */
-export function submission(drops: readonly Drop[]): {
-  score: number;
-  data: Json;
-  display: { kind: "text"; title: string; body: string };
-} {
-  const score = faceScore(drops);
-  return {
-    score,
-    data: {
-      parts: drops.map((d) => ({ part: d.part, accuracy: d.accuracy, x: round1(d.x), ms: d.atMs, auto: d.auto })),
-    },
-    display: {
-      kind: "text",
-      title: `${formatPct(score)} Greg · ${verdict(score).title}`,
-      body: drops.map((d) => `${PART_EMOJI[d.part]} ${formatPct(d.accuracy)}`).join("  "),
-    },
-  };
 }
 
 /** Share text for X. */
 export function shareText(score: number, name = "Greg"): string {
   return `I built ${name}'s face ${formatPct(Math.round(score))} right on XApps ${score >= 90 ? "😎" : "🤪"}`;
-}
-
-/* ---------------------------------------------------------------------- */
-/* Live progress (room events)                                            */
-/* ---------------------------------------------------------------------- */
-
-/** Room event after every drop: `room.send("drop", { part, accuracy })`. */
-export const DROP_EVENT = "drop";
-
-export type DropPayload = { part: PartId; accuracy: number };
-
-/** Validates an untrusted room payload. */
-export function parseDrop(payload: unknown): DropPayload | null {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
-  const { part, accuracy } = payload as Record<string, unknown>;
-  if (typeof part !== "string" || !PART_ORDER.includes(part as PartId)) return null;
-  if (typeof accuracy !== "number" || !Number.isFinite(accuracy) || accuracy < 0 || accuracy > 100) return null;
-  return { part: part as PartId, accuracy: round1(accuracy) };
-}
-
-/* ---------------------------------------------------------------------- */
-/* Bots                                                                   */
-/* ---------------------------------------------------------------------- */
-
-export interface BotRun {
-  drops: Drop[];
-  /** When each drop lands, in ms since the match started (intros and verdicts included). */
-  times: number[];
-  /** When the bot is done (its last verdict has shown). */
-  finishMs: number;
 }
 
 /** First time ≥ `fromMs` the feature passes its true position (or `fromMs` if it never does). */
@@ -254,43 +203,6 @@ export function nextCrossing(face: FaceConfig, slides: Slides, part: PartId, fro
   return fromMs;
 }
 
-/**
- * Who should play the bots at this table: the lowest-seated human. Every
- * bot's run is forked from the match seed, so whoever plays it computes the
- * same drops; this just keeps a table of humans from submitting twice.
- */
-export function botPilotId(players: readonly Pick<PlayerInfo, "id" | "seat" | "isBot">[]): string | null {
-  const humans = players.filter((p) => !p.isBot);
-  if (humans.length === 0) return null;
-  return humans.reduce((a, b) => (b.seat < a.seat ? b : a)).id;
-}
-
-/**
- * A bot's whole run. Like a person it watches for a while, then aims for the
- * next pass over the right spot and taps with a human timing error (a few
- * dozen ms, now and then a proper whiff). `random` should be a per-bot fork
- * of the match seed (`xapps.random.fork("bot:" + id)`) so any client that
- * plays the bot computes the same run.
- */
-export function planBot(face: FaceConfig, slides: Slides, random: Random): BotRun {
-  const sigmaMs = random.float(30, 95);
-  const drops: Drop[] = [];
-  const times: number[] = [];
-  let clock = 0;
-  for (const part of PART_ORDER) {
-    const watch = random.float(700, 2_600);
-    const aim = nextCrossing(face, slides, part, watch);
-    const whiff = random.chance(0.07) ? 4 : 1;
-    const errMs = random.normal(0, sigmaMs) * whiff;
-    const drop = dropAt(face, slides, part, aim + errMs);
-    drops.push(drop);
-    clock += PART_INTRO_MS + drop.atMs;
-    times.push(Math.round(clock));
-    clock += SETTLE_MS;
-  }
-  return { drops, times, finishMs: Math.round(clock) };
-}
-
 /* ---------------------------------------------------------------------- */
 /* Progress: stats & achievements                                         */
 /* ---------------------------------------------------------------------- */
@@ -298,13 +210,13 @@ export function planBot(face: FaceConfig, slides: Slides, random: Random): BotRu
 /** Achievement ids (declared in the app's manifest). */
 export type FaceAchievement =
   | "first_face"
-  | "first_win"
   | "spitting_image"
   | "pixel_perfect"
   | "steady_hands"
   | "real_greg"
   | "hat_trick"
-  | "head_of_table"
+  | "face_factory"
+  | "on_a_roll"
   | "show_and_tell"
   | "picasso";
 
@@ -317,8 +229,10 @@ export const PROGRESS = {
   steady: 85,
   /** "Picasso" (secret): a face under this. */
   picasso: 40,
-  /** "Head of the table": win at a table this big. */
-  table: 4,
+  /** "Face factory": this many faces built, all time. */
+  factory: 10,
+  /** "On a roll": this many faces in a row at `spitting` or better. */
+  roll: 3,
 } as const;
 
 /**
@@ -339,21 +253,26 @@ export function earnedAchievements(drops: readonly Drop[]): FaceAchievement[] {
   return earned;
 }
 
+/** Faces in a row at "spitting image" or better, after a face scoring `score`. */
+export function nextStreak(streak: number, score: number): number {
+  return score >= PROGRESS.spitting ? streak + 1 : 0;
+}
+
+/**
+ * Achievements from your runs so far: `facesBuilt` all time (the aggregated
+ * stat) and the current streak of 90 %+ faces.
+ */
+export function soloAchievements({ facesBuilt, streak }: { facesBuilt: number; streak: number }): FaceAchievement[] {
+  const earned: FaceAchievement[] = [];
+  if (facesBuilt >= PROGRESS.factory) earned.push("face_factory");
+  if (streak >= PROGRESS.roll) earned.push("on_a_roll");
+  return earned;
+}
+
 /** Stats to report once the face is done (zero counters are left out). */
 export function runStats(drops: readonly Drop[]): { [key: string]: number } {
   const stats: { [key: string]: number } = { best_face: faceScore(drops), faces_built: 1 };
   const perfect = drops.filter((d) => d.perfect).length;
   if (perfect > 0) stats.perfect_parts = perfect;
   return stats;
-}
-
-/** Achievements and stats from the settled match: a win, and at how big a table. */
-export function resultProgress(
-  result: Pick<MatchResult, "winnerId" | "scores">,
-  me: string,
-): { achievements: FaceAchievement[]; stats: { [key: string]: number } } {
-  if (result.winnerId !== me) return { achievements: [], stats: {} };
-  const achievements: FaceAchievement[] = ["first_win"];
-  if (Object.keys(result.scores).length >= PROGRESS.table) achievements.push("head_of_table");
-  return { achievements, stats: { wins: 1 } };
 }

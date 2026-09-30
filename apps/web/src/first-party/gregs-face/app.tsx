@@ -1,6 +1,7 @@
 "use client";
 
-import { useMatchResult, useMatchStarted, usePlayers, useXApps } from "@xapps/sdk/react";
+import type { StatStanding, XAppsClient } from "@xapps/sdk";
+import { useXApps } from "@xapps/sdk/react";
 import {
   AnimatePresence,
   animate,
@@ -11,16 +12,15 @@ import {
   useTransform,
 } from "motion/react";
 import { useEffect, useEffectEvent, useMemo, useRef, useState, type PointerEvent } from "react";
-import { Avatar } from "@/components/ui/avatar";
 import { reportStats, unlockAchievements } from "@/first-party/shared/progress";
-import { ActionButton, AnimatedDots, Eyebrow, Screen } from "@/first-party/shared/ui";
+import { ActionButton, AnimatedDots, Screen } from "@/first-party/shared/ui";
 import { ease, spring } from "@/lib/motion";
 import { play } from "@/lib/sfx";
 import { cn } from "@/lib/utils";
+import { StandingPanel, type BoardStatus } from "./board";
 import { FACE, PART_LABEL, PART_ORDER } from "./face";
 import { buildFaceKitWithFallback, type FaceKit } from "./kit";
 import {
-  DROP_EVENT,
   PART_INTRO_MS,
   PART_MAX_MS,
   SETTLE_MS,
@@ -29,44 +29,67 @@ import {
   earnedAchievements,
   faceScore,
   formatPct,
-  resultProgress,
+  nextStreak,
   runStats,
-  runningScore,
   shareText,
-  submission,
+  soloAchievements,
   verdict,
   type Drop,
-  type Slides,
 } from "./logic";
-import {
-  Burst,
-  DropPop,
-  Feature,
-  Ghost,
-  PART_EMOJI,
-  RowGuide,
-  Stage,
-  StepPips,
-  TableStrip,
-  playerName,
-  toneFor,
-  type FeatureState,
-  type TableRow,
-} from "./parts";
+import { Burst, DropPop, Feature, Ghost, PART_EMOJI, RowGuide, Stage, StepPips, toneFor, type FeatureState } from "./parts";
 import { shareCardBlob } from "./share";
-import { useTable } from "./table";
+import { BOARD_STAT, BOARD_TOP, cleanStanding, formatCount, percentLabel, standingMoments, type Moments } from "./standing";
 
 const TAG = "gregs-face";
 const ignore = () => {};
-/** The reveal waits this long for "Lock in" before submitting by itself. */
-const LOCK_IN_MS = 12_000;
-/** Stage height cap, in % of the viewport height. */
-const STAGE_VH = 48;
 
 /** A pointer/key event's time on the performance.now() clock (falls back to now). */
 function eventTime(stamp: number): number {
   const now = performance.now();
   return stamp > 0 && stamp <= now && now - stamp < 1000 ? stamp : now;
+}
+
+/** Space/Enter on a focused button or link belongs to that control, not to the game. */
+function onControl(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest("button, a, input, textarea, select, [role=button]") !== null;
+}
+
+const isGo = (e: KeyboardEvent) =>
+  !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey && (e.code === "Space" || e.key === " " || e.key === "Enter");
+
+/* ---------------------------------------------------------------------- */
+/* The world board                                                        */
+/* ---------------------------------------------------------------------- */
+
+interface Board {
+  status: BoardStatus;
+  standing: StatStanding | null;
+}
+
+/** Reads the global best-face board. Never rejects: a failure comes back as status "error". */
+function readBoard(xapps: XAppsClient): Promise<Board> {
+  const failed = (error: unknown): Board => {
+    console.warn(`[${TAG}] stats.leaderboard failed`, error);
+    return { status: "error", standing: null };
+  };
+  try {
+    return xapps.stats.leaderboard(BOARD_STAT, { limit: BOARD_TOP }).then((raw) => {
+      const standing = cleanStanding(raw);
+      return standing ? { status: "ready", standing } : failed(new Error("malformed standing"));
+    }, failed);
+  } catch (error) {
+    return Promise.resolve(failed(error));
+  }
+}
+
+/** What a finished face produced, for its reveal. */
+interface RunResult {
+  board: Board;
+  moments: Moments;
+  /** Your rank before this face (null: no face yet, or unknown). */
+  prevRank: number | null;
+  /** 90 %+ faces in a row, this one included. */
+  streak: number;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -98,13 +121,20 @@ function useFaceKit(): { kit: FaceKit | null; error: string | null } {
   return state;
 }
 
+/**
+ * A solo, standalone app: open it, build Greg's face as many times as you
+ * like, and see where your best face ranks worldwide. Run 0 is the title
+ * screen; every "Again" mounts a fresh run with fresh slides.
+ */
 export function GregsFaceApp() {
   const xapps = useXApps();
-  const started = useMatchStarted();
   const { kit, error } = useFaceKit();
+  const [run, setRun] = useState(0);
+  const [board, setBoard] = useState<Board>({ status: "loading", standing: null });
+  const session = useRef({ faces: 0, streak: 0 });
   const readyRef = useRef(false);
 
-  // Ready once the face is built (or failed), so the countdown never beats the assets.
+  // Optional for a standalone app (it starts nothing), but harmless and keeps a match-purpose mock happy.
   const settled = kit !== null || error !== null;
   useEffect(() => {
     if (!settled || readyRef.current) return;
@@ -112,31 +142,66 @@ export function GregsFaceApp() {
     xapps.ready().catch((e: unknown) => console.warn(`[${TAG}] ready failed`, e));
   }, [settled, xapps]);
 
+  // Where you stand before your first face (the title shows it; the first reveal compares against it).
   useEffect(() => {
-    if (!started) xapps.ui.setStatus("Get ready").catch(ignore);
-  }, [started, xapps]);
+    let alive = true;
+    readBoard(xapps).then((next) => {
+      if (alive) setBoard(next);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [xapps]);
+
+  /** Stats → achievements → the fresh board. Never rejects. */
+  const finishRun = async (drops: Drop[]): Promise<RunResult> => {
+    const score = faceScore(drops);
+    const before = board.status === "ready" && board.standing ? board.standing : undefined;
+    const s = session.current;
+    s.faces += 1;
+    s.streak = nextStreak(s.streak, score);
+    const streak = s.streak;
+    const totals = await reportStats(xapps, runStats(drops), TAG);
+    const facesBuilt = totals?.faces_built ?? s.faces;
+    unlockAchievements(xapps, [...earnedAchievements(drops), ...soloAchievements({ facesBuilt, streak })], TAG);
+    const after = await readBoard(xapps);
+    setBoard(after);
+    return {
+      board: after,
+      moments: standingMoments(before, after.standing, score),
+      prevRank: before?.me?.rank ?? null,
+      streak,
+    };
+  };
+
+  const start = () => {
+    if (!kit) return;
+    play("go");
+    setRun((n) => n + 1);
+  };
 
   return (
     <div className="relative flex h-dvh w-full flex-col overflow-hidden">
       <AnimatePresence mode="wait">
-        {started && kit ? (
+        {run > 0 && kit ? (
           <motion.div
-            key="game"
+            key={`run-${run}`}
             className="flex min-h-0 flex-1 flex-col"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
+            initial={{ opacity: 0, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 1.02 }}
             transition={{ duration: 0.2 }}
           >
-            <Game kit={kit} />
+            <Run kit={kit} run={run} onFinish={finishRun} onAgain={start} />
           </motion.div>
         ) : (
           <motion.div
-            key="lobby"
+            key="title"
             className="flex min-h-0 flex-1 flex-col"
             exit={{ opacity: 0, scale: 1.06, filter: "blur(12px)" }}
             transition={{ duration: 0.3, ease: ease.inOutQuart }}
           >
-            <PreGame kit={kit} error={error} />
+            <Title kit={kit} error={error} board={board} onStart={start} />
           </motion.div>
         )}
       </AnimatePresence>
@@ -145,13 +210,40 @@ export function GregsFaceApp() {
 }
 
 /* ---------------------------------------------------------------------- */
-/* Pre-game                                                               */
+/* Title                                                                  */
 /* ---------------------------------------------------------------------- */
 
-function PreGame({ kit, error }: { kit: FaceKit | null; error: string | null }) {
-  const { opponents } = usePlayers();
+function Title({
+  kit,
+  error,
+  board,
+  onStart,
+}: {
+  kit: FaceKit | null;
+  error: string | null;
+  board: Board;
+  onStart: () => void;
+}) {
+  const xapps = useXApps();
   const reduced = useReducedMotion() ?? false;
   const face = kit?.face ?? FACE;
+  const mine = board.standing?.me ?? null;
+
+  const status = mine ? `Best ${formatPct(mine.value)} · #${formatCount(mine.rank)}` : "";
+  useEffect(() => {
+    xapps.ui.setStatus(status).catch(ignore);
+  }, [xapps, status]);
+
+  const onKey = useEffectEvent((e: KeyboardEvent) => {
+    if (!isGo(e) || onControl(e.target) || !kit) return;
+    e.preventDefault();
+    onStart();
+  });
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => onKey(e);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   return (
     <Screen className="gap-5 text-center">
@@ -165,7 +257,7 @@ function PreGame({ kit, error }: { kit: FaceKit | null; error: string | null }) 
           animate={reduced ? undefined : { y: [0, -8, 0], rotate: [0, -1.5, 1.5, 0] }}
           transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
         >
-          <Stage face={face} src={kit?.photoUrl ?? face.src} maxVh={36} className="max-w-[300px]" />
+          <Stage face={face} src={kit?.photoUrl ?? face.src} maxVh={34} className="max-w-[300px]" />
         </motion.div>
       </motion.div>
 
@@ -181,77 +273,126 @@ function PreGame({ kit, error }: { kit: FaceKit | null; error: string | null }) 
         </p>
       </motion.div>
 
-      {opponents.length > 0 && (
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ ...spring.bouncy, delay: 0.35 }}
-          className="glass flex items-center gap-2 rounded-full py-1 pl-1 pr-4 text-sm"
-        >
-          <span className="flex -space-x-2">
-            {opponents.slice(0, 5).map((p) => (
-              <span key={p.id} className="rounded-full ring-2 ring-ink-950">
-                <Avatar person={p} size={28} />
-              </span>
-            ))}
-          </span>
-          <span className="text-ink-200">
-            vs{" "}
-            <b className="text-ink-50">
-              {opponents.length === 1 ? playerName(opponents[0]!) : `${opponents.length} players`}
-            </b>
-          </span>
-        </motion.div>
-      )}
+      <BoardTeaser board={board} reduced={reduced} />
 
       {error ? (
         <p className="text-sm text-danger">Couldn&apos;t load {face.name}&apos;s face. Try reloading.</p>
       ) : (
-        <Eyebrow>
-          {kit ? "Get ready" : "Warming up the face"}
-          <AnimatedDots />
-        </Eyebrow>
+        <motion.div
+          className="flex flex-col items-center gap-2"
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ ...spring.soft, delay: 0.3 }}
+        >
+          <ActionButton onClick={onStart} disabled={!kit} className="min-w-52 px-10 text-lg">
+            {kit ? (
+              "Build his face"
+            ) : (
+              <>
+                Warming up
+                <AnimatedDots />
+              </>
+            )}
+          </ActionButton>
+          <p className="hidden text-xs text-ink-400 sm:block">or press Space</p>
+        </motion.div>
       )}
     </Screen>
   );
 }
 
-/* ---------------------------------------------------------------------- */
-/* Game                                                                   */
-/* ---------------------------------------------------------------------- */
-
-function Game({ kit }: { kit: FaceKit }) {
-  const xapps = useXApps();
-  const { isSpectator } = usePlayers();
-  // Forks of the shared seed only → identical for everyone at the table.
-  const slides = useMemo(() => buildSlides(xapps.random), [xapps]);
-  const rows = useTable(kit.face, slides);
-  if (isSpectator) return <Watch kit={kit} rows={rows} />;
-  return <Play kit={kit} slides={slides} rows={rows} />;
+/** One line on the title: your best and rank, or how busy the board is. */
+function BoardTeaser({ board, reduced }: { board: Board; reduced: boolean }) {
+  const { status, standing } = board;
+  let line: React.ReactNode = null;
+  if (status === "loading") {
+    line = (
+      <span className="text-ink-300">
+        Checking the world board
+        <AnimatedDots />
+      </span>
+    );
+  } else if (standing?.me) {
+    const percent = percentLabel(standing.me.rank, standing.total);
+    line = (
+      <>
+        <span className="text-ink-300">Your best</span>{" "}
+        <b className="font-mono tabular" style={{ color: toneFor(standing.me.value) }}>
+          {formatPct(standing.me.value)}
+        </b>
+        <span className="text-ink-500"> · </span>
+        <b className="tabular text-ink-50">#{formatCount(standing.me.rank)}</b>
+        <span className="text-ink-300"> of {formatCount(standing.total)}</span>
+        {percent && <span className="ml-2 rounded-full bg-white/[0.08] px-2 py-0.5 text-xs font-bold text-ink-100">{percent}</span>}
+      </>
+    );
+  } else if (standing && standing.total > 0 && standing.top[0]) {
+    line = (
+      <span className="text-ink-300">
+        <b className="text-ink-50">{formatCount(standing.total)}</b> {standing.total === 1 ? "player" : "players"} on the world board · the
+        best face is <b className="font-mono tabular text-ink-50">{formatPct(standing.top[0].value)}</b>
+      </span>
+    );
+  } else if (standing) {
+    line = <span className="text-ink-300">Nobody&apos;s on the world board yet. Be the first 🌍</span>;
+  }
+  return (
+    <div className="flex min-h-9 items-center justify-center">
+      <AnimatePresence mode="wait" initial={false}>
+        {line && (
+          <motion.p
+            key={status}
+            className="glass rounded-full px-4 py-2 text-sm"
+            initial={reduced ? false : { opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0 }}
+            transition={spring.bouncy}
+          >
+            {line}
+          </motion.p>
+        )}
+      </AnimatePresence>
+    </div>
+  );
 }
 
-type Phase = "intro" | "moving" | "dropped" | "reveal";
-type Lock = "open" | "sending" | "done" | "error";
+/* ---------------------------------------------------------------------- */
+/* A run                                                                  */
+/* ---------------------------------------------------------------------- */
 
-function Play({ kit, slides, rows }: { kit: FaceKit; slides: Slides; rows: TableRow[] }) {
+type Phase = "intro" | "moving" | "dropped" | "reveal";
+
+function Run({
+  kit,
+  run,
+  onFinish,
+  onAgain,
+}: {
+  kit: FaceKit;
+  run: number;
+  onFinish: (drops: Drop[]) => Promise<RunResult>;
+  onAgain: () => void;
+}) {
   const xapps = useXApps();
   const reduced = useReducedMotion() ?? false;
-  const result = useMatchResult();
   const { face } = kit;
+  // Fresh slides every run: the app's random is seeded per open, forked per run.
+  const slides = useMemo(() => buildSlides(xapps.random.fork(`run:${run}`)), [xapps, run]);
 
   const [part, setPart] = useState(0);
   const [phase, setPhase] = useState<Phase>("intro");
   const [startAt, setStartAt] = useState(0);
   const [drops, setDrops] = useState<Drop[]>([]);
   const [revealStep, setRevealStep] = useState(0);
-  const [lock, setLock] = useState<Lock>("open");
+  const [result, setResult] = useState<RunResult | null>(null);
+  const [retrying, setRetrying] = useState(false);
   const [sharing, setSharing] = useState<"idle" | "busy" | "done">("idle");
   const [stageScope, animateStage] = useAnimate<HTMLDivElement>();
   // What event handlers read synchronously (state lags a render behind).
-  const live = useRef({ phase: "intro" as Phase, part: 0, startAt: 0, drops: [] as Drop[], locked: false });
+  const live = useRef({ phase: "intro" as Phase, part: 0, startAt: 0, drops: [] as Drop[] });
 
   const partId = PART_ORDER[part]!;
-  const score = phase === "reveal" ? faceScore(drops) : runningScore(drops);
+  const shown = phase === "reveal" && revealStep >= 4;
 
   /* Flow: intro → moving → dropped → (next part | reveal) ---------------- */
 
@@ -282,11 +423,6 @@ function Play({ kit, slides, rows }: { kit: FaceKit; slides: Slides; rows: Table
       if (drop.accuracy < 45) animateStage(el, { x: [0, -10, 8, -5, 3, 0], rotate: [0, -1, 1, 0] }, { duration: 0.45 });
       else if (drop.perfect) animateStage(el, { scale: [1, 1.035, 1] }, { duration: 0.4, ease: "easeOut" });
       else animateStage(el, { y: [0, 4, 0] }, { duration: 0.22, ease: "easeOut" });
-    }
-    if (xapps.match.mode === "live" && xapps.opponents.some((p) => !p.isBot)) {
-      xapps.room
-        .send(DROP_EVENT, { part: drop.part, accuracy: drop.accuracy })
-        .catch((e: unknown) => console.warn(`[${TAG}] broadcast failed`, e));
     }
     unlockAchievements(xapps, earnedAchievements(all), TAG);
   };
@@ -327,30 +463,26 @@ function Play({ kit, slides, rows }: { kit: FaceKit; slides: Slides; rows: Table
     return () => clearTimeout(id);
   }, [phase, part]);
 
-  /* Reveal: ghosts one by one, then the score --------------------------- */
+  /* Reveal: ghosts one by one, then the score, then the world board ------ */
 
-  const reported = useRef(false);
-  const reportRun = useEffectEvent(() => {
-    if (reported.current) return;
-    reported.current = true;
-    reportStats(xapps, runStats(live.current.drops), TAG);
-    unlockAchievements(xapps, earnedAchievements(live.current.drops), TAG);
+  const finished = useRef(false);
+  const finish = useEffectEvent(() => {
+    if (finished.current) return;
+    finished.current = true;
+    onFinish(live.current.drops).then(setResult);
   });
   useEffect(() => {
     if (phase !== "reveal") return;
-    reportRun();
+    finish();
     const gap = reduced ? 120 : 520;
     const timers = [1, 2, 3, 4].map((step) =>
       setTimeout(
         () => {
           setRevealStep(step);
           play(step < 4 ? "pop" : "slam");
-          if (step === 4) {
-            const final = faceScore(live.current.drops);
-            if (final >= 90) {
-              play("win");
-              xapps.ui.celebrate().catch(ignore);
-            }
+          if (step === 4 && faceScore(live.current.drops) >= 90) {
+            play("win");
+            xapps.ui.celebrate().catch(ignore);
           }
         },
         (reduced ? 100 : 450) + step * gap,
@@ -359,27 +491,28 @@ function Play({ kit, slides, rows }: { kit: FaceKit; slides: Slides; rows: Table
     return () => timers.forEach(clearTimeout);
   }, [phase, reduced, xapps]);
 
-  const lockIn = () => {
-    const s = live.current;
-    if (s.locked || s.drops.length < PART_ORDER.length) return;
-    s.locked = true;
-    setLock("sending");
-    play("pop");
-    xapps.submit(submission(s.drops)).then(
-      () => setLock("done"),
-      (e: unknown) => {
-        console.warn(`[${TAG}] submit failed`, e);
-        s.locked = false;
-        setLock("error");
-      },
-    );
-  };
-  const autoLock = useEffectEvent(() => lockIn());
+  // The board's moments land once both the score and the fresh standing are in.
+  const cheered = useRef(false);
   useEffect(() => {
-    if (revealStep < 4 || lock !== "open") return;
-    const id = setTimeout(autoLock, LOCK_IN_MS);
+    if (!shown || !result || cheered.current) return;
+    cheered.current = true;
+    const { newBest, climbed } = result.moments;
+    if (!newBest && climbed === 0) return;
+    const id = setTimeout(() => {
+      play(newBest ? "achievement" : "notify");
+      xapps.ui.haptic("success").catch(ignore);
+    }, 550);
     return () => clearTimeout(id);
-  }, [revealStep, lock]);
+  }, [shown, result, xapps]);
+
+  const retryBoard = () => {
+    if (retrying) return;
+    setRetrying(true);
+    readBoard(xapps).then((board) => {
+      setRetrying(false);
+      setResult((prev) => (prev ? { ...prev, board } : prev));
+    });
+  };
 
   const share = async () => {
     if (sharing === "busy") return;
@@ -414,14 +547,16 @@ function Play({ kit, slides, rows }: { kit: FaceKit; slides: Slides; rows: Table
   };
 
   const onKey = useEffectEvent((e: KeyboardEvent) => {
-    if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.code !== "Space" && e.key !== " " && e.key !== "Enter") return;
+    if (!isGo(e)) return;
     const s = live.current;
     if (s.phase === "moving") {
       e.preventDefault();
       dropNow(eventTime(e.timeStamp) - s.startAt, false);
     } else if (s.phase === "intro" || s.phase === "dropped") {
       e.preventDefault();
+    } else if (shown && !onControl(e.target)) {
+      e.preventDefault();
+      onAgain();
     }
   });
   useEffect(() => {
@@ -430,38 +565,14 @@ function Play({ kit, slides, rows }: { kit: FaceKit; slides: Slides; rows: Table
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  /* Progress from the settled match; host HUD ----------------------------- */
+  /* Host status line ------------------------------------------------------ */
 
-  const [settledAtOpen] = useState(() => xapps.finalResult !== null);
-  const resultCounted = useRef(false);
-  useEffect(() => {
-    if (!result || settledAtOpen || resultCounted.current) return;
-    resultCounted.current = true;
-    const progress = resultProgress(result, xapps.me.id);
-    reportStats(xapps, progress.stats, TAG);
-    unlockAchievements(xapps, progress.achievements, TAG);
-  }, [result, settledAtOpen, xapps]);
-
-  const meId = xapps.me.id;
-  const scoresKey = rows.map((r) => `${r.player.id}:${r.score ?? ""}`).join("|");
-  useEffect(() => {
-    // Whole percents in the HUD while playing (the settled results keep the decimal).
-    const scores: Record<string, number> = { [meId]: Math.round(score) };
-    for (const entry of scoresKey.split("|")) {
-      const [id, value] = entry.split(":");
-      if (id && value) scores[id] = Math.round(Number(value));
-    }
-    xapps.ui.setScores(scores).catch(ignore);
-  }, [xapps, meId, score, scoresKey]);
-
-  const waitingOn = rows.filter((r) => !r.done);
+  const mine = result?.board.standing?.me ?? null;
   const statusText =
     phase !== "reveal"
       ? `${PART_EMOJI[partId]} ${PART_LABEL[partId]} · ${part + 1} of ${PART_ORDER.length}`
-      : lock === "done" && waitingOn.length > 0
-        ? waitingOn.length === 1
-          ? `Waiting for ${playerName(waitingOn[0]!.player)}`
-          : `Waiting for ${waitingOn.length} players`
+      : mine
+        ? `Best ${formatPct(mine.value)} · #${formatCount(mine.rank)}`
         : `Your face · ${formatPct(faceScore(drops))}`;
   useEffect(() => {
     xapps.ui.setStatus(statusText).catch(ignore);
@@ -484,62 +595,102 @@ function Play({ kit, slides, rows }: { kit: FaceKit; slides: Slides; rows: Table
       onPointerDown={onPointerDown}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <header className="flex shrink-0 flex-col items-center gap-2 px-4 pt-3">
+      {/* On phones the reveal's own part chips replace the pips, to leave room for the board. */}
+      <header className={cn("flex shrink-0 flex-col items-center gap-2 px-4 pt-3", shown && "max-md:hidden")}>
         <StepPips current={part} drops={drops} />
       </header>
 
-      <main className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-4 py-3">
-        <div ref={stageScope} className="relative w-full">
-          <Stage face={face} src={kit.blankUrl} maxVh={STAGE_VH}>
-            <AnimatePresence>
-              {(phase === "intro" || phase === "moving") && <RowGuide key={partId} face={face} part={partId} />}
-            </AnimatePresence>
-            {PART_ORDER.map((id, i) =>
-              i > part ? null : (
-                <Feature
-                  key={id}
-                  kit={kit}
-                  part={id}
-                  slide={slides[id]}
-                  state={featureState(i)}
-                  startAt={startAt}
-                  drop={drops.find((d) => d.part === id) ?? null}
-                  reduced={reduced}
-                  order={i}
-                  onBounce={() => play("tick")}
-                />
-              ),
-            )}
-            {phase === "reveal" &&
-              drops.map((d, i) => (revealStep > i ? <Ghost key={d.part} kit={kit} drop={d} reduced={reduced} /> : null))}
-            <AnimatePresence>
-              {phase === "dropped" && lastDrop && <DropPop key={lastDrop.part} face={face} drop={lastDrop} />}
-            </AnimatePresence>
-            {phase === "dropped" && lastDrop?.perfect && !reduced && <Burst key={`b-${lastDrop.part}`} face={face} drop={lastDrop} />}
-          </Stage>
-          <Announcer part={phase === "intro" ? partId : null} />
-        </div>
-
-        {phase === "reveal" ? (
-          <RevealPanel
-            drops={drops}
-            step={revealStep}
-            lock={lock}
-            sharing={sharing}
-            result={result}
-            meId={meId}
-            waiting={waitingOn.length}
-            onLock={lockIn}
-            onShare={share}
-            reduced={reduced}
-          />
-        ) : (
-          <Hint moving={phase === "moving"} />
+      <motion.main
+        layoutScroll
+        className={cn(
+          "relative flex min-h-0 flex-1 flex-col items-center overflow-y-auto overscroll-contain px-4 py-3",
+          shown ? "[--stage-h:28dvh] md:[--stage-h:50dvh]" : "[--stage-h:48dvh]",
         )}
-      </main>
+      >
+        <div className="my-auto flex w-full max-w-4xl flex-col items-center gap-4 md:flex-row md:justify-center md:gap-10">
+          <motion.div
+            layout="position"
+            transition={spring.soft}
+            className="flex w-full min-w-0 flex-col items-center gap-3 md:max-w-[460px] md:flex-1"
+          >
+            <div ref={stageScope} className="relative w-full">
+              <Stage
+                face={face}
+                src={kit.blankUrl}
+                maxVh="var(--stage-h)"
+                className="transition-[width] duration-500 ease-out motion-reduce:transition-none"
+              >
+                <AnimatePresence>
+                  {(phase === "intro" || phase === "moving") && <RowGuide key={partId} face={face} part={partId} />}
+                </AnimatePresence>
+                {PART_ORDER.map((id, i) =>
+                  i > part ? null : (
+                    <Feature
+                      key={id}
+                      kit={kit}
+                      part={id}
+                      slide={slides[id]}
+                      state={featureState(i)}
+                      startAt={startAt}
+                      drop={drops.find((d) => d.part === id) ?? null}
+                      reduced={reduced}
+                      order={i}
+                      onBounce={() => play("tick")}
+                    />
+                  ),
+                )}
+                {phase === "reveal" &&
+                  drops.map((d, i) => (revealStep > i ? <Ghost key={d.part} kit={kit} drop={d} reduced={reduced} /> : null))}
+                <AnimatePresence>
+                  {phase === "dropped" && lastDrop && <DropPop key={lastDrop.part} face={face} drop={lastDrop} />}
+                </AnimatePresence>
+                {phase === "dropped" && lastDrop?.perfect && !reduced && (
+                  <Burst key={`b-${lastDrop.part}`} face={face} drop={lastDrop} />
+                )}
+              </Stage>
+              <Announcer part={phase === "intro" ? partId : null} />
+            </div>
 
-      <footer className="shrink-0 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-        <TableStrip rows={rows} />
+            {phase === "reveal" ? (
+              <RevealScore drops={drops} step={revealStep} streak={result?.streak ?? 0} reduced={reduced} />
+            ) : (
+              <Hint moving={phase === "moving"} />
+            )}
+          </motion.div>
+
+          {shown && (
+            <StandingPanel
+              status={retrying ? "loading" : (result?.board.status ?? "loading")}
+              standing={result?.board.standing ?? null}
+              moments={result?.moments ?? null}
+              prevRank={result?.prevRank ?? null}
+              me={{ id: xapps.me.id, handle: xapps.me.handle, name: xapps.me.name, avatarUrl: xapps.me.avatarUrl }}
+              onRetry={retryBoard}
+              reduced={reduced}
+              className="md:w-[360px] md:shrink-0"
+            />
+          )}
+        </div>
+      </motion.main>
+
+      <footer className="flex min-h-[calc(3.5rem+0.75rem)] shrink-0 items-center justify-center gap-3 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <AnimatePresence>
+          {shown && (
+            <motion.div
+              className="flex items-center gap-3"
+              initial={reduced ? false : { opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ ...spring.soft, delay: 0.3 }}
+            >
+              <ActionButton tone="ghost" onClick={share} disabled={sharing === "busy"} className="px-6">
+                {sharing === "busy" ? "Sharing…" : sharing === "done" ? "Shared ✓" : "Share"}
+              </ActionButton>
+              <ActionButton onClick={onAgain} className="px-9">
+                ↻ Again
+              </ActionButton>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </footer>
     </div>
   );
@@ -601,46 +752,21 @@ function CountUp({ value, run }: { value: number; run: boolean }) {
   return <motion.span>{text}</motion.span>;
 }
 
-function RevealPanel({
-  drops,
-  step,
-  lock,
-  sharing,
-  result,
-  meId,
-  waiting,
-  onLock,
-  onShare,
-  reduced,
-}: {
-  drops: Drop[];
-  step: number;
-  lock: Lock;
-  sharing: "idle" | "busy" | "done";
-  result: ReturnType<typeof useMatchResult>;
-  meId: string;
-  waiting: number;
-  onLock: () => void;
-  onShare: () => void;
-  reduced: boolean;
-}) {
+function RevealScore({ drops, step, streak, reduced }: { drops: Drop[]; step: number; streak: number; reduced: boolean }) {
   const score = faceScore(drops);
   const v = verdict(score);
   const shown = step >= 4;
-  const rank = result?.ranks?.[meId];
 
   return (
-    <div className="flex w-full max-w-md flex-col items-center gap-3 text-center">
-      <div className="flex items-end justify-center gap-3">
-        <motion.p
-          className="font-display text-[clamp(44px,13vw,64px)] font-extrabold leading-none tracking-tight tabular"
-          style={{ color: shown ? toneFor(score) : "var(--color-ink-50)" }}
-          animate={shown && !reduced ? { scale: [1, 1.18, 1] } : { scale: 1 }}
-          transition={{ duration: 0.5, delay: 1 }}
-        >
-          <CountUp value={score} run={shown} />
-        </motion.p>
-      </div>
+    <div className="flex w-full max-w-md flex-col items-center gap-2 text-center">
+      <motion.p
+        className="font-display text-[clamp(40px,12vw,64px)] font-extrabold leading-none tracking-tight tabular"
+        style={{ color: shown ? toneFor(score) : "var(--color-ink-50)" }}
+        animate={shown && !reduced ? { scale: [1, 1.18, 1] } : { scale: 1 }}
+        transition={{ duration: 0.5, delay: 1 }}
+      >
+        <CountUp value={score} run={shown} />
+      </motion.p>
       <div className="h-7">
         <AnimatePresence>
           {shown && (
@@ -671,85 +797,20 @@ function RevealPanel({
             </span>
           </motion.span>
         ))}
-      </div>
-
-      <motion.div
-        className="flex min-h-14 w-full items-center justify-center gap-3"
-        initial={false}
-        animate={shown ? { opacity: 1, y: 0 } : { opacity: 0, y: 12 }}
-        transition={{ ...spring.soft, delay: shown ? 0.5 : 0 }}
-        style={{ pointerEvents: shown ? "auto" : "none" }}
-      >
-        <ActionButton tone="ghost" onClick={onShare} disabled={sharing === "busy"} className="px-6">
-          {sharing === "busy" ? "Sharing…" : sharing === "done" ? "Shared ✓" : "Share"}
-        </ActionButton>
-        {lock === "done" ? (
-          <p className="text-sm text-ink-300">
-            {result ? (
-              <span className="font-semibold text-success">
-                {rank === 1 ? "You win! 🏆" : rank ? `You placed #${rank}` : "✓ Result locked in"}
-              </span>
-            ) : waiting > 0 ? (
-              <>
-                Locked in · waiting
-                <AnimatedDots />
-              </>
-            ) : (
-              <>
-                Locked in
-                <AnimatedDots />
-              </>
-            )}
-          </p>
-        ) : (
-          <ActionButton onClick={onLock} disabled={lock === "sending"} className="relative overflow-hidden px-7">
-            {shown && lock === "open" && !reduced && (
-              <motion.span
-                aria-hidden
-                className="absolute inset-y-0 left-0 bg-white/30"
-                initial={{ width: "100%" }}
-                animate={{ width: "0%" }}
-                transition={{ duration: LOCK_IN_MS / 1000, ease: "linear", delay: 0.5 }}
-              />
-            )}
-            <span className="relative">{lock === "error" ? "Retry lock in" : lock === "sending" ? "Locking…" : "Lock it in"}</span>
-          </ActionButton>
-        )}
-      </motion.div>
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Spectators                                                             */
-/* ---------------------------------------------------------------------- */
-
-function Watch({ kit, rows }: { kit: FaceKit; rows: TableRow[] }) {
-  const xapps = useXApps();
-  useEffect(() => {
-    xapps.ui.setStatus("Watching").catch(ignore);
-  }, [xapps]);
-  const leader = rows.filter((r) => r.score !== null).sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
-  return (
-    <Screen className="gap-5 text-center">
-      <Stage face={kit.face} src={kit.photoUrl} maxVh={40} />
-      <div>
-        <Eyebrow>Watching</Eyebrow>
-        <p className="mt-1 text-sm text-ink-300">
-          {leader ? (
-            <>
-              {playerName(leader.player)} leads with{" "}
-              <b className={cn("font-mono tabular text-ink-50")}>{formatPct(Math.round(leader.score ?? 0))}</b>
-            </>
-          ) : (
-            <>
-              Everyone is rebuilding {kit.face.name}
-              <AnimatedDots />
-            </>
+        <AnimatePresence>
+          {shown && streak >= 2 && (
+            <motion.span
+              key="streak"
+              className="rounded-full bg-gold/15 px-3 py-1.5 text-sm font-bold text-gold ring-1 ring-gold/40"
+              initial={reduced ? false : { opacity: 0, scale: 0.4, rotate: -8 }}
+              animate={{ opacity: 1, scale: 1, rotate: 0 }}
+              transition={{ ...spring.wobbly, delay: 0.6 }}
+            >
+              🔥 {streak} in a row
+            </motion.span>
           )}
-        </p>
+        </AnimatePresence>
       </div>
-      <TableStrip rows={rows} />
-    </Screen>
+    </div>
   );
 }

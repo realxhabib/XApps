@@ -37,6 +37,7 @@ import {
   type ConnectOptions,
   type LogApi,
   type MediaUploadOptions,
+  type StatLeaderboardOptions,
   type StateSnapshot,
   type StateUpdateOptions,
   type StateUpdater,
@@ -53,6 +54,7 @@ import type {
   PlayerRole,
   RoomMessage,
   StatDef,
+  StatStanding,
 } from "./protocol";
 
 const ClientContext = createContext<XAppsClient | null>(null);
@@ -341,6 +343,65 @@ export function useStats(): StatsHook {
   return useMemo(
     () => ({ defs: client.stats.defs, report: (values: { [key: string]: number }) => client.stats.report(values) }),
     [client],
+  );
+}
+
+export interface StatStandingHook {
+  /** The last leaderboard read for this key (kept while a refresh runs); null until one arrives. */
+  standing: StatStanding | null;
+  /** True while a read for the current key/limit is running. */
+  loading: boolean;
+  /** The last read's error (e.g. `invalid_params` for an undeclared stat). */
+  error: Error | null;
+  /** Reads the leaderboard again, e.g. after `stats.report`. */
+  refresh: () => void;
+}
+
+/**
+ * A stat's global leaderboard and the viewer's standing (`xapps.stats.leaderboard`),
+ * read on mount and whenever `key` or `limit` change. Pass `null` to skip reading.
+ *
+ * ```tsx
+ * const { standing, refresh } = useStatStanding("best");
+ * // after reporting a new best: await xapps.stats.report({ best }); refresh();
+ * // standing?.me → "#14 of 2,380"
+ * ```
+ */
+export function useStatStanding(key: string | null, options: StatLeaderboardOptions = {}): StatStandingHook {
+  const client = useXApps();
+  const limit = options.limit;
+  const [nonce, setNonce] = useState(0);
+  const [read, setRead] = useState<{ request: string; standing: StatStanding | null; error: Error | null } | null>(
+    null,
+  );
+  const request = key === null ? null : `${key}|${limit ?? ""}|${nonce}`;
+  useEffect(() => {
+    if (key === null || request === null) return;
+    let live = true;
+    client.stats.leaderboard(key, limit === undefined ? {} : { limit }).then(
+      (standing) => {
+        if (live) setRead({ request, standing, error: null });
+      },
+      (e: unknown) => {
+        if (!live) return;
+        const error = e instanceof Error ? e : new Error(String(e));
+        setRead((prev) => ({ request, standing: prev?.standing ?? null, error }));
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [client, key, limit, request]);
+  const refresh = useCallback(() => setNonce((n) => n + 1), []);
+  return useMemo(
+    () => ({
+      // A read for another stat never shows under this key.
+      standing: read?.standing && read.standing.key === key ? read.standing : null,
+      loading: request !== null && read?.request !== request,
+      error: read?.request === request ? (read?.error ?? null) : null,
+      refresh,
+    }),
+    [key, read, request, refresh],
   );
 }
 

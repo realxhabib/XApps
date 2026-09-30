@@ -192,7 +192,7 @@ export function buildSeed(): DemoDb {
   };
 
   const ids = PERSONAS.map((p) => p.id);
-  const scoreApps = OFFICIAL_APPS.filter((a) => a.scoring !== "votes" && a.official);
+  const scoreApps = OFFICIAL_APPS.filter((a) => a.scoring !== "votes" && a.official && a.kind !== "app");
 
   // 1) Finished score-based matches — history for feeds, profiles and leaderboards.
   for (let i = 0; i < 36; i++) {
@@ -202,8 +202,6 @@ export function buildSeed(): DemoDb {
       if (app.slug === "quick-draw") return rng.int(0, 3);
       if (app.slug === "four-in-a-row") return rng.pick([0, 1]);
       if (app.slug === "emoji-decode") return rng.int(3, 15) * 100;
-      if (app.slug === "perfect-circle") return rng.int(780, 975) / 10;
-      if (app.slug === "gregs-face") return rng.int(640, 985) / 10;
       return rng.int(0, 2);
     };
     let sa = scoreFor();
@@ -261,6 +259,28 @@ export function buildSeed(): DemoDb {
   contests.forEach((contest, i) => {
     addPersonaContest(db, rng, contest.slug, (i + 1) * rng.int(9, 40) * 60_000, contest.voting, i);
   });
+
+  // 3) Perfect Circle (a standalone app, no matches): personas' own circles, so its worldwide board isn't empty.
+  db.userStats ??= {};
+  for (const id of ids) {
+    const at = iso(rng.int(1, 96) * 3_600_000);
+    const best = rng.int(862, 991) / 10;
+    const drawn = rng.int(3, 160);
+    db.userStats[`perfect-circle:${id}:best_circle`] = { value: best, updatedAt: at };
+    db.userStats[`perfect-circle:${id}:circles_drawn`] = { value: drawn, updatedAt: at };
+    if (best >= 98) db.userStats[`perfect-circle:${id}:perfect_circles`] = { value: rng.int(1, Math.min(6, drawn)), updatedAt: at };
+  }
+
+  // 4) Greg's Face (a standalone app too): personas' best faces, so its global board isn't empty.
+  for (const [i, id] of ids.entries()) {
+    const at = iso(rng.int(1, 120) * 3_600_000);
+    const built = rng.int(2, 140);
+    // Spread from ~99 % down to the high 70s, so the top of the board takes a near-perfect face.
+    db.userStats[`gregs-face:${id}:best_face`] = { value: (994 - i * 22 - rng.int(0, 18)) / 10, updatedAt: at };
+    db.userStats[`gregs-face:${id}:faces_built`] = { value: built, updatedAt: at };
+    const perfect = rng.int(0, Math.min(9, Math.floor(built / 4)));
+    if (perfect > 0) db.userStats[`gregs-face:${id}:perfect_parts`] = { value: perfect, updatedAt: at };
+  }
 
   return db;
 }

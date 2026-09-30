@@ -1,5 +1,6 @@
 "use client";
 
+import type { LaunchPurpose, MockHostOptions } from "@xapps/sdk";
 import { XAppsProvider } from "@xapps/sdk/react";
 import { motion } from "motion/react";
 import { useMemo, type ReactNode } from "react";
@@ -13,16 +14,44 @@ import type { AppManifest } from "@/platform/types";
  * shows a branded loader while the handshake completes.
  *
  * Opened directly (not inside XApps) the SDK falls back to its mock host, so
- * `/embed/<slug>` is also a standalone dev harness with a bot opponent.
+ * `/embed/<slug>` is also a standalone dev harness: a match with a bot
+ * opponent for games, or app mode (`purpose: "app"`, you alone, no match) for
+ * standalone apps (`kind: "app"` in the catalog, or `purpose="app"` here).
+ * The mock gets the app's manifest stats and achievements, so
+ * `stats.leaderboard` answers with a believable board.
  */
-export function EmbedRoot({ slug, children }: { slug: string; children: ReactNode }) {
+export function EmbedRoot({
+  slug,
+  purpose,
+  mock,
+  children,
+}: {
+  slug: string;
+  /**
+   * How the mock host launches the app when `/embed/<slug>` is opened directly. Defaults to
+   * `"app"` for standalone apps (catalog `kind: "app"`) and `"match"` otherwise. Inside XApps
+   * the host decides. `?xapps-purpose=` still overrides it.
+   */
+  purpose?: LaunchPurpose;
+  /** Extra mock host options (e.g. `leaderboard` values), on top of the manifest's. */
+  mock?: MockHostOptions;
+  children: ReactNode;
+}) {
   const app = getOfficialApp(slug) as AppManifest;
+  const mockPurpose: LaunchPurpose = purpose ?? (app.kind === "app" ? "app" : "match");
   const options = useMemo(
     () => ({
       hostOrigins: typeof window !== "undefined" ? [window.location.origin] : undefined,
-      mock: { scoring: app.scoring, startDelayMs: 600, stats: app.stats, achievements: app.achievements },
+      mock: {
+        purpose: mockPurpose,
+        scoring: app.scoring,
+        startDelayMs: 600,
+        stats: app.stats,
+        achievements: app.achievements,
+        ...mock,
+      },
     }),
-    [app.scoring, app.stats, app.achievements],
+    [mockPurpose, app.scoring, app.stats, app.achievements, mock],
   );
 
   return (

@@ -87,7 +87,8 @@ export function Leaderboard() {
           onChange={(value) => router.replace(value === "all" ? "/leaderboard" : `/leaderboard?app=${value}`, { scroll: false })}
           items={[
             { id: "all", label: "Overall" },
-            ...OFFICIAL_APPS.filter((a) => a.official).map((a) => ({ id: a.slug, label: a.name, icon: <span>{a.icon}</span> })),
+            // Match wins only: standalone apps (kind app) have no matches (their stat boards live on their pages).
+            ...OFFICIAL_APPS.filter((a) => a.official && a.kind !== "app").map((a) => ({ id: a.slug, label: a.name, icon: <span>{a.icon}</span> })),
           ]}
         />
       </div>

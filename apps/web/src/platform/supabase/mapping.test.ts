@@ -13,6 +13,7 @@ import {
   toWebhookDeliveries,
   type AppRow,
   toStatLeaderRows,
+  toStatStanding,
   toStatValues,
   toStorageKeys,
   toUnlocked,
@@ -306,6 +307,25 @@ describe("Stage 3 mapping", () => {
     expect(toUnlocked({ unlocked: true })).toEqual({ unlocked: true });
     expect(toUnlocked(false)).toEqual({ unlocked: false });
     expect(toStorageKeys(["b", "a", "a"])).toEqual(["a", "b"]);
+  });
+
+  it("maps a stat standing (app_stat_standing)", () => {
+    const profile = { id: "u1", handle: "ada", name: "Ada", avatarUrl: null, bio: "", xp: 5, wins: 1, losses: 0, draws: 0, streak: 1, bestStreak: 1, createdAt: "2026-01-01T00:00:00Z", isBot: false };
+    expect(toStatStanding({ key: "best", top: [{ rank: 1, profile, value: 98.5 }], me: { rank: 14, value: "71" }, total: 2380 }, "best")).toEqual({
+      key: "best",
+      top: [{ rank: 1, profile, value: 98.5 }],
+      me: { rank: 14, value: 71 },
+      total: 2380,
+    });
+    // Signed out / no value yet: me is null. A malformed answer is an empty board for the asked key.
+    expect(toStatStanding({ key: "best", top: [], me: null, total: 0 }, "best")).toEqual({ key: "best", top: [], me: null, total: 0 });
+    expect(toStatStanding(null, "best")).toEqual({ key: "best", top: [], me: null, total: 0 });
+    expect(toStatStanding({ top: [{ rank: 1, profile, value: 3 }], me: { rank: 1 } }, "wins")).toEqual({
+      key: "wins",
+      top: [{ rank: 1, profile, value: 3 }],
+      me: null,
+      total: 1,
+    });
   });
 
   it("maps limits (54000) to rate_limited", () => {

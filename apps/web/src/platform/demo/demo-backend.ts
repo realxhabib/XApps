@@ -61,6 +61,7 @@ import type {
   Profile,
   RegisterAppInput,
   StatLeaderRow,
+  StatStanding,
   StorageScope,
   SubmitInput,
   UserAchievement,
@@ -305,6 +306,17 @@ function hydrate(db: DemoDb, row: MatchRow, viewerId = getViewerId()): Match {
 
 function byRecent(a: MatchRow, b: MatchRow): number {
   return b.updatedAt.localeCompare(a.updatedAt);
+}
+
+/** The first `limit` rows of a sorted stat board, ranked like SQL `rank()`: equal values share a rank. */
+function rankBoard(db: DemoDb, rows: readonly { userId: string; value: number }[], limit: number): StatLeaderRow[] {
+  const out: StatLeaderRow[] = [];
+  rows.slice(0, limit).forEach((row, i) => {
+    const prev = out[i - 1];
+    const rank = prev && prev.value === row.value ? prev.rank : i + 1;
+    out.push({ rank, profile: db.profiles[row.userId]!, value: row.value });
+  });
+  return out;
 }
 
 function isSeatedIn(row: MatchRow, userId: string): boolean {
@@ -2153,6 +2165,31 @@ export class DemoBackend implements Backend {
   /** Mirrors `app_stat_leaderboard`: best first (min ascending), ties share a rank, earlier holders first. */
   async statLeaderboard(appSlug: string, key: string): Promise<StatLeaderRow[]> {
     const db = load();
+    const board = this.statBoard(db, appSlug, key);
+    return rankBoard(db, board.rows, 50);
+  }
+
+  /**
+   * Mirrors `app_stat_standing`: the leaderboard's first `limit` rows (default 10, clamped to 1–50),
+   * the viewer's rank (1 + everyone strictly ahead, so ties share it) and value, and the total.
+   */
+  async statStanding(appSlug: string, key: string, limit?: number): Promise<StatStanding> {
+    const db = load();
+    const { def, rows } = this.statBoard(db, appSlug, key);
+    const viewerId = getViewerId();
+    const mine = viewerId ? rows.find((r) => r.userId === viewerId) : undefined;
+    const me = mine
+      ? {
+          rank: 1 + rows.filter((r) => (def.aggregate === "min" ? r.value < mine.value : r.value > mine.value)).length,
+          value: mine.value,
+        }
+      : null;
+    const n = Math.min(Math.max(Math.floor(Number.isFinite(limit) ? (limit as number) : 10), 1), 50);
+    return { key, top: rankBoard(db, rows, n), me, total: rows.length };
+  }
+
+  /** A declared stat's values (people only, bots excluded), best first, earlier holders first. */
+  private statBoard(db: DemoDb, appSlug: string, key: string) {
     const app = this.requireApp(db, appSlug);
     const def = app.stats?.find((s) => s.key === key);
     if (!def) throw new BackendError(`Unknown stat ${key}`, "invalid");
@@ -2164,13 +2201,7 @@ export class DemoBackend implements Backend {
       .filter((r) => db.profiles[r.userId] && !isPracticeBot(r.userId));
     const better = (a: number, b: number) => (def.aggregate === "min" ? a - b : b - a);
     rows.sort((a, b) => better(a.value, b.value) || a.updatedAt.localeCompare(b.updatedAt) || a.userId.localeCompare(b.userId));
-    const out: StatLeaderRow[] = [];
-    rows.slice(0, 50).forEach((row, i) => {
-      const prev = out[i - 1];
-      const rank = prev && prev.value === row.value ? prev.rank : i + 1;
-      out.push({ rank, profile: db.profiles[row.userId]!, value: row.value });
-    });
-    return out;
+    return { def, rows };
   }
 
   /** Mirrors `user_stats`: declared stats of apps the viewer can see, by app then manifest order. */
@@ -2358,7 +2389,7 @@ export class DemoBackend implements Backend {
         const challenger = personas.find((p) => p.id !== viewerId && !isHumanOnline(p.id));
         if (viewer && !viewer.isBot && !busy && challenger) {
           sessionStorage.setItem(INVITED_KEY, "1");
-          const official = OFFICIAL_APPS.filter((a) => a.official);
+          const official = OFFICIAL_APPS.filter((a) => a.official && a.kind !== "app");
           const app = withManifestDefaults(official[Math.floor(Math.random() * official.length)] ?? OFFICIAL_APPS[0]!);
           const mode: PlayableMode = app.modes.includes("async") ? "async" : "live";
           const row = this.baseMatch(app, mode, challenger.id);

@@ -92,7 +92,8 @@ const MATCH_METHODS: ReadonlySet<RequestMethod> = new Set<RequestMethod>([
  * Methods refused to standalone apps (purpose `app`): there is no match, so no
  * room, submissions, shared state, turns, rounds or match HUD (`ui.scores`,
  * `ui.turn`), and no challenge to set up. Everything else (storage, stats,
- * achievements, media, logs, toasts, share, `ui.status`, `ui.resize`…) works.
+ * leaderboards, achievements, media, logs, toasts, share, `ui.status`,
+ * `ui.resize`…) works.
  */
 const APP_REFUSED: ReadonlySet<RequestMethod> = new Set<RequestMethod>([
   "room.send",
@@ -365,6 +366,47 @@ export function statsProblem(values: unknown, defs?: readonly StatDef[] | null):
     }
   }
   return null;
+}
+
+/**
+ * Why a stat's leaderboard can't be read (`stats.leaderboard`), or `null`.
+ * With `defs` (the manifest's stats), `key` must be declared. `limit` is
+ * optional: a positive integer (hosts clamp it to `LIMITS.statLeaderboard.maxLimit`).
+ */
+export function statLeaderboardProblem(key: unknown, limit?: unknown, defs?: readonly StatDef[] | null): string | null {
+  if (typeof key !== "string" || !MANIFEST_ID_PATTERN.test(key)) return "key must be a stat key";
+  if (defs && !defs.some((d) => d.key === key)) {
+    return `"${key}" is not a declared stat (add it to your manifest's stats)`;
+  }
+  if (limit !== undefined && !(Number.isSafeInteger(limit) && (limit as number) >= 1)) {
+    return "limit must be a positive integer";
+  }
+  return null;
+}
+
+/** A `stats.leaderboard` limit as hosts apply it: default 10, at most 50. */
+export function clampStatLimit(limit: number | null | undefined): number {
+  const { defaultLimit, maxLimit } = LIMITS.statLeaderboard;
+  if (typeof limit !== "number" || !Number.isFinite(limit)) return defaultLimit;
+  return Math.min(maxLimit, Math.max(1, Math.floor(limit)));
+}
+
+/**
+ * Competition ranking of stat values, as the platform ranks leaderboards:
+ * best first by the stat's aggregate (`min`: lowest first; else highest
+ * first), equal values share a rank ("1, 2, 2, 4"). Ties keep input order.
+ */
+export function rankStatValues<T extends { value: number }>(
+  entries: readonly T[],
+  aggregate: StatDef["aggregate"],
+): Array<T & { rank: number }> {
+  const sorted = [...entries].sort((a, b) => (aggregate === "min" ? a.value - b.value : b.value - a.value));
+  const out: Array<T & { rank: number }> = [];
+  sorted.forEach((entry, index) => {
+    const prev = out[index - 1];
+    out.push({ ...entry, rank: prev && prev.value === entry.value ? prev.rank : index + 1 });
+  });
+  return out;
 }
 
 /** Why `id` can't be unlocked, or `null`. With `defs` (the manifest's achievements), `id` must be declared. */

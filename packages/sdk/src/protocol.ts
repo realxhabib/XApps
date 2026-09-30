@@ -9,7 +9,7 @@
  */
 
 export const PROTOCOL_VERSION = 1 as const;
-export const SDK_VERSION = "0.5.0";
+export const SDK_VERSION = "0.6.0";
 
 export type Json =
   | string
@@ -162,6 +162,25 @@ export interface StatDef {
   format?: "number" | "ms" | "percent";
 }
 
+/** One row of a stat's global leaderboard (`stats.leaderboard`). */
+export interface StatLeaderEntry {
+  /** 1 = best; equal values share a rank ("1, 2, 2, 4"). */
+  rank: number;
+  player: { id: string; handle: string; name: string; avatarUrl: string | null };
+  value: number;
+}
+
+/** A stat's global leaderboard plus the viewer's own standing (`stats.leaderboard`). */
+export interface StatStanding {
+  key: string;
+  /** Best first, by the stat's aggregate (`min`: lowest first; otherwise highest first). Up to `limit` rows. */
+  top: StatLeaderEntry[];
+  /** The viewer's rank and value, ranked like `top`; null when they have no value yet (or are signed out). */
+  me: { rank: number; value: number } | null;
+  /** How many people have a value for this stat. */
+  total: number;
+}
+
 /** An achievement your app can unlock (manifest `achievements`). */
 export interface AchievementDef {
   id: string;
@@ -238,6 +257,11 @@ export interface RequestMap {
   "media.upload": { params: { file: Blob; alt?: string }; result: MediaRef };
   /** Report values for the stats in your manifest; returns each stat's new aggregated value. */
   "stats.report": { params: { values: { [key: string]: number } }; result: { [key: string]: number } };
+  /**
+   * A stat's global leaderboard (best first, ties share a rank) and the viewer's standing.
+   * `limit` rows (default 10, max 50). Read-only: allowed for every purpose and role.
+   */
+  "stats.leaderboard": { params: { key: string; limit?: number }; result: StatStanding };
   /** Unlock an achievement from your manifest. `unlocked` is false if the player already had it. */
   "achievements.unlock": { params: { id: string }; result: { unlocked: boolean } };
   /** Write to your app's log (visible to you in the developer console). Rate-limited; excess entries are dropped. */
@@ -286,6 +310,7 @@ export const REQUEST_METHODS: readonly RequestMethod[] = [
   "achievements.unlock",
   "log",
   "ui.resize",
+  "stats.leaderboard",
 ] as const;
 
 /* ------------------------------------------------------------------------ */
@@ -419,6 +444,8 @@ export const LIMITS = {
   },
   galleryItems: { min: 2, max: 6 },
   maxStats: 8,
+  /** `stats.leaderboard` rows: default and max `limit`. */
+  statLeaderboard: { defaultLimit: 10, maxLimit: 50 },
   maxAchievements: 30,
   maxAchievementXpPerApp: 500,
   logMessageLength: 500,

@@ -1,9 +1,7 @@
 "use client";
 
-import type { PlayerInfo } from "@xapps/sdk";
 import { AnimatePresence, motion, useMotionValue, useTransform } from "motion/react";
 import { useEffect, useEffectEvent, type ReactNode, type Ref } from "react";
-import { Avatar } from "@/components/ui/avatar";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { PART_LABEL, PART_ORDER, type FaceConfig, type PartId } from "./face";
@@ -54,8 +52,10 @@ export function Stage({
   children?: ReactNode;
   stageRef?: Ref<HTMLDivElement>;
   className?: string;
-  maxVh?: number;
+  /** Height cap: a number of dvh, or any CSS length (e.g. a custom property). */
+  maxVh?: number | string;
 }) {
+  const maxH = typeof maxVh === "number" ? `${maxVh}dvh` : maxVh;
   return (
     <div
       ref={stageRef}
@@ -65,7 +65,7 @@ export function Stage({
       )}
       style={{
         aspectRatio: `${face.width} / ${face.height}`,
-        width: `min(100%, 460px, calc(${maxVh}dvh * ${face.width / face.height}))`,
+        width: `min(100%, 460px, calc(${maxH} * ${face.width / face.height}))`,
       }}
     >
       {/* eslint-disable-next-line @next/next/no-img-element -- generated blob URL */}
@@ -324,75 +324,6 @@ export function StepPips({ current, drops }: { current: number; drops: readonly 
           </motion.div>
         );
       })}
-    </div>
-  );
-}
-
-export interface TableRow {
-  player: PlayerInfo;
-  /** Accuracy per part (null = not dropped yet / unknown). */
-  parts: (number | null)[];
-  /** Running or final score (null = nothing known yet). */
-  score: number | null;
-  done: boolean;
-}
-
-export const playerName = (p: PlayerInfo) => (p.isBot ? p.name : `@${p.handle}`);
-
-/** The other players: avatar, running score, three progress dots. */
-export function TableStrip({ rows }: { rows: TableRow[] }) {
-  if (rows.length === 0) return null;
-  const compact = rows.length > 3;
-  return (
-    <div className="flex max-w-full flex-wrap items-start justify-center gap-x-3 gap-y-2">
-      {rows.map((row) => (
-        <motion.div
-          key={row.player.id}
-          layout
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={spring.soft}
-          className={cn("flex items-center gap-1.5", compact && "flex-col gap-1")}
-          title={playerName(row.player)}
-        >
-          <div className="relative">
-            <Avatar person={row.player} size={compact ? 28 : 30} />
-            {row.done && (
-              <motion.span
-                initial={{ scale: 0 }}
-                animate={{ scale: 1 }}
-                transition={spring.bouncy}
-                className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full bg-success text-[9px] font-black text-ink-950 ring-2 ring-ink-950"
-              >
-                ✓
-              </motion.span>
-            )}
-          </div>
-          <div className={cn("flex flex-col", compact ? "items-center" : "items-start")}>
-            {!compact && <span className="max-w-24 truncate text-[11px] font-semibold text-ink-300">{playerName(row.player)}</span>}
-            <div className="flex items-center gap-1">
-              <motion.span
-                key={row.score ?? "none"}
-                initial={{ scale: 1.3 }}
-                animate={{ scale: 1 }}
-                transition={spring.bouncy}
-                className="font-mono text-xs font-bold tabular text-ink-50"
-              >
-                {row.score === null ? "—" : formatPct(Math.round(row.score))}
-              </motion.span>
-              <span className="flex gap-0.5">
-                {row.parts.map((acc, i) => (
-                  <span
-                    key={i}
-                    className="size-1.5 rounded-full"
-                    style={{ background: acc === null ? "rgb(255 255 255 / 0.15)" : toneFor(acc) }}
-                  />
-                ))}
-              </span>
-            </div>
-          </div>
-        </motion.div>
-      ))}
     </div>
   );
 }

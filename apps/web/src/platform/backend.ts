@@ -10,6 +10,7 @@ import type {
   AppAuthority,
   MediaRef,
   StatLeaderRow,
+  StatStanding,
   StorageScope,
   UserAchievement,
   UserStat,
@@ -193,6 +194,11 @@ export interface Backend {
   /** Applies each stat's aggregate; returns the new values. Refused for server-authoritative apps. */
   reportStats(appSlug: string, values: { [key: string]: number }): Promise<{ [key: string]: number }>;
   statLeaderboard(appSlug: string, key: string): Promise<StatLeaderRow[]>;
+  /**
+   * A stat's leaderboard (`limit` rows: default 10, clamped to 1–50) with the viewer's rank and
+   * how many people have a value. Anyone may read it; `me` is null when signed out.
+   */
+  statStanding(appSlug: string, key: string, limit?: number): Promise<StatStanding>;
   userStats(userId: string): Promise<UserStat[]>;
   /** `unlocked` is false if the viewer already had it. Refused for server-authoritative apps. */
   unlockAchievement(appSlug: string, id: string): Promise<{ unlocked: boolean }>;

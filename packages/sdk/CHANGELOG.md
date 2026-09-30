@@ -4,6 +4,33 @@ All notable changes to `@xapps/sdk`. The wire protocol is still version 1:
 every release is additive, and apps built against an older SDK keep working on
 newer hosts (and the other way round, minus the new features).
 
+## 0.6.0
+
+Stat leaderboards and standings.
+
+- **`xapps.stats.leaderboard(key, { limit? })`** reads a stat's global
+  leaderboard and the viewer's place on it: `{ key, top, me, total }`. `top`
+  holds up to `limit` rows (default 10, max 50) of
+  `{ rank, player: { id, handle, name, avatarUrl }, value }`, best first by the
+  stat's aggregate (`min` stats lowest first), with ties sharing a rank. `me`
+  is `{ rank, value }` ranked the same way, or `null` before the viewer has a
+  value; `total` is how many people have one. Enough for "you're #14 of
+  2,380 · top 1%" in a solo game.
+- Read-only, so it's allowed in every purpose (match, setup, app) and for
+  spectators. The key must be a declared stat (`invalid_params` otherwise, on
+  the client and in the host core); `limit` must be a positive integer and is
+  clamped to 50.
+- React: `useStatStanding(key, { limit? })` → `{ standing, loading, error, refresh }`.
+- Mock host: answers from the stats you reported plus a handful of made-up
+  players spread around your first value, so a standalone embed shows a
+  believable board. `leaderboard: { [key]: number[] }` picks their values;
+  `leaderboard: false` leaves you alone.
+- Host: request `stats.leaderboard` (handler key `stats.leaderboard` or
+  `statLeaderboard`) receives `{ key, limit }` with `limit` already clamped.
+  Types `StatStanding` and `StatLeaderEntry`; `statLeaderboardProblem`,
+  `clampStatLimit` and `rankStatValues` are exported from `@xapps/sdk/host`,
+  and `LIMITS.statLeaderboard` holds the default and max limit.
+
 ## 0.5.0
 
 Standalone apps.

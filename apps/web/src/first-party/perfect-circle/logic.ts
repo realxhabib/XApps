@@ -12,7 +12,7 @@
  *    helps or hurts: the stroke is cut at exactly one turn.
  * 2. Reject. Too small (mean radius < MIN_RADIUS), too slow (> MAX_DRAW_MS
  *    from first touch to the full turn) or not a full circle (< MIN_SWEEP_DEG
- *    around the dot when the finger lifts). A rejected stroke is a free retry.
+ *    around the dot when the finger lifts). A rejected stroke doesn't count.
  * 3. Score, centered on the dot (the classic "draw a perfect circle" rule: a
  *    lovely circle drawn off to one side is not a circle *around the dot*):
  *
@@ -29,7 +29,7 @@
  *    shows 100.0%. A 2% average wobble scores about 96%; 98.0% ("perfect")
  *    needs the stroke within 1% of the radius on average.
  */
-import type { MatchResult, Random } from "@xapps/sdk";
+import type { StatLeaderEntry, StatStanding } from "@xapps/sdk";
 
 /* ------------------------------------------------------------------ */
 /* Tuning                                                             */
@@ -38,10 +38,6 @@ import type { MatchResult, Random } from "@xapps/sdk";
 /** The drawing board is BOARD × BOARD units with the dot at its center. */
 export const BOARD = 1000;
 export const CENTER = { x: BOARD / 2, y: BOARD / 2 } as const;
-/** Scored circles per player (best one counts). Rejected strokes don't use one up. */
-export const ATTEMPTS = 3;
-/** Everyone's clock for all their attempts, from the host's GO. */
-export const MATCH_MS = 60_000;
 /** First touch → full turn. Slower than this is "Too slow". */
 export const MAX_DRAW_MS = 8_000;
 /** Mean radius below this is "Too small" (the board is 1000 wide). */
@@ -59,8 +55,16 @@ export const GREAT = 90;
 export const SUPERB = 95;
 /** Below this a scored circle is officially an egg. */
 export const EGG = 50;
-/** Photo finish: winning by this many points or fewer. */
-export const PHOTO_FINISH = 0.5;
+/** Hat trick: this many circles in a row, all GREAT or better. */
+export const HAT_TRICK = 3;
+/** "In the groove": this many circles in one sitting. */
+export const SITTING = 10;
+/** "Century": this many circles in all (the `circles_drawn` total). */
+export const CENTURY = 100;
+/** The stat the worldwide board ranks. */
+export const BOARD_STAT = "best_circle";
+/** Rows of the worldwide board shown after a circle. */
+export const TOP_N = 5;
 
 const TAU = Math.PI * 2;
 const FULL_TURN = TAU;
@@ -158,6 +162,31 @@ export function floor1(value: number): number {
 /** Roundness alone as a percentage: the live readout while drawing. */
 export function roundness(deviation: number): number {
   return Math.max(0, 1 - RADIAL_WEIGHT * deviation);
+}
+
+/** `n` points evenly spaced along the stroke (by length). */
+export function resample(points: readonly Point[], n: number): Point[] {
+  if (points.length === 0 || n < 2) return points.slice(0, Math.max(0, n));
+  const cum = [0];
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1]!;
+    const b = points[i]!;
+    cum.push(cum[i - 1]! + Math.hypot(b.x - a.x, b.y - a.y));
+  }
+  const total = cum[cum.length - 1]!;
+  if (total === 0) return Array.from({ length: n }, () => ({ ...points[0]! }));
+  const out: Point[] = [];
+  let j = 1;
+  for (let i = 0; i < n; i++) {
+    const target = (total * i) / (n - 1);
+    while (j < points.length - 1 && cum[j]! < target) j++;
+    const a = points[j - 1]!;
+    const b = points[j]!;
+    const span = cum[j]! - cum[j - 1]!;
+    const f = span === 0 ? 0 : Math.max(0, Math.min(1, (target - cum[j - 1]!) / span));
+    out.push({ x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, t: a.t + (b.t - a.t) * f });
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ */
@@ -260,43 +289,46 @@ export function verdictFor(accuracy: number): { word: string; emoji: string } {
 }
 
 /* ------------------------------------------------------------------ */
-/* A player's run                                                     */
+/* A sitting                                                          */
 /* ------------------------------------------------------------------ */
 
-export interface Run {
-  /** Accuracy of each scored circle, in order (at most ATTEMPTS). */
+/** Every circle since the app opened. There's no limit: draw as many as you like. */
+export interface Session {
+  /** Accuracy of each scored circle, in order. */
   scores: number[];
-  /** Rejected strokes (free retries). */
+  /** Rejected strokes (they don't count). */
   misses: number;
   /** Index into `scores` of the best circle (first one wins ties), or -1. */
   bestIndex: number;
-  /** The best circle's stroke, for the final screen, the entry and the share card. */
+  /** The best circle's stroke, for the share card. */
   bestStroke: Point[] | null;
 }
 
-export const EMPTY_RUN: Run = { scores: [], misses: 0, bestIndex: -1, bestStroke: null };
+export const EMPTY_SESSION: Session = { scores: [], misses: 0, bestIndex: -1, bestStroke: null };
 
-export function bestScore(run: Run): number | null {
-  return run.bestIndex >= 0 ? (run.scores[run.bestIndex] ?? null) : null;
+export function bestScore(session: Session): number | null {
+  return session.bestIndex >= 0 ? (session.scores[session.bestIndex] ?? null) : null;
 }
 
-export function attemptsLeft(run: Run): number {
-  return Math.max(0, ATTEMPTS - run.scores.length);
-}
-
-/** Folds one analysed stroke into the run. A full run ignores further strokes. */
-export function recordStroke(run: Run, analysis: Analysis): Run {
-  if (run.scores.length >= ATTEMPTS) return run;
-  if (!analysis.ok) return { ...run, misses: run.misses + 1 };
-  const scores = [...run.scores, analysis.accuracy];
-  const best = bestScore(run);
+/** Folds one analysed stroke into the sitting. */
+export function recordStroke(session: Session, analysis: Analysis): Session {
+  if (!analysis.ok) return { ...session, misses: session.misses + 1 };
+  const scores = [...session.scores, analysis.accuracy];
+  const best = bestScore(session);
   const improved = best === null || analysis.accuracy > best;
   return {
     scores,
-    misses: run.misses,
-    bestIndex: improved ? scores.length - 1 : run.bestIndex,
-    bestStroke: improved ? analysis.stroke : run.bestStroke,
+    misses: session.misses,
+    bestIndex: improved ? scores.length - 1 : session.bestIndex,
+    bestStroke: improved ? analysis.stroke : session.bestStroke,
   };
+}
+
+/** How many of the latest circles in a row scored `min` or better. */
+export function streak(scores: readonly number[], min: number): number {
+  let n = 0;
+  for (let i = scores.length - 1; i >= 0 && scores[i]! >= min; i--) n++;
+  return n;
 }
 
 /* ------------------------------------------------------------------ */
@@ -309,54 +341,104 @@ export type CircleAchievement =
   | "steady_hand"
   | "perfect_circle"
   | "hat_trick"
-  | "roundest"
-  | "photo_finish"
+  | "in_the_groove"
+  | "century"
   | "show_off"
   | "its_an_egg";
 
-/** Earned from the run so far (the unlock helper sends each id once). */
-export function earnedAchievements(run: Run): CircleAchievement[] {
+/**
+ * Earned from this sitting's circles (the unlock helper sends each id once).
+ * Only things your own circles prove: nothing depends on anyone else.
+ */
+export function earnedAchievements(session: Session): CircleAchievement[] {
   const out: CircleAchievement[] = [];
-  const best = bestScore(run);
-  if (run.scores.length > 0) out.push("first_circle");
+  const best = bestScore(session);
+  if (session.scores.length > 0) out.push("first_circle");
   if (best !== null && best >= GREAT) out.push("well_rounded");
   if (best !== null && best >= SUPERB) out.push("steady_hand");
   if (best !== null && best >= PERFECT) out.push("perfect_circle");
-  if (run.scores.length >= ATTEMPTS && run.scores.every((s) => s >= GREAT)) out.push("hat_trick");
-  if (run.scores.some((s) => s < EGG)) out.push("its_an_egg");
+  if (streak(session.scores, GREAT) >= HAT_TRICK) out.push("hat_trick");
+  if (session.scores.length >= SITTING) out.push("in_the_groove");
+  if (session.scores.some((s) => s < EGG)) out.push("its_an_egg");
   return out;
 }
 
-/** Stats for the manifest's leaderboards, reported once when the run is over. */
-export function runStats(run: Run): { [key: string]: number } {
-  const out: { [key: string]: number } = {};
-  const best = bestScore(run);
-  if (best !== null) out.best_circle = best;
-  const perfect = run.scores.filter((s) => s >= PERFECT).length;
-  if (perfect > 0) out.perfect_circles = perfect;
-  if (run.scores.length > 0) out.circles_drawn = run.scores.length;
-  return out;
+/** Earned from the all-time totals `stats.report` resolves with. */
+export function totalAchievements(totals: { [key: string]: number }): CircleAchievement[] {
+  const drawn = totals.circles_drawn;
+  return typeof drawn === "number" && drawn >= CENTURY ? ["century"] : [];
 }
 
-/** A settled match: a win (and how close it was). */
-export function resultProgress(
-  result: Pick<MatchResult, "winnerId" | "scores">,
-  me: string,
-): { achievements: CircleAchievement[]; stats: { [key: string]: number } } {
-  if (result.winnerId !== me) return { achievements: [], stats: {} };
-  const mine = result.scores[me];
-  const others = Object.entries(result.scores)
-    .filter(([id, score]) => id !== me && typeof score === "number")
-    .map(([, score]) => score as number);
-  const achievements: CircleAchievement[] = ["roundest"];
-  if (typeof mine === "number" && others.length > 0 && mine - Math.max(...others) <= PHOTO_FINISH + 1e-9) {
-    achievements.push("photo_finish");
-  }
-  return { achievements, stats: { wins: 1 } };
+/**
+ * What one scored circle reports. The platform folds it in: `best_circle` is
+ * the max, `perfect_circles` and `circles_drawn` add up.
+ */
+export function circleStats(accuracy: number): { [key: string]: number } {
+  const out: { [key: string]: number } = { best_circle: accuracy, circles_drawn: 1 };
+  if (accuracy >= PERFECT) out.perfect_circles = 1;
+  return out;
 }
 
 /* ------------------------------------------------------------------ */
-/* Synthetic circles (bots, tests)                                    */
+/* The worldwide board                                                */
+/* ------------------------------------------------------------------ */
+
+/** "Top 1%" for rank 14 of 2,380; "Better than 40%" in the bottom half; null when it says nothing. */
+export function percentileLabel(rank: number, total: number): string | null {
+  if (!Number.isFinite(rank) || !Number.isFinite(total) || total < 2 || rank < 1 || rank > total) return null;
+  const top = (rank / total) * 100;
+  if (top <= 50) return `Top ${Math.max(1, Math.ceil(top - 1e-9))}%`;
+  const beat = Math.floor(((total - rank) / total) * 100);
+  return beat > 0 ? `Better than ${beat}%` : null;
+}
+
+/** The moment worth celebrating after a circle, from the standing before it and after. */
+export interface StandingMoment {
+  /** Beat your previous all-time best (never on your very first circle). */
+  personalBest: boolean;
+  /** Places gained since the last standing we saw (0 when unknown). */
+  climbed: number;
+  /** Your first time on the board. */
+  debut: boolean;
+}
+
+export function standingMoment(
+  prev: StatStanding | null,
+  next: StatStanding,
+  accuracy: number,
+  previousBest: number | null,
+): StandingMoment {
+  return {
+    personalBest: previousBest !== null && accuracy > previousBest,
+    climbed: prev?.me && next.me ? Math.max(0, prev.me.rank - next.me.rank) : 0,
+    debut: prev !== null && prev.me === null && next.me !== null,
+  };
+}
+
+export interface BoardRow {
+  rank: number;
+  value: number;
+  /** null for your own row when you're below the top rows (the UI shows you). */
+  player: StatLeaderEntry["player"] | null;
+  me: boolean;
+  /** Ranks are skipped above this row ("…"). */
+  gap: boolean;
+}
+
+/** The top rows, plus your own row underneath when you're not among them. */
+export function boardRows(standing: StatStanding, meId: string, limit = TOP_N): BoardRow[] {
+  const rows: BoardRow[] = standing.top
+    .slice(0, limit)
+    .map((e) => ({ rank: e.rank, value: e.value, player: e.player, me: e.player.id === meId, gap: false }));
+  if (standing.me && !rows.some((r) => r.me)) {
+    const last = rows[rows.length - 1]?.rank ?? 0;
+    rows.push({ rank: standing.me.rank, value: standing.me.value, player: null, me: true, gap: standing.me.rank > last + 1 });
+  }
+  return rows;
+}
+
+/* ------------------------------------------------------------------ */
+/* Synthetic circles (tests)                                          */
 /* ------------------------------------------------------------------ */
 
 export interface Harmonic {
@@ -369,7 +451,7 @@ export interface Harmonic {
 
 export interface SynthOptions {
   radius: number;
-  /** Turns drawn (1 = exactly round; bots overshoot a little and get trimmed). */
+  /** Turns drawn (1 = exactly round; more overshoots and gets trimmed). */
   turns?: number;
   startDeg?: number;
   /** Counter-clockwise on screen. */
@@ -415,140 +497,6 @@ export function synthCircle(options: SynthOptions): Point[] {
       t: t0 + u * durationMs,
     });
   }
-  return out;
-}
-
-/* ------------------------------------------------------------------ */
-/* Bots                                                               */
-/* ------------------------------------------------------------------ */
-
-/** FNV-1a, for stable per-bot personalities. */
-function hash(input: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < input.length; i++) {
-    h ^= input.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-/**
- * How shaky a bot's hand is, stable per bot id: 1.4 (a steady hand, circles
- * around 90–95%) to 3.4 (a sloppy one, high 70s–80s). Best of three, bots
- * land around 92% on average: beatable, but not by a lumpy circle.
- */
-export function botShakiness(botId: string): number {
-  return 1.4 + ((hash(`perfect-circle:${botId}`) % 1000) / 1000) * 2;
-}
-
-export interface BotAttempt {
-  /** When the bot finishes this circle, from the start of the match. */
-  atMs: number;
-  /** How long the stroke takes (the UI replays it). */
-  drawMs: number;
-  stroke: Point[];
-  accuracy: number;
-}
-
-/** Three circles for a bot, scored by the real rules. `random` should be a per-bot fork of the match seed. */
-export function planBot(botId: string, random: Random): BotAttempt[] {
-  const shaky = botShakiness(botId);
-  const out: BotAttempt[] = [];
-  let at = random.int(2_500, 5_000);
-  for (let i = 0; i < ATTEMPTS; i++) {
-    const s = shaky * random.float(0.7, 1.35);
-    const drawMs = random.int(1_300, 2_600);
-    const stroke = synthCircle({
-      radius: random.float(230, 380),
-      turns: 1.03,
-      startDeg: random.float(-180, 180),
-      ccw: random.chance(0.35),
-      durationMs: drawMs,
-      samples: 150,
-      drift: random.normal(0, 0.03) * s,
-      harmonics: [
-        { k: 2, amp: Math.abs(random.normal(0.018, 0.008)) * s, phase: random.float(0, TAU) },
-        { k: 3, amp: Math.abs(random.normal(0.008, 0.005)) * s, phase: random.float(0, TAU) },
-        { k: 5, amp: Math.abs(random.normal(0.004, 0.003)) * s, phase: random.float(0, TAU) },
-        { k: 11, amp: Math.abs(random.normal(0.002, 0.0015)) * s, phase: random.float(0, TAU) },
-      ],
-    });
-    const analysis = analyzeStroke(stroke);
-    const accuracy = analysis.ok ? analysis.accuracy : 0;
-    at += drawMs;
-    out.push({ atMs: at, drawMs, stroke: analysis.stroke, accuracy });
-    at += random.int(4_000, 7_500);
-  }
-  return out;
-}
-
-export function bestOfBot(plan: readonly BotAttempt[]): BotAttempt | null {
-  let best: BotAttempt | null = null;
-  for (const a of plan) if (!best || a.accuracy > best.accuracy) best = a;
-  return best;
-}
-
-/* ------------------------------------------------------------------ */
-/* Wire format (live tables)                                          */
-/* ------------------------------------------------------------------ */
-
-export const ATTEMPT_EVENT = "circle";
-/** Points sent per circle to the other players (about 400 bytes). */
-export const WIRE_POINTS = 64;
-
-export interface AttemptMessage {
-  /** 1-based attempt number. */
-  n: number;
-  accuracy: number;
-  /** Flattened [x0, y0, x1, y1, …] in whole board units. */
-  pts: number[];
-}
-
-/** `n` points evenly spaced along the stroke (by length). */
-export function resample(points: readonly Point[], n: number): Point[] {
-  if (points.length === 0 || n < 2) return points.slice(0, Math.max(0, n));
-  const cum = [0];
-  for (let i = 1; i < points.length; i++) {
-    const a = points[i - 1]!;
-    const b = points[i]!;
-    cum.push(cum[i - 1]! + Math.hypot(b.x - a.x, b.y - a.y));
-  }
-  const total = cum[cum.length - 1]!;
-  if (total === 0) return Array.from({ length: n }, () => ({ ...points[0]! }));
-  const out: Point[] = [];
-  let j = 1;
-  for (let i = 0; i < n; i++) {
-    const target = (total * i) / (n - 1);
-    while (j < points.length - 1 && cum[j]! < target) j++;
-    const a = points[j - 1]!;
-    const b = points[j]!;
-    const span = cum[j]! - cum[j - 1]!;
-    const f = span === 0 ? 0 : Math.max(0, Math.min(1, (target - cum[j - 1]!) / span));
-    out.push({ x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, t: a.t + (b.t - a.t) * f });
-  }
-  return out;
-}
-
-export function toWire(n: number, accuracy: number, stroke: readonly Point[]): AttemptMessage {
-  const pts: number[] = [];
-  for (const p of resample(stroke, WIRE_POINTS)) pts.push(Math.round(p.x), Math.round(p.y));
-  return { n, accuracy, pts };
-}
-
-/** Validates an attempt from another player. */
-export function parseAttempt(payload: unknown): AttemptMessage | null {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
-  const { n, accuracy, pts } = payload as Record<string, unknown>;
-  if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > ATTEMPTS) return null;
-  if (typeof accuracy !== "number" || !Number.isFinite(accuracy) || accuracy < 0 || accuracy > 100) return null;
-  if (!Array.isArray(pts) || pts.length > WIRE_POINTS * 2 || pts.length % 2 !== 0) return null;
-  if (!pts.every((v) => typeof v === "number" && Number.isFinite(v) && v >= -BOARD && v <= BOARD * 2)) return null;
-  return { n, accuracy: floor1(accuracy), pts: pts as number[] };
-}
-
-export function fromWire(pts: readonly number[]): Point[] {
-  const out: Point[] = [];
-  for (let i = 0; i + 1 < pts.length; i += 2) out.push({ x: pts[i]!, y: pts[i + 1]!, t: 0 });
   return out;
 }
 

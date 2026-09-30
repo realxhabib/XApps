@@ -1,29 +1,20 @@
-import { createRandom } from "@xapps/sdk";
 import { describe, expect, it } from "vitest";
 import {
-  ATTEMPTS,
-  BOARD,
-  CENTER,
-  EMPTY_RUN,
+  EMPTY_SESSION,
   MAX_DRAW_MS,
   MIN_RADIUS,
   PERFECT,
   analyzeStroke,
-  bestOfBot,
   bestScore,
-  botShakiness,
   floor1,
-  fromWire,
   inkColor,
   liveAccuracy,
-  parseAttempt,
-  planBot,
   radialStats,
   recordStroke,
   resample,
+  streak,
   sweepOf,
   synthCircle,
-  toWire,
   trimToTurn,
   verdictFor,
   type Analysis,
@@ -198,7 +189,7 @@ describe("Perfect Circle geometry", () => {
   });
 });
 
-describe("Perfect Circle runs", () => {
+describe("Perfect Circle sittings", () => {
   const ok = (accuracy: number): Analysis => ({
     ok: true,
     accuracy,
@@ -211,85 +202,36 @@ describe("Perfect Circle runs", () => {
   });
   const miss: Analysis = { ok: false, reason: "small", stroke: [], radius: 20, sweepDeg: 360, durationMs: 500 };
 
-  it("keeps the best of three; misses are free retries", () => {
-    let run = EMPTY_RUN;
-    run = recordStroke(run, ok(91.2));
-    run = recordStroke(run, miss);
-    run = recordStroke(run, ok(95.5));
-    run = recordStroke(run, ok(93));
-    expect(run.scores).toEqual([91.2, 95.5, 93]);
-    expect(run.misses).toBe(1);
-    expect(bestScore(run)).toBe(95.5);
-    expect(run.bestIndex).toBe(1);
-    expect(run.bestStroke).toEqual([{ x: 95.5, y: 0, t: 0 }]);
-    // Full: further strokes are ignored.
-    expect(recordStroke(run, ok(99))).toBe(run);
-    expect(run.scores).toHaveLength(ATTEMPTS);
+  it("keeps every circle and the best one; misses don't count", () => {
+    let session = EMPTY_SESSION;
+    session = recordStroke(session, ok(91.2));
+    session = recordStroke(session, miss);
+    session = recordStroke(session, ok(95.5));
+    session = recordStroke(session, ok(93));
+    expect(session.scores).toEqual([91.2, 95.5, 93]);
+    expect(session.misses).toBe(1);
+    expect(bestScore(session)).toBe(95.5);
+    expect(session.bestIndex).toBe(1);
+    expect(session.bestStroke).toEqual([{ x: 95.5, y: 0, t: 0 }]);
+  });
+
+  it("has no attempt limit", () => {
+    let session = EMPTY_SESSION;
+    for (let i = 0; i < 40; i++) session = recordStroke(session, ok(50 + i));
+    expect(session.scores).toHaveLength(40);
+    expect(bestScore(session)).toBe(89);
+    expect(session.bestIndex).toBe(39);
   });
 
   it("a tie keeps the first circle", () => {
-    const run = recordStroke(recordStroke(EMPTY_RUN, ok(90)), ok(90));
-    expect(run.bestIndex).toBe(0);
-  });
-});
-
-describe("Perfect Circle bots", () => {
-  it("plays three plausible, deterministic circles per bot", () => {
-    const a = planBot("bot", createRandom("seed").fork("bot:bot"));
-    const b = planBot("bot", createRandom("seed").fork("bot:bot"));
-    expect(a).toEqual(b);
-    expect(a).toHaveLength(ATTEMPTS);
-    for (const attempt of a) {
-      // The bot's score is the real score of the circle it drew.
-      expect(analyzeStroke(attempt.stroke)).toMatchObject({ ok: true, accuracy: attempt.accuracy });
-    }
-    // Finishing times go up and fit inside the match clock.
-    expect(a.map((x) => x.atMs)).toEqual([...a.map((x) => x.atMs)].sort((x, y) => x - y));
-    expect(a[a.length - 1]!.atMs).toBeLessThan(30_000);
+    const session = recordStroke(recordStroke(EMPTY_SESSION, ok(90)), ok(90));
+    expect(session.bestIndex).toBe(0);
   });
 
-  it("scores like a decent human: mostly 80s–90s, rarely perfect", () => {
-    const all: number[] = [];
-    const bests: number[] = [];
-    for (let i = 0; i < 60; i++) {
-      const plan = planBot(`bot${i}`, createRandom(`table-${i}`).fork(`bot:bot${i}`));
-      all.push(...plan.map((p) => p.accuracy));
-      bests.push(bestOfBot(plan)!.accuracy);
-    }
-    const mean = (xs: number[]) => xs.reduce((s, x) => s + x, 0) / xs.length;
-    expect(Math.min(...all)).toBeGreaterThan(55);
-    expect(mean(all)).toBeGreaterThan(84);
-    expect(mean(all)).toBeLessThan(93);
-    expect(mean(bests)).toBeLessThan(96);
-    expect(bests.filter((s) => s >= PERFECT).length).toBeLessThanOrEqual(6);
-  });
-
-  it("each bot has a stable hand", () => {
-    expect(botShakiness("bot2")).toBe(botShakiness("bot2"));
-    expect(botShakiness("x")).toBeGreaterThanOrEqual(1.4);
-    expect(botShakiness("x")).toBeLessThanOrEqual(3.4);
-  });
-});
-
-describe("Perfect Circle wire format", () => {
-  it("round-trips a circle through the room (validated)", () => {
-    const stroke = synthCircle({ radius: 300 });
-    const msg = toWire(2, 97.34, stroke);
-    expect(msg.pts).toHaveLength(128);
-    const parsed = parseAttempt(JSON.parse(JSON.stringify(msg)));
-    expect(parsed).toEqual({ n: 2, accuracy: 97.3, pts: msg.pts });
-    const back = fromWire(parsed!.pts);
-    expect(back).toHaveLength(64);
-    expect(Math.hypot(back[0]!.x - CENTER.x, back[0]!.y - CENTER.y)).toBeCloseTo(300, -1);
-  });
-
-  it("refuses junk", () => {
-    expect(parseAttempt(null)).toBeNull();
-    expect(parseAttempt({ n: 0, accuracy: 50, pts: [] })).toBeNull();
-    expect(parseAttempt({ n: 4, accuracy: 50, pts: [] })).toBeNull();
-    expect(parseAttempt({ n: 1, accuracy: 101, pts: [] })).toBeNull();
-    expect(parseAttempt({ n: 1, accuracy: 50, pts: [1] })).toBeNull();
-    expect(parseAttempt({ n: 1, accuracy: 50, pts: ["1", 2] })).toBeNull();
-    expect(parseAttempt({ n: 1, accuracy: 50, pts: new Array(200).fill(BOARD / 2) })).toBeNull();
+  it("streaks count the latest circles in a row", () => {
+    expect(streak([], 90)).toBe(0);
+    expect(streak([95, 80, 91, 92], 90)).toBe(2);
+    expect(streak([95, 91, 90], 90)).toBe(3);
+    expect(streak([95, 91, 89.9], 90)).toBe(0);
   });
 });

@@ -254,6 +254,7 @@ const API: { group: string; rows: [string, string][] }[] = [
     group: "Stats & achievements",
     rows: [
       ["xapps.stats.report({ [key]: number })", "Applies each stat's aggregate (max · min · sum · last) and resolves with the new values. Keys must be in your manifest."],
+      ["xapps.stats.leaderboard(key, { limit? })", "→ { top, me, total }: the stat's global board (best first, ties share a rank; 10 rows, up to 50), the viewer's { rank, value } (null before their first value) and how many people have one. \"#14 of 2,380\". Read-only: every purpose, spectators too."],
       ["xapps.stats.defs · xapps.achievements.defs", "What your manifest declares, from the launch context."],
       ["xapps.achievements.unlock(id)", "→ { unlocked } (false if the player already had it). XP is added to their profile once; the host shows the unlock moment."],
       ["xapps.onAchievement(fn)", "achievement.unlock { id, userId } — the player, or someone else in a live match."],

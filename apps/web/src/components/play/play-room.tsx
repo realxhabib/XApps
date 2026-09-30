@@ -32,7 +32,17 @@ import { InviteCard, Lobby } from "./lobby";
 import { isMultiplayer, ordinal, seatedPlayers, viewerIsSpectator, viewerOutcome } from "./match-view";
 import { ResultsOverlay } from "./results-overlay";
 import { TurnBanner } from "./turn-banner";
-import { APP_ALLOW, APP_SANDBOX, LOGGED_REFUSALS, createLogThrottle, emitMatchChanges, toSdkError, useAppBridge, type Emit } from "./use-app-bridge";
+import {
+  APP_ALLOW,
+  APP_SANDBOX,
+  LOGGED_REFUSALS,
+  createLogThrottle,
+  emitMatchChanges,
+  readStatStanding,
+  toSdkError,
+  useAppBridge,
+  type Emit,
+} from "./use-app-bridge";
 import { VersusIntro } from "./versus-intro";
 import { VotingOverlay } from "./voting-overlay";
 
@@ -558,6 +568,8 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
         throw toSdkError(error);
       }
     },
+    // Read-only: spectators may read boards too. Test builds read the live board.
+    "stats.leaderboard": (params) => readStatStanding(backend, app.slug, params, testBuild),
     "achievements.unlock": async ({ id }) => {
       seatedOnly("achievements.unlock");
       let result: { unlocked: boolean };

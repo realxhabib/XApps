@@ -1,23 +1,30 @@
+import type { StatStanding } from "@xapps/sdk";
 import { describe, expect, it } from "vitest";
 import { achievementDefsError, getOfficialApp, manifestShapeError, statDefsError } from "@/platform/catalog";
 import {
-  EMPTY_RUN,
+  BOARD_STAT,
+  CENTURY,
+  EMPTY_SESSION,
   PERFECT,
+  SITTING,
+  boardRows,
+  circleStats,
   earnedAchievements,
+  percentileLabel,
   recordStroke,
-  resultProgress,
-  runStats,
+  standingMoment,
+  totalAchievements,
   type Analysis,
   type CircleAchievement,
-  type Run,
+  type Session,
 } from "./logic";
 
 const app = getOfficialApp("perfect-circle");
 
-function play(...scores: number[]): Run {
-  return scores.reduce<Run>(
-    (run, accuracy) =>
-      recordStroke(run, {
+function play(...scores: number[]): Session {
+  return scores.reduce<Session>(
+    (session, accuracy) =>
+      recordStroke(session, {
         ok: true,
         accuracy,
         deviation: 0,
@@ -27,17 +34,15 @@ function play(...scores: number[]): Run {
         sweepDeg: 360,
         durationMs: 1500,
       } satisfies Analysis),
-    EMPTY_RUN,
+    EMPTY_SESSION,
   );
 }
 
 describe("Perfect Circle manifest", () => {
-  it("is a valid 2–8 player score game with practice, live and async", () => {
+  it("is a standalone app with no matches", () => {
     expect(app).toBeDefined();
+    expect(app!.kind).toBe("app");
     expect(manifestShapeError(app!)).toBeNull();
-    expect(app!.players).toEqual({ min: 2, max: 8 });
-    expect(app!.scoring).toBe("high");
-    expect([...app!.modes].sort()).toEqual(["async", "live", "practice"]);
     expect(app!.url).toBe("/embed/perfect-circle");
   });
 
@@ -49,8 +54,10 @@ describe("Perfect Circle manifest", () => {
     expect(statDefsError(app?.stats)).toBeNull();
     expect(achievementDefsError(app?.achievements)).toBeNull();
     expect(app?.achievements?.some((a) => a.secret)).toBe(true);
-    expect(app?.stats?.find((s) => s.key === "best_circle")).toMatchObject({ aggregate: "max", format: "percent" });
+    expect(app?.stats?.find((s) => s.key === BOARD_STAT)).toMatchObject({ aggregate: "max", format: "percent" });
     expect(app?.stats?.find((s) => s.key === "perfect_circles")).toMatchObject({ aggregate: "sum" });
+    expect(app?.stats?.find((s) => s.key === "circles_drawn")).toMatchObject({ aggregate: "sum" });
+    expect(app?.stats?.some((s) => s.key === "wins")).toBe(false);
   });
 
   it("every achievement it can award is declared", () => {
@@ -61,8 +68,8 @@ describe("Perfect Circle manifest", () => {
       "steady_hand",
       "perfect_circle",
       "hat_trick",
-      "roundest",
-      "photo_finish",
+      "in_the_groove",
+      "century",
       "show_off",
       "its_an_egg",
     ];
@@ -71,14 +78,13 @@ describe("Perfect Circle manifest", () => {
 
   it("every stat it reports is declared", () => {
     const declared = new Set(app?.stats?.map((s) => s.key));
-    const reported = { ...runStats(play(99, 98.5, 70)), ...resultProgress({ winnerId: "me", scores: { me: 99 } }, "me").stats };
-    for (const key of Object.keys(reported)) expect(declared.has(key), key).toBe(true);
+    for (const key of Object.keys(circleStats(99))) expect(declared.has(key), key).toBe(true);
   });
 });
 
 describe("Perfect Circle achievements", () => {
   it("nothing before the first circle", () => {
-    expect(earnedAchievements(EMPTY_RUN)).toEqual([]);
+    expect(earnedAchievements(EMPTY_SESSION)).toEqual([]);
   });
 
   it("thresholds: 90, 95 and the 98% perfect circle", () => {
@@ -89,10 +95,22 @@ describe("Perfect Circle achievements", () => {
     expect(earnedAchievements(play(PERFECT))).toContain("perfect_circle");
   });
 
-  it("hat trick: three circles all 90%+", () => {
+  it("hat trick: three circles in a row, all 90%+", () => {
     expect(earnedAchievements(play(91, 92))).not.toContain("hat_trick");
     expect(earnedAchievements(play(91, 92, 90))).toContain("hat_trick");
-    expect(earnedAchievements(play(91, 89.9, 99))).not.toContain("hat_trick");
+    expect(earnedAchievements(play(91, 89.9, 99, 93))).not.toContain("hat_trick");
+    expect(earnedAchievements(play(70, 80, 91, 89.9, 99, 93, 90.5))).toContain("hat_trick");
+  });
+
+  it("in the groove: ten circles in one sitting", () => {
+    expect(earnedAchievements(play(...Array<number>(SITTING - 1).fill(80)))).not.toContain("in_the_groove");
+    expect(earnedAchievements(play(...Array<number>(SITTING).fill(80)))).toContain("in_the_groove");
+  });
+
+  it("century: a hundred circles in all, from the reported totals", () => {
+    expect(totalAchievements({ circles_drawn: CENTURY - 1 })).toEqual([]);
+    expect(totalAchievements({ circles_drawn: CENTURY, best_circle: 90 })).toEqual(["century"]);
+    expect(totalAchievements({})).toEqual([]);
   });
 
   it("it's an egg (secret): a scored circle under 50%", () => {
@@ -102,27 +120,63 @@ describe("Perfect Circle achievements", () => {
 });
 
 describe("Perfect Circle stats", () => {
-  it("best circle, perfect circles and circles drawn", () => {
-    expect(runStats(play(97.3, 98.1, 99))).toEqual({ best_circle: 99, perfect_circles: 2, circles_drawn: 3 });
-    expect(runStats(play(80.5))).toEqual({ best_circle: 80.5, circles_drawn: 1 });
-    expect(runStats(EMPTY_RUN)).toEqual({});
+  it("every circle reports itself: best (max), perfect ones and circles drawn (sums)", () => {
+    expect(circleStats(97.3)).toEqual({ best_circle: 97.3, circles_drawn: 1 });
+    expect(circleStats(PERFECT)).toEqual({ best_circle: PERFECT, circles_drawn: 1, perfect_circles: 1 });
   });
 });
 
-describe("Perfect Circle results", () => {
-  it("a win counts, a close one is a photo finish", () => {
-    expect(resultProgress({ winnerId: "me", scores: { me: 95, b1: 90, b2: 80 } }, "me")).toEqual({
-      achievements: ["roundest"],
-      stats: { wins: 1 },
-    });
-    expect(resultProgress({ winnerId: "me", scores: { me: 95.2, b1: 94.7 } }, "me").achievements).toEqual([
-      "roundest",
-      "photo_finish",
-    ]);
+describe("Perfect Circle worldwide board", () => {
+  const person = (id: string) => ({ id, handle: id, name: id.toUpperCase(), avatarUrl: null });
+  const standing = (me: StatStanding["me"], total = 2380, top = ["a", "b", "c", "d", "e", "f"]): StatStanding => ({
+    key: BOARD_STAT,
+    top: top.map((id, i) => ({ rank: i + 1, player: person(id), value: 99.5 - i })),
+    me,
+    total,
   });
 
-  it("losses and draws count for nothing", () => {
-    expect(resultProgress({ winnerId: "b1", scores: { me: 90, b1: 91 } }, "me")).toEqual({ achievements: [], stats: {} });
-    expect(resultProgress({ winnerId: null, scores: { me: 90, b1: 90 } }, "me")).toEqual({ achievements: [], stats: {} });
+  it("percentiles", () => {
+    expect(percentileLabel(14, 2380)).toBe("Top 1%");
+    expect(percentileLabel(1, 2380)).toBe("Top 1%");
+    expect(percentileLabel(50, 2380)).toBe("Top 3%");
+    expect(percentileLabel(5, 10)).toBe("Top 50%");
+    expect(percentileLabel(8, 10)).toBe("Better than 20%");
+    expect(percentileLabel(10, 10)).toBeNull();
+    expect(percentileLabel(1, 1)).toBeNull();
+    expect(percentileLabel(3, 2)).toBeNull();
+    expect(percentileLabel(0, 10)).toBeNull();
+  });
+
+  it("moments: a personal best, places climbed and a debut", () => {
+    const before = standing({ rank: 226, value: 91 });
+    const after = standing({ rank: 14, value: 97 });
+    expect(standingMoment(before, after, 97, 91)).toEqual({ personalBest: true, climbed: 212, debut: false });
+    expect(standingMoment(after, after, 93, 97)).toEqual({ personalBest: false, climbed: 0, debut: false });
+    // First circle ever: on the board, but not a "personal best".
+    expect(standingMoment(standing(null), after, 97, null)).toEqual({ personalBest: false, climbed: 0, debut: true });
+    // Nothing known before (the first fetch failed): no claims.
+    expect(standingMoment(null, after, 97, null)).toEqual({ personalBest: false, climbed: 0, debut: false });
+    // Others passed you meanwhile: never "climbed" a negative amount.
+    expect(standingMoment(after, standing({ rank: 20, value: 97 }), 90, 97).climbed).toBe(0);
+  });
+
+  it("rows: the top five, then you underneath when you're not in it", () => {
+    const rows = boardRows(standing({ rank: 14, value: 97 }), "me");
+    expect(rows.map((r) => r.rank)).toEqual([1, 2, 3, 4, 5, 14]);
+    expect(rows[5]).toMatchObject({ me: true, player: null, gap: true, value: 97 });
+    expect(rows.slice(0, 5).every((r) => !r.me)).toBe(true);
+  });
+
+  it("rows: you in the top five are highlighted in place", () => {
+    const rows = boardRows(standing({ rank: 2, value: 98.5 }, 10, ["a", "me", "c"]), "me");
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toMatchObject({ me: true, rank: 2 });
+    // Right under the top rows: no gap.
+    expect(boardRows(standing({ rank: 6, value: 90 }), "me").at(-1)).toMatchObject({ me: true, gap: false });
+  });
+
+  it("rows: an empty board, and no standing of your own", () => {
+    expect(boardRows(standing(null, 0, []), "me")).toEqual([]);
+    expect(boardRows(standing(null), "me")).toHaveLength(5);
   });
 });

@@ -29,6 +29,7 @@ import {
   APP_SANDBOX,
   LOGGED_REFUSALS,
   createLogThrottle,
+  readStatStanding,
   resolveAppUrl,
   toSdkError,
   useAppBridge,
@@ -325,6 +326,8 @@ function AppStage({ app, versionId, viewer }: { app: AppManifest; versionId: str
         throw toSdkError(error);
       }
     },
+    // The live board (test builds included: they read it but never write to it).
+    "stats.leaderboard": (params) => readStatStanding(backend, app.slug, params, testBuild),
     "achievements.unlock": async ({ id }) => {
       let result: { unlocked: boolean };
       if (testBuild) {
