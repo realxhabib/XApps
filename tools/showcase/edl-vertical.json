@@ -1,10 +1,10 @@
 {"size":[1080,1920],"clips":[
  {"name":"1 Cold open","src":"vcard-open","start":0,"end":72},
- {"name":"2 Wedge Wars pile-up + KO (native portrait)","src":"ww3v","start":14,"end":112,"xfade":6,"caption":{"dir":"vcap-ww","at":4}},
- {"name":"3 Starship League bonk (reframed)","src":"sl","start":112,"end":240,"crop":{"from":[656,0,608,1080],"to":[676,20,570,1013]},"caption":{"dir":"vcap-sl","at":6}},
- {"name":"4 VS intro (native portrait)","src":"chalv","start":196,"end":268,"xfade":6,"caption":{"dir":"vcap-chal","at":0}},
- {"name":"5 3-2-1","src":"chalv","start":278,"end":334},
- {"name":"6 Reflexes GO","src":"chalv","start":420,"end":462},
- {"name":"7 Victory","src":"chalv","start":677,"end":772,"xfade":6,"caption":{"dir":"vcap-win","at":12}},
- {"name":"8 End card","src":"vcard-end","start":0,"end":90,"xfade":10}
+ {"name":"2 Wedge Wars pile-up + KO (native portrait)","src":"ww9v","start":44,"end":236,"xfade":6,"caption":{"dir":"vcap-ww","at":4}},
+ {"name":"3 Starship League GO + bonk (reframed)","src":"sl","start":96,"end":230,"xfade":6,"crop":{"from":[656,0,608,1080],"to":[686,40,548,974]},"caption":{"dir":"vcap-sl","at":6}},
+ {"name":"4 VS intro (native portrait)","src":"chalv","start":196,"end":270,"xfade":6,"caption":{"dir":"vcap-chal","at":0}},
+ {"name":"5 3-2-1-GO","src":"chalv","start":270,"end":350},
+ {"name":"6 Reflexes GO","src":"chalv","start":490,"end":545},
+ {"name":"7 Victory","src":"chalv","start":750,"end":850,"xfade":6,"caption":{"dir":"vcap-win","at":12}},
+ {"name":"8 End card","src":"vcard-end","start":0,"end":105,"xfade":10}
 ]}

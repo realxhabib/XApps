@@ -56,4 +56,20 @@ ffmpeg -i cut.mp4 -i bed.wav -map 0:v -map 1:a -c:v copy -c:a aac -b:a 160k -sho
 
 (`ffmpeg` is `python3 -c "import imageio_ffmpeg;print(imageio_ffmpeg.get_ffmpeg_exe())"` if it isn't installed.)
 `edl.json` clips: `{src, start, end, xfade?, caption?: {dir, at}, crop?, step?, hold?}` in frames.
-`edl-vertical.json` is an unfinished 1080×1920 cut for X (see "next steps" in the commit that added this folder).
+`edl-vertical.json` is the 26 s 1080×1920 cut for X (`xapps-showcase-vertical.mp4`). Its shots:
+
+```bash
+node cards.mjs vcard-open open 3 "v=1"
+node cards.mjs vcard-end end 3.5 "v=1"
+node cards.mjs vcap-ww cap 2.5 "v=1&e=Wedge%20Wars%20%C2%B7%202%E2%80%934%20players&h=Wreck%20your%20friends."
+node cards.mjs vcap-sl cap 2.5 "v=1&e=Community%20app%20%C2%B7%20by%20%40realxhabib&h=Starship%20League."
+node cards.mjs vcap-chal cap 2.5 "v=1&e=Any%20app%20%C2%B7%20anyone%20on%20X&h=Send%20a%20challenge."
+node cards.mjs vcap-win cap 2.5 "v=1&e=Results%20%C2%B7%20XP%20%C2%B7%20Achievements&h=Keep%20the%20receipts."
+node ww-scout.mjs 9 shoot 10 ww9v 0 - - 1.7777778 portrait   # KO at fight frame ~202
+node sl-shoot.mjs shoot sl 40                                  # reframed to portrait by the EDL crop
+node challenge-v.mjs 2.6666667 chalv
+python3 compose.py edl-vertical.json work/vcut.mp4 --crf=19
+python3 audio.py 25.93 2.0 22.1 work/vbed.wav
+```
+
+Frame indices depend on the run (GPU timing can change a seed's fight), so check a contact sheet before composing.
