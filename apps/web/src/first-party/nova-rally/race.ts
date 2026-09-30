@@ -40,6 +40,7 @@ import {
   FIELD_SIZE,
   classScale,
   earnedAchievements,
+  knockoutCount,
   emptyRecord,
   gpStats,
   parseSettings,
@@ -50,16 +51,16 @@ import {
   type RaceRecord,
 } from "./logic";
 import { DT, NO_CONTROLS, Ship, collideShips, tuningFor, type Controls } from "./physics";
-import { LIVERY_SWATCHES, SHIPS, type ShipDesign } from "./ships";
+import { LIVERY_SWATCHES, PILOTS, SHIPS, type Pilot, type ShipDesign } from "./ships";
 import { compileTrack, deltaS, frameAt, trackPoint, wrapS, type CompiledTrack } from "./track";
-import { trackById } from "./tracks";
+import { mirrored, trackById } from "./tracks";
 import type { Livery } from "./types";
 
 const TAG = "nova-rally";
 const ignore = () => {};
 
 export type Phase = "intro" | "countdown" | "race" | "finished" | "results" | "podium";
-export type RacerKind = "me" | "human" | "bot" | "cpu";
+export type RacerKind = "me" | "human" | "bot" | "cpu" | "ghost";
 
 const INTRO_S = 4.2;
 const INTRO_REDUCED_S = 1.2;
@@ -76,6 +77,7 @@ export interface HeldItem {
 export interface ShipChoice {
   design: number;
   livery: number;
+  pilot?: number;
 }
 
 interface NetState {
@@ -101,6 +103,7 @@ export class Racer {
   livery: Livery;
   designIndex: number;
   liveryIndex: number;
+  pilotIndex: number;
   ship!: Ship;
   ai: AiPilot | null;
   readonly prevPos = new Vector3();
@@ -125,6 +128,8 @@ export class Racer {
   startDelay = 0;
   rocketStart = false;
   gone = false;
+  /** Knocked out (knockout mode). */
+  out = false;
 
   constructor(opts: {
     id: string;
@@ -136,6 +141,7 @@ export class Racer {
     local: boolean;
     designIndex: number;
     liveryIndex: number;
+    pilotIndex?: number;
     ai: AiPilot | null;
   }) {
     this.id = opts.id;
@@ -147,6 +153,7 @@ export class Racer {
     this.local = opts.local;
     this.designIndex = opts.designIndex;
     this.liveryIndex = opts.liveryIndex;
+    this.pilotIndex = (opts.pilotIndex ?? 0) % PILOTS.length;
     this.design = SHIPS[opts.designIndex % SHIPS.length]!;
     this.livery = liveryFor(this.design, opts.liveryIndex);
     this.ai = opts.ai;
@@ -156,7 +163,12 @@ export class Racer {
     return this.kind === "me";
   }
 
-  setDesign(designIndex: number, liveryIndex: number): void {
+  get pilot(): Pilot {
+    return PILOTS[this.pilotIndex % PILOTS.length]!;
+  }
+
+  setDesign(designIndex: number, liveryIndex: number, pilotIndex = this.pilotIndex): void {
+    this.pilotIndex = Math.abs(pilotIndex) % PILOTS.length;
     this.designIndex = designIndex;
     this.liveryIndex = liveryIndex;
     this.design = SHIPS[designIndex % SHIPS.length]!;
@@ -203,6 +215,7 @@ export interface StandingRow {
   isMe: boolean;
   designIndex: number;
   liveryIndex: number;
+  pilotIndex: number;
 }
 
 export interface HudSnapshot {
@@ -234,6 +247,10 @@ export interface HudSnapshot {
   cc: number;
   finishedPlace: number | null;
   wrongWay: boolean;
+  trial: { time: number; best: number | null; record: boolean; ghost: boolean } | null;
+  knockout: boolean;
+  mirror: boolean;
+  out: boolean;
 }
 
 export interface Input {
@@ -317,15 +334,27 @@ export class RaceRuntime {
   private remoteSeen = new Map<string, number>();
   private wrongWay = 0;
 
-  constructor(xapps: XAppsClient, reduced: boolean, choice: ShipChoice) {
+  /** Time trial (solo, against your ghost; nothing is submitted). */
+  readonly trial: string | null;
+  private ghostRun: GhostRun | null = null;
+  private recording: number[] = [];
+  private recordClock = 0;
+  private koLap = 0;
+  private koSeq = 0;
+  private trialResult: { time: number; best: number | null; record: boolean } | null = null;
+
+  constructor(xapps: XAppsClient, reduced: boolean, choice: ShipChoice, opts: { trial?: string } = {}) {
     this.xapps = xapps;
     this.reduced = reduced;
-    this.spectator = xapps.isSpectator;
-    this.settings = parseSettings(xapps.match.settings);
+    this.trial = opts.trial ?? null;
+    this.spectator = this.trial ? false : xapps.isSpectator;
+    this.settings = this.trial
+      ? { cup: { id: `trial:${this.trial}`, name: "Time Trial", icon: "⏱️", tracks: [this.trial] }, cc: 150, laps: 3, mirror: false, knockout: false }
+      : parseSettings(xapps.match.settings);
     this.scale = classScale(this.settings.cc);
     const players = [...xapps.players].sort((a, b) => a.seat - b.seat);
     const humansOnline = players.filter((p) => !p.isBot && p.id !== xapps.me.id);
-    this.live = xapps.match.mode === "live" && humansOnline.length > 0;
+    this.live = !this.trial && xapps.match.mode === "live" && humansOnline.length > 0;
     const conductor = conductorId(players);
     this.conductor = !this.live || conductor === xapps.me.id;
     const rand = xapps.random.fork("grid");
@@ -343,9 +372,21 @@ export class RaceRuntime {
       return Math.floor(rand.next() * SHIPS.length);
     };
     if (!this.spectator) used.add(choice.design);
+    const usedPilots = new Set<number>(this.spectator ? [] : [choice.pilot ?? 0]);
+    const pickPilot = () => {
+      for (let k = 0; k < 30; k++) {
+        const i = Math.floor(rand.next() * PILOTS.length);
+        if (!usedPilots.has(i)) {
+          usedPilots.add(i);
+          return i;
+        }
+      }
+      return Math.floor(rand.next() * PILOTS.length);
+    };
     let idx = 0;
     for (const p of players) {
       const isMe = !this.spectator && p.id === xapps.me.id;
+      if (this.trial && !isMe) continue;
       if (!isMe && !p.isBot && !this.live) continue; // Async: absent humans race on their own time.
       const kind: RacerKind = isMe ? "me" : p.isBot ? "bot" : "human";
       const local = isMe || (kind === "bot" && this.conductor);
@@ -362,19 +403,43 @@ export class RaceRuntime {
           local,
           designIndex: design,
           liveryIndex: isMe ? choice.livery : -1,
+          pilotIndex: isMe ? (choice.pilot ?? 0) : pickPilot(),
           ai: kind === "bot" || kind === "me" ? new AiPilot(kind === "me" ? 0.7 : skill, () => rand.next()) : null,
         }),
       );
     }
     let cpu = 0;
-    while (this.racers.length < FIELD_SIZE) {
+    if (this.trial) {
+      this.ghostRun = loadGhost(this.trial);
+      if (this.ghostRun) {
+        this.racers.push(
+          new Racer({
+            id: "ghost",
+            idx: idx++,
+            name: "Best ghost",
+            handle: "ghost",
+            avatarUrl: null,
+            kind: "ghost",
+            local: false,
+            designIndex: this.ghostRun.design,
+            liveryIndex: this.ghostRun.livery,
+            pilotIndex: choice.pilot ?? 0,
+            ai: null,
+          }),
+        );
+      }
+    }
+    while (!this.trial && this.racers.length < FIELD_SIZE) {
       const skill = Math.min(0.98, (0.5 + rand.next() * 0.42) * this.scale.cpu);
+      const pilotIndex = pickPilot();
+      const pilotName = usedPilots.size <= PILOTS.length ? PILOTS[pilotIndex]!.name : CPU_NAMES[cpu % CPU_NAMES.length]!;
       this.racers.push(
         new Racer({
           id: `cpu:${cpu}`,
           idx: idx++,
-          name: CPU_NAMES[cpu % CPU_NAMES.length]!,
-          handle: CPU_NAMES[cpu % CPU_NAMES.length]!.toLowerCase(),
+          name: pilotName,
+          handle: pilotName.toLowerCase(),
+          pilotIndex,
           avatarUrl: null,
           kind: "cpu",
           local: this.conductor,
@@ -386,13 +451,18 @@ export class RaceRuntime {
       cpu++;
     }
     this.me = this.racers.find((r) => r.isMe) ?? null;
-    this.track = compileTrack(trackById(this.settings.cup.tracks[0]!));
+    this.track = this.trackFor(0);
     this.racers.forEach((r, slot) => {
       const g = this.track.grid(slot);
       r.ship = new Ship(this.track, tuningFor(r.design.stats), g.s, g.d);
       r.prevPos.copy(r.ship.pos);
     });
     this.snapshot = this.buildSnapshot();
+  }
+
+  private trackFor(index: number): CompiledTrack {
+    const def = trackById(this.settings.cup.tracks[index]!);
+    return compileTrack(this.settings.mirror ? mirrored(def) : def);
   }
 
   get raceCount(): number {
@@ -415,7 +485,7 @@ export class RaceRuntime {
     if (this.started) return;
     this.started = true;
     let next = 0;
-    if (!this.spectator && !this.live) {
+    if (!this.spectator && !this.live && !this.trial) {
       try {
         const saved = (await Promise.race([
           this.xapps.storage.get(this.storageKey),
@@ -449,7 +519,7 @@ export class RaceRuntime {
 
   private beginRace(index: number): void {
     this.raceIndex = index;
-    this.track = compileTrack(trackById(this.settings.cup.tracks[index]!));
+    this.track = this.trackFor(index);
     const track = this.track;
     this.raceSerial++;
     this.projectiles = [];
@@ -495,9 +565,20 @@ export class RaceRuntime {
       r.net = null;
       r.lastGain = 0;
       r.rocketStart = false;
+      r.out = false;
       r.record = emptyRecord(track.def.id);
       r.startDelay = r.isMe ? 0 : 0.05 + Math.random() * 0.35 * (1.2 - (r.ai?.skill ?? 0.6));
     });
+    this.koLap = 0;
+    this.koSeq = 0;
+    this.recording = [];
+    this.recordClock = 0;
+    this.trialResult = null;
+    if (this.trial) {
+      // Time trial: no item capsules, three nitros to spend.
+      this.boxes = track.itemRows.map(() => BOX_LANES.map(() => Infinity));
+      if (this.me) this.me.items = [{ id: "nitro3", uses: 3 }];
+    }
     this.updatePlaces();
 
     this.phase = "intro";
@@ -508,9 +589,9 @@ export class RaceRuntime {
     if (this.live && this.conductor) this.scheduleGo();
     this.audio.music(track.def.theme);
     this.audio.setIntensity(false);
-    this.xapps.ui
-      .setStatus(`${this.settings.cup.name} · Race ${index + 1}/${this.raceCount} · ${track.def.name}`)
-      .catch(ignore);
+    if (!this.trial) {
+      this.xapps.ui.setStatus(`${this.settings.cup.name} · Race ${index + 1}/${this.raceCount} · ${track.def.name}`).catch(ignore);
+    }
     this.pushScores();
     this.emit(true);
   }
@@ -562,6 +643,7 @@ export class RaceRuntime {
       time: r.finished ? r.finishTime : null,
       isMe: r.isMe,
       designIndex: r.designIndex,
+      pilotIndex: r.pilotIndex,
       liveryIndex: r.liveryIndex,
     }));
     if (this.phase === "podium") rows.sort((a, b) => b.points - a.points || a.place - b.place);
@@ -607,6 +689,10 @@ export class RaceRuntime {
       cc: this.settings.cc,
       finishedPlace: me?.finished ? me.place : null,
       wrongWay: this.wrongWay > 1.2,
+      trial: this.trial ? { time: this.trialResult?.time ?? 0, best: this.trialResult?.best ?? this.ghostRun?.time ?? null, record: this.trialResult?.record ?? false, ghost: !!this.ghostRun } : null,
+      knockout: this.settings.knockout,
+      mirror: this.settings.mirror,
+      out: !!me?.out,
     };
   }
 
@@ -655,7 +741,10 @@ export class RaceRuntime {
     } else if (this.phase === "countdown") {
       const before = Math.ceil(this.phaseLength - (this.phaseTime - dt));
       const now = Math.ceil(this.phaseLength - this.phaseTime);
-      if (now !== before && now > 0 && now <= 3) this.audio.play("countdown");
+      if (now !== before && now > 0 && now <= 3) {
+        this.audio.play("countdown");
+        this.audio.announce(now === 3 ? "three" : now === 2 ? "two" : "one");
+      }
       if (this.input.throttle > 0.5 && this.throttleSince < 0) this.throttleSince = this.phaseLength - this.phaseTime;
       if (this.input.throttle <= 0.5) this.throttleSince = -1;
       if (this.phaseTime >= this.phaseLength) this.go();
@@ -709,6 +798,7 @@ export class RaceRuntime {
     this.raceTime = 0;
     this.acc = 0;
     this.audio.play("go");
+    this.audio.announce("go");
     for (const r of this.racers) {
       if (!r.local) continue;
       r.lapStart = 0;
@@ -719,6 +809,7 @@ export class RaceRuntime {
           r.rocketStart = true;
           r.record.rocketStart = true;
           this.audio.play("rocketStart");
+          this.audio.announce("rocketStart");
           this.say("Rocket start!", "good");
         } else if (t > 1.7) {
           r.ship.hit("spin", 0.9);
@@ -741,9 +832,10 @@ export class RaceRuntime {
     this.raceTime += DT;
     this.hazards = track.hazards.map((h) => hazardAt(h, track, this.raceTime));
 
+    if (this.ghostRun) this.driveGhost();
     for (const r of this.racers) {
       r.prevPos.copy(r.ship.pos);
-      if (!r.local) continue;
+      if (!r.local || r.out) continue;
       const ship = r.ship;
       let controls: Controls = NO_CONTROLS;
       let fire = false;
@@ -795,7 +887,7 @@ export class RaceRuntime {
     }
 
     // Boxes on the road vanish for remote ships too.
-    for (const r of this.racers) if (!r.local) this.pickups(r, true);
+    for (const r of this.racers) if (!r.local && !r.out && r.kind !== "ghost") this.pickups(r, true);
 
     // Ship vs ship.
     for (let i = 0; i < this.racers.length; i++) {
@@ -803,6 +895,7 @@ export class RaceRuntime {
         const a = this.racers[i]!;
         const b = this.racers[j]!;
         if (!a.local && !b.local) continue;
+        if (a.out || b.out || a.kind === "ghost" || b.kind === "ghost") continue;
         if (a.ship.cloak > 0 || b.ship.cloak > 0) continue;
         const saved = !b.local ? { s: b.ship.s, d: b.ship.d, speed: b.ship.speed } : !a.local ? { s: a.ship.s, d: a.ship.d, speed: a.ship.speed } : null;
         const hit = collideShips(a.ship, b.ship);
@@ -826,7 +919,7 @@ export class RaceRuntime {
         this.sfx("singularity", undefined, 1);
       }
       for (const r of this.racers) {
-        if (!r.local || r.ship.state === "fall" || r.ship.state === "tow") continue;
+        if (!r.local || r.out || r.ship.state === "fall" || r.ship.state === "tow") continue;
         if (p.kind !== "singularity" && r.id === p.owner && p.age < 0.6) continue;
         if (r.ship.cloak > 0 && p.kind !== "singularity") continue;
         if (!projectileHits(p, r.ship.s, r.ship.d, r.ship.h, track.length)) continue;
@@ -850,7 +943,16 @@ export class RaceRuntime {
     for (let k = 0; k < this.coins.length; k++) this.coins[k] = Math.max(0, this.coins[k]! - DT);
 
     this.updatePlaces();
+    if (this.settings.knockout) this.knockouts();
     const me = this.me;
+    if (me && !me.finished && this.trial) {
+      this.recordClock += DT;
+      if (this.recordClock >= 0.05 - 1e-6) {
+        this.recordClock = 0;
+        const sh = me.ship;
+        this.recording.push(round(sh.s, 2), round(sh.d, 2), round(sh.h, 2), round(sh.headingError, 3), me.lap);
+      }
+    }
     if (me && !me.finished) {
       if (me.place !== this.lastPlace) {
         if (this.lastPlace >= 0 && this.raceTime > 2) this.audio.play(me.place < this.lastPlace ? "positionUp" : "positionDown", { volume: 0.5 });
@@ -858,7 +960,49 @@ export class RaceRuntime {
         me.record.worstPlace = Math.max(me.record.worstPlace, this.raceTime > 5 ? me.place : 0);
       }
       const err = Math.abs(me.ship.headingError);
+      const was = this.wrongWay;
       this.wrongWay = err > 2.1 && me.ship.state === "drive" ? this.wrongWay + DT : 0;
+      if (was < 1.2 && this.wrongWay >= 1.2) this.audio.announce("wrongWay");
+    }
+  }
+
+  private knockouts(): void {
+    const alive = this.racers.filter((r) => !r.out && r.kind !== "ghost");
+    const leaderLap = Math.max(...alive.map((r) => r.lap));
+    const laps = this.settings.laps;
+    if (leaderLap <= this.koLap || leaderLap < 1 || leaderLap >= laps) return;
+    this.koLap = leaderLap;
+    const k = knockoutCount(alive.filter((r) => !r.finished).length, laps - leaderLap);
+    const bottom = alive.filter((r) => !r.finished).sort((a, b) => b.place - a.place).slice(0, k);
+    bottom.forEach((r, i) => {
+      r.out = true;
+      r.finished = true;
+      r.finishTime = 1e6 - leaderLap * 1000 - this.koSeq++ + i * 0;
+      this.fx.push({ type: "boom", pos: r.ship.pos.clone(), big: true });
+      if (r.isMe) {
+        this.phase = "finished";
+        this.phaseTime = 0;
+        this.audio.play("lose");
+        this.say("Knocked out!", "bad");
+      }
+    });
+    if (bottom.length && this.me && !this.me.out) this.say(`${bottom.map((r) => r.name).join(" & ")} knocked out!`, "info");
+    this.updatePlaces();
+  }
+
+  private driveGhost(): void {
+    const g = this.racers.find((r) => r.kind === "ghost");
+    const run = this.ghostRun;
+    if (!g || !run) return;
+    const f = this.raceTime / 0.05;
+    const i = Math.min(Math.floor(f), run.frames.length / 5 - 1);
+    if (i < 0) return;
+    const at = (k: number) => run.frames[i * 5 + k]!;
+    g.net = { s: at(0), d: at(1), h: at(2), speed: 0, yaw: at(3), flags: 16, lap: at(4), at: performance.now() };
+    g.lap = at(4);
+    if (!g.finished && this.raceTime >= run.time) {
+      g.finished = true;
+      g.finishTime = run.time;
     }
   }
 
@@ -952,7 +1096,10 @@ export class RaceRuntime {
           this.fx.push({ type: "turbo", racer: r.idx, tier: e.tier });
           if (me) {
             this.audio.play(e.tier === 1 ? "miniTurbo1" : e.tier === 2 ? "miniTurbo2" : "miniTurbo3");
-            if (e.tier === 3) this.say("Ultra turbo!", "good");
+            if (e.tier === 3) {
+              this.say("Ultra turbo!", "good");
+              this.audio.announce("ultraTurbo");
+            }
           } else this.sfx("boost", r, 0.4);
           break;
         case "fall":
@@ -988,6 +1135,7 @@ export class RaceRuntime {
         else if (r.isMe && r.lap > 0) {
           if (r.lap === this.settings.laps - 1) {
             this.say("Final lap!", "big");
+            this.audio.announce("finalLap");
             this.audio.play("finalLap");
             this.audio.setIntensity(true);
           } else {
@@ -1021,6 +1169,7 @@ export class RaceRuntime {
       this.phaseTime = 0;
       r.record.place = r.place;
       this.audio.play("finish");
+      this.audio.announce(r.place === 0 ? "first" : "finish");
       setTimeout(() => this.audio.play(r.place <= 2 ? "win" : "lose"), 900);
       this.say(r.place === 0 ? "1st place!" : `${placeSuffix(r.place + 1)} place`, r.place <= 2 ? "big" : "info");
       this.xapps.ui.setStatus(`Finished ${placeSuffix(r.place + 1)} on ${this.track.def.name}`).catch(ignore);
@@ -1039,7 +1188,7 @@ export class RaceRuntime {
   }
 
   private leader(): Racer | null {
-    return this.racers.find((r) => r.place === 0 && !r.finished) ?? this.racers.filter((r) => !r.finished).sort((a, b) => a.place - b.place)[0] ?? null;
+    return this.racers.filter((r) => !r.finished && r.kind !== "ghost").sort((a, b) => a.place - b.place)[0] ?? null;
   }
 
   private slipstream(r: Racer): void {
@@ -1143,7 +1292,10 @@ export class RaceRuntime {
       if (shooter?.local) {
         shooter.record.hitsLanded++;
         if (kind === "singularity" && r.place === 0) shooter.record.singularityOnLeader = true;
-        if (shooter.isMe) this.say(`Hit ${r.name}!`, "good");
+        if (shooter.isMe) {
+          this.say(`Hit ${r.name}!`, "good");
+          this.audio.announce("itemHit");
+        }
       } else if (this.sendRoom) {
         this.sendFx({ k: "hit", by, v: r.idx, kind: kind ?? "" });
       }
@@ -1274,6 +1426,25 @@ export class RaceRuntime {
 
   private endRace(): void {
     if (this.phase === "results") return;
+    if (this.trial && this.me) {
+      const time = this.me.finishTime;
+      const prev = this.ghostRun?.time ?? null;
+      const record = this.me.finished && (prev === null || time < prev);
+      if (record) {
+        saveGhost(this.trial, { time, design: this.me.designIndex, livery: this.me.liveryIndex, frames: this.recording });
+      }
+      this.trialResult = { time, best: record ? time : prev, record };
+      this.phase = "results";
+      this.phaseTime = 0;
+      this.phaseLength = Infinity;
+      this.audio.music("menu");
+      if (record) {
+        this.audio.play("win");
+        this.audio.announce("newRecord");
+      }
+      this.emit(true);
+      return;
+    }
     const L = this.track.length;
     const laps = this.settings.laps;
     // Everyone still racing gets an estimated time from their pace.
@@ -1335,6 +1506,7 @@ export class RaceRuntime {
   }
 
   private finishGp(): void {
+    if (this.trial) return;
     const order = this.gpOrder();
     const me = this.me;
     if (me && !this.spectator && !this.submitted) {
@@ -1401,13 +1573,14 @@ export class RaceRuntime {
   }
 
   private pushScores(): void {
+    if (this.trial) return;
     const scores: { [id: string]: string } = {};
     for (const r of this.racers) if (r.kind !== "cpu") scores[r.id] = `${r.points} pts`;
     this.xapps.ui.setScores(scores).catch(ignore);
   }
 
   private save(): void {
-    if (this.spectator || !this.me || this.live) return;
+    if (this.trial || this.spectator || !this.me || this.live) return;
     const value: SavedGp = {
       v: 1,
       next: this.raceIndex + 1,
@@ -1423,7 +1596,7 @@ export class RaceRuntime {
 
   private sendHello(): void {
     if (!this.sendRoom || !this.me) return;
-    this.xapps.room.send("hi", { d: this.me.designIndex, l: this.me.liveryIndex }).catch(ignore);
+    this.xapps.room.send("hi", { d: this.me.designIndex, l: this.me.liveryIndex, p: this.me.pilotIndex }).catch(ignore);
   }
 
   private sendFx(payload: { [key: string]: Json }): void {
@@ -1465,10 +1638,10 @@ export class RaceRuntime {
   }
 
   onRemoteHello(payload: Json, from: string): void {
-    const p = payload as { d?: number; l?: number };
+    const p = payload as { d?: number; l?: number; p?: number };
     const r = this.racers.find((o) => o.id === from);
     if (!r || r.local || typeof p?.d !== "number") return;
-    r.setDesign(Math.abs(Math.round(p.d)) % SHIPS.length, typeof p.l === "number" ? Math.round(p.l) : -1);
+    r.setDesign(Math.abs(Math.round(p.d)) % SHIPS.length, typeof p.l === "number" ? Math.round(p.l) : -1, typeof p.p === "number" ? Math.round(p.p) : r.pilotIndex);
     this.raceSerial++;
     this.emit(true);
   }
@@ -1648,4 +1821,40 @@ function round(v: number, digits: number): number {
 
 function frameInto(track: CompiledTrack, ship: Ship): void {
   frameAt(track, ship.s, ship.frame);
+}
+
+interface GhostRun {
+  v?: 1;
+  time: number;
+  design: number;
+  livery: number;
+  /** s, d, h, heading, lap every 0.05 s. */
+  frames: number[];
+}
+
+function ghostKey(track: string): string {
+  return `nova-rally:ghost:${track}`;
+}
+
+function loadGhost(track: string): GhostRun | null {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(ghostKey(track)) ?? "null") as GhostRun | null;
+    if (raw && typeof raw.time === "number" && Array.isArray(raw.frames) && raw.frames.length >= 10) return raw;
+  } catch {
+    // No ghost yet.
+  }
+  return null;
+}
+
+function saveGhost(track: string, run: GhostRun): void {
+  try {
+    window.localStorage.setItem(ghostKey(track), JSON.stringify({ v: 1, ...run }));
+  } catch {
+    // Storage full or private mode: keep racing without a ghost.
+  }
+}
+
+/** Best saved time trial per track (seconds), for the garage. */
+export function bestTrialTime(track: string): number | null {
+  return typeof window === "undefined" ? null : (loadGhost(track)?.time ?? null);
 }

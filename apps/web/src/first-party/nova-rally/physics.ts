@@ -404,7 +404,7 @@ export class Ship {
 
     /* Pads and ramps (crossing checks) */
     const moved = deltaS(prevS, this.s, track.length);
-    if (moved > 0 && !this.airborne) {
+    if (moved > 0 && this.h < 1.6) {
       for (const pad of track.boostPads) {
         const a = deltaS(pad.s - PAD_LENGTH / 2, prevS, track.length);
         const b = deltaS(pad.s - PAD_LENGTH / 2, this.s, track.length);
@@ -417,8 +417,10 @@ export class Ship {
         const a = deltaS(ramp.s, prevS, track.length);
         const b = deltaS(ramp.s, this.s, track.length);
         if (a < 0 && b >= 0 && b < 6 && Math.abs(this.d) < F2.wallOffset + 0.5) {
-          const f = Math.max(0.45, Math.min(1.1, this.speed / this.tune.top));
-          this.vh = ramp.lift * f * Math.sqrt(track.def.gravity);
+          // Ramps have launch boosters: even a slow ship clears the gap.
+          this.speed = Math.max(this.speed, this.tune.top * 0.85);
+          const f = Math.max(0.85, Math.min(1.1, this.speed / this.tune.top));
+          this.vh = Math.max(this.vh, ramp.lift * f * Math.sqrt(track.def.gravity));
           this.airborne = true;
           if (ramp.boost) this.addBoost(0.4, 0.8);
           this.events.push({ type: "ramp" });

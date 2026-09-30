@@ -1,12 +1,17 @@
 /**
- * Nova Rally sound: everything is synthesized with WebAudio (no assets).
+ * Nova Rally sound. Effects and music are synthesized with WebAudio (no
+ * asset files); the announcer uses the browser's speech synthesis.
  *
  * - `engine()` drives a continuous rocket engine (saw + square sub through a
  *   speed-tracking filter, filtered-noise rumble, a boost hiss with bright
  *   harmonics, and a drift whine that climbs with the mini-turbo tier).
- * - `play()` fires one-shot effects (items, boosts, hits, UI, jingles).
- * - `music()` runs a sequenced synth track per course with a lookahead
- *   scheduler (drums, bass, chord pads, arpeggio and a lead hook).
+ * - `play()` fires one-shot effects (items, boosts, hits, UI, jingles) with a
+ *   touch of shared reverb.
+ * - `music()` runs a sequenced track per course with a lookahead scheduler:
+ *   a layered drum kit, bass, detuned supersaw chords ducked by the kick,
+ *   filtered plucks / FM bells through a tempo-synced delay and a convolution
+ *   reverb, and a lead hook. The final lap speeds up and rises a semitone.
+ * - `announce()` speaks short race callouts ("Three!", "Final lap!").
  *
  * Follows the platform's sound toggle (`@/lib/sfx`). Nothing touches `window`
  * until a method is called, so importing this during SSR is safe.
@@ -58,7 +63,21 @@ export type RaceSound =
   | "click"
   | "whoosh";
 
-export type MusicTheme = "mars" | "belt" | "saturn" | "nebula" | "luna" | "menu";
+export type MusicTheme = "mars" | "belt" | "saturn" | "nebula" | "luna" | "sun" | "europa" | "menu";
+
+export type AnnouncerLine =
+  | "three"
+  | "two"
+  | "one"
+  | "go"
+  | "finalLap"
+  | "finish"
+  | "first"
+  | "newRecord"
+  | "itemHit"
+  | "rocketStart"
+  | "ultraTurbo"
+  | "wrongWay";
 
 /* ------------------------------------------------------------------------ */
 /* Levels                                                                    */
@@ -68,7 +87,7 @@ const MASTER = 0.62;
 const SFX_BUS = 1;
 const ENGINE_BUS = 0.55;
 /** Music bus gain at musicVolume 1 (music sits well under the effects). */
-const MUSIC_BUS = 0.38;
+const MUSIC_BUS = 0.2;
 
 /** Minimum ms between two plays of the same sound (default 50ms). */
 const RATE: Partial<Record<RaceSound, number>> = {
@@ -86,32 +105,119 @@ const RATE: Partial<Record<RaceSound, number>> = {
   go: 400,
 };
 
+/** Reverb send per effect (default 0.08). */
+const VERB: Partial<Record<RaceSound, number>> = {
+  countdown: 0.3,
+  go: 0.4,
+  finish: 0.5,
+  win: 0.5,
+  lose: 0.4,
+  finalLap: 0.45,
+  lap: 0.35,
+  coin: 0.22,
+  rouletteStop: 0.3,
+  itemBox: 0.25,
+  explosion: 0.3,
+  shieldUp: 0.3,
+  respawn: 0.35,
+  trick: 0.25,
+  warp: 0.3,
+  singularity: 0.45,
+  cloak: 0.35,
+  miniTurbo3: 0.2,
+  positionUp: 0.2,
+  select: 0.15,
+};
+
+/* ------------------------------------------------------------------------ */
+/* Announcer                                                                 */
+/* ------------------------------------------------------------------------ */
+
+const LINES: Record<AnnouncerLine, { text: string; rate: number; pitch: number }> = {
+  three: { text: "Three!", rate: 1.0, pitch: 1.05 },
+  two: { text: "Two!", rate: 1.0, pitch: 1.08 },
+  one: { text: "One!", rate: 1.0, pitch: 1.12 },
+  go: { text: "Go!", rate: 1.15, pitch: 1.3 },
+  finalLap: { text: "Final lap!", rate: 1.08, pitch: 1.15 },
+  finish: { text: "Finish!", rate: 1.05, pitch: 1.15 },
+  first: { text: "First place!", rate: 1.05, pitch: 1.2 },
+  newRecord: { text: "New record!", rate: 1.05, pitch: 1.2 },
+  itemHit: { text: "Direct hit!", rate: 1.15, pitch: 1.15 },
+  rocketStart: { text: "Rocket start!", rate: 1.12, pitch: 1.2 },
+  ultraTurbo: { text: "Ultra turbo!", rate: 1.12, pitch: 1.2 },
+  wrongWay: { text: "Wrong way!", rate: 1.05, pitch: 1.0 },
+};
+
+/** Novelty system voices that should never be the announcer. */
+const SILLY_VOICES = /bad news|bells|boing|bubbles|cellos|whisper|zarvox|trinoids|albert|jester|organ|superstar|wobble|good news|hysterical|deranged|junior|ralph|kathy|fred|grandma|grandpa|eddy|flo|reed|rocko|sandy|shelley/i;
+
+function voiceScore(v: SpeechSynthesisVoice): number {
+  if (SILLY_VOICES.test(v.name)) return -100;
+  const lang = v.lang.replace("_", "-").toLowerCase();
+  let s = 0;
+  if (lang === "en-us") s += 30;
+  else if (lang === "en-gb") s += 26;
+  else if (lang === "en-au" || lang === "en-ca") s += 20;
+  else if (lang.startsWith("en")) s += 14;
+  else return -50;
+  if (/natural|neural|online/i.test(v.name)) s += 8; // Edge / cloud voices sound far better
+  if (/google us english|google uk english male|samantha|daniel|alex|aria|guy|jenny|davis|tony|ryan|christopher|eric/i.test(v.name)) s += 6;
+  if (v.localService) s += 1; // lower latency
+  if (v.default) s += 1;
+  return s;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Music data                                                                */
 /* ------------------------------------------------------------------------ */
 
 type Wave = OscillatorType | "pulse";
-type Quality = "M" | "m" | "M7" | "m7" | "5";
+type Quality = "M" | "m" | "M7" | "m7" | "add9" | "5";
 
 const QUALITY: Record<Quality, number[]> = {
   M: [0, 4, 7],
   m: [0, 3, 7],
   M7: [0, 4, 7, 11],
   m7: [0, 3, 7, 10],
+  add9: [0, 4, 7, 14],
   "5": [0, 7, 12],
 };
 
 interface VoiceDef {
   wave: Wave;
+  /** Oscillators per note, spread across `detune` cents and the stereo field. */
+  unison: number;
   detune: number;
   cutoff: number;
   q: number;
   gain: number;
   vibrato: number;
-  /** Filter envelope start as a multiple of cutoff (pluckiness). */
+  /** Filter envelope start as a multiple of cutoff: >1 plucky, <1 brassy swell. */
   pluck: number;
   /** Fraction of the written length that sounds. */
   legato: number;
+  /** >0: percussive exponential decay with this time constant (plucks, bells). */
+  perc: number;
+  /** FM bell: modulation index (0 = off) and modulator ratio. */
+  fm: number;
+  fmRatio: number;
+}
+
+interface ArpDef extends VoiceDef {
+  /** Steps (16ths) per note. */
+  rate: number;
+  oct: number;
+}
+
+interface PadDef {
+  wave: Wave;
+  unison: number;
+  spread: number;
+  cutoff: number;
+  gain: number;
+  attack: number;
+  /** 0 = hold the whole bar, otherwise retrigger every `gate` 16ths. */
+  gate: number;
 }
 
 interface ThemeDef {
@@ -127,47 +233,71 @@ interface ThemeDef {
   bass: string;
   kick: string;
   snare: string;
-  /** "x" closed, "o" open. */
+  /** "x" closed, "o" open, "-" ghost. */
   hat: string;
   lead: VoiceDef;
   bassVoice: { wave: Wave; cutoff: number; q: number; gain: number; sub: number };
-  pad: { wave: Wave; cutoff: number; gain: number; attack: number; gate: number } | null;
-  arp: { wave: Wave; rate: number; oct: number; gain: number; decay: number; cutoff: number } | null;
+  pad: PadDef | null;
+  arp: ArpDef | null;
   drive: number;
   echo: number;
+  reverb: number;
+  /** Sidechain depth (0..1) of pads/arps under the kick. */
+  duck: number;
   chip: boolean;
+  clap: boolean;
   drumGain: number;
   fill: boolean;
 }
 
-interface MelNote {
-  n: number;
-  len: number;
-}
+const V = (o: Partial<VoiceDef> & { wave: Wave }): VoiceDef => ({
+  unison: 1,
+  detune: 0,
+  cutoff: 4000,
+  q: 1,
+  gain: 0.08,
+  vibrato: 0,
+  pluck: 1,
+  legato: 0.9,
+  perc: 0,
+  fm: 0,
+  fmRatio: 3.5,
+  ...o,
+});
 
-interface Theme extends ThemeDef {
-  bars: number;
-  mel: (MelNote | null)[];
-  bassSteps: (number | null)[];
-  bassLen: number[];
-}
+const A = (o: Partial<ArpDef> & { wave: Wave }): ArpDef => ({ ...V({ perc: 0.08, ...o }), rate: o.rate ?? 1, oct: o.oct ?? 1 });
+
+/** Final-lap counter-melody voices. */
+const COUNTER = V({ wave: "triangle", gain: 0.045, perc: 0.12, cutoff: 6000 });
+const COUNTER_CHIP = V({ wave: "square", gain: 0.025, perc: 0.08, cutoff: 8000 });
+
+const P = (o: Partial<PadDef> & { wave: Wave }): PadDef => ({
+  unison: 1,
+  spread: 0,
+  cutoff: 1800,
+  gain: 0.02,
+  attack: 0.02,
+  gate: 0,
+  ...o,
+});
+
+type Prog = [number, Quality][];
+const prog = (s: string): Prog =>
+  s
+    .trim()
+    .split(/\s+/)
+    .map((tok) => {
+      const [n, q] = tok.split(":");
+      return [Number(n), (q ?? "M") as Quality];
+    });
 
 const THEMES: Record<MusicTheme, ThemeDef> = {
-  // Driving rock-ish synth in E minor: chugging power chords and a gritty saw lead.
+  // Driving rock-ish synth in E minor: chugging supersaw power chords, gritty saw lead.
   mars: {
     bpm: 160,
     key: 40,
     leadOct: 24,
-    chords: [
-      [0, "m"],
-      [8, "M"],
-      [3, "M"],
-      [10, "M"],
-      [0, "m"],
-      [8, "M"],
-      [10, "M"],
-      [7, "M"],
-    ],
+    chords: prog("0:m 8 3 10 0:m 8 10 7"),
     melody: [
       "7 . 7 12 10 . 7 3",
       "8 - 12 - 15 - 12 10",
@@ -181,32 +311,26 @@ const THEMES: Record<MusicTheme, ThemeDef> = {
     bass: "0 . 0 . 12 . 0 . 0 . 0 . 12 . 10 .",
     kick: "x.....x.x.....x.",
     snare: "....x.......x...",
-    hat: "x.x.x.x.x.x.x.x.",
-    lead: { wave: "sawtooth", detune: 9, cutoff: 2600, q: 2, gain: 0.085, vibrato: 14, pluck: 2, legato: 0.92 },
+    hat: "x-x-x-x-x-x-x-xo",
+    lead: V({ wave: "sawtooth", unison: 3, detune: 12, cutoff: 2600, q: 2, gain: 0.085, vibrato: 14, pluck: 2, legato: 0.92 }),
     bassVoice: { wave: "sawtooth", cutoff: 650, q: 5, gain: 0.17, sub: 0.6 },
-    pad: { wave: "sawtooth", cutoff: 1300, gain: 0.018, attack: 0.01, gate: 2 },
-    arp: { wave: "pulse", rate: 2, oct: 1, gain: 0.022, decay: 0.12, cutoff: 3200 },
+    pad: P({ wave: "sawtooth", unison: 5, spread: 18, cutoff: 1500, gain: 0.014, attack: 0.008, gate: 2 }),
+    arp: A({ wave: "pulse", rate: 2, oct: 1, gain: 0.022, perc: 0.07, cutoff: 3200, pluck: 2.5 }),
     drive: 3,
     echo: 0.12,
+    reverb: 0.18,
+    duck: 0.55,
     chip: false,
+    clap: false,
     drumGain: 1,
     fill: true,
   },
-  // Dark electro in A minor: rolling square bass, gated pads, stabby resonant lead.
+  // Dark electro in A minor: rolling square bass, gated supersaw stabs, resonant lead.
   belt: {
     bpm: 150,
     key: 33,
     leadOct: 24,
-    chords: [
-      [0, "m"],
-      [0, "m"],
-      [8, "M"],
-      [10, "M"],
-      [0, "m"],
-      [0, "m"],
-      [5, "m"],
-      [7, "M"],
-    ],
+    chords: prog("0:m 0:m 8 10 0:m 0:m 5:m 7"),
     melody: [
       "12 . 12 . 15 . 12 10",
       "7 . . 7 8 . 7 3",
@@ -220,32 +344,26 @@ const THEMES: Record<MusicTheme, ThemeDef> = {
     bass: "0 . 0 0 . 0 0 . 0 . 0 0 . 12 0 .",
     kick: "x...x...x...x...",
     snare: "....x.......x...",
-    hat: "xxo.xxo.xxo.xxox",
-    lead: { wave: "square", detune: 0, cutoff: 1700, q: 7, gain: 0.07, vibrato: 0, pluck: 3.5, legato: 0.7 },
+    hat: "x-o-x-o-x-o-x-ox",
+    lead: V({ wave: "square", cutoff: 1700, q: 7, gain: 0.07, pluck: 3.5, legato: 0.7 }),
     bassVoice: { wave: "square", cutoff: 480, q: 8, gain: 0.16, sub: 0.8 },
-    pad: { wave: "sawtooth", cutoff: 900, gain: 0.018, attack: 0.005, gate: 2 },
-    arp: { wave: "sawtooth", rate: 1, oct: 1, gain: 0.028, decay: 0.09, cutoff: 2200 },
+    pad: P({ wave: "sawtooth", unison: 3, spread: 14, cutoff: 1000, gain: 0.016, attack: 0.004, gate: 2 }),
+    arp: A({ wave: "sawtooth", rate: 1, oct: 1, gain: 0.028, perc: 0.05, cutoff: 2200, q: 4, pluck: 3 }),
     drive: 0,
     echo: 0.25,
+    reverb: 0.2,
+    duck: 0.7,
     chip: false,
+    clap: true,
     drumGain: 1,
     fill: true,
   },
-  // Dreamy and airy in D major: soft pads, bell arps, a singing triangle lead with echo.
+  // Dreamy and airy in D major: soft wide pads, FM bell arps, a singing lead with echo.
   saturn: {
     bpm: 142,
     key: 38,
     leadOct: 24,
-    chords: [
-      [0, "M"],
-      [7, "M"],
-      [9, "m"],
-      [5, "M"],
-      [0, "M"],
-      [7, "M"],
-      [5, "M"],
-      [7, "M"],
-    ],
+    chords: prog("0 7 9:m 5 0 7 5 7"),
     melody: [
       "12 - 11 - 9 - 7 -",
       "9 - - 11 - - 7 -",
@@ -259,32 +377,26 @@ const THEMES: Record<MusicTheme, ThemeDef> = {
     bass: "0 . . . . . 0 . . . 7 . . . 12 .",
     kick: "x.........x.....",
     snare: "....x.......x...",
-    hat: "..x...x...x...x.",
-    lead: { wave: "triangle", detune: 5, cutoff: 5000, q: 0.7, gain: 0.13, vibrato: 18, pluck: 1, legato: 0.95 },
+    hat: "--x---x---x---x-",
+    lead: V({ wave: "triangle", unison: 2, detune: 6, cutoff: 5000, q: 0.7, gain: 0.12, vibrato: 18, legato: 0.95 }),
     bassVoice: { wave: "triangle", cutoff: 900, q: 1, gain: 0.24, sub: 0.4 },
-    pad: { wave: "triangle", cutoff: 2500, gain: 0.035, attack: 0.3, gate: 0 },
-    arp: { wave: "sine", rate: 1, oct: 2, gain: 0.04, decay: 0.25, cutoff: 6000 },
+    pad: P({ wave: "sawtooth", unison: 3, spread: 10, cutoff: 1100, gain: 0.02, attack: 0.35 }),
+    arp: A({ wave: "sine", rate: 1, oct: 2, gain: 0.035, perc: 0.18, fm: 1.6, fmRatio: 3.5 }),
     drive: 0,
     echo: 0.35,
+    reverb: 0.4,
+    duck: 0.35,
     chip: false,
+    clap: false,
     drumGain: 0.8,
     fill: false,
   },
-  // Synthwave in C minor: octave bass, lush detuned pads, big saw lead.
+  // Synthwave in C minor: octave bass, lush pumping supersaw pads, big saw lead.
   nebula: {
     bpm: 150,
     key: 36,
     leadOct: 12,
-    chords: [
-      [0, "m"],
-      [8, "M"],
-      [3, "M"],
-      [10, "M"],
-      [0, "m"],
-      [8, "M"],
-      [10, "M"],
-      [7, "M"],
-    ],
+    chords: prog("0:m 8 3 10 0:m 8 10 7"),
     melody: [
       "12 . 15 . 19 - 17 15",
       "15 - 12 - 8 - 12 -",
@@ -298,14 +410,17 @@ const THEMES: Record<MusicTheme, ThemeDef> = {
     bass: "0 . 12 . 0 . 12 . 0 . 12 . 0 . 12 .",
     kick: "x...x...x...x...",
     snare: "....x.......x...",
-    hat: "x.x.x.x.x.x.x.x.",
-    lead: { wave: "sawtooth", detune: 12, cutoff: 3200, q: 1.5, gain: 0.08, vibrato: 10, pluck: 1.6, legato: 0.92 },
+    hat: "x-x-x-x-x-x-x-x-",
+    lead: V({ wave: "sawtooth", unison: 3, detune: 14, cutoff: 3200, q: 1.5, gain: 0.08, vibrato: 10, pluck: 1.6, legato: 0.92 }),
     bassVoice: { wave: "sawtooth", cutoff: 600, q: 3, gain: 0.16, sub: 0.7 },
-    pad: { wave: "sawtooth", cutoff: 1600, gain: 0.02, attack: 0.15, gate: 0 },
-    arp: { wave: "pulse", rate: 1, oct: 1, gain: 0.026, decay: 0.1, cutoff: 3500 },
+    pad: P({ wave: "sawtooth", unison: 5, spread: 20, cutoff: 1700, gain: 0.016, attack: 0.12 }),
+    arp: A({ wave: "pulse", rate: 1, oct: 1, gain: 0.026, perc: 0.06, cutoff: 3500, pluck: 2 }),
     drive: 0,
     echo: 0.3,
+    reverb: 0.3,
+    duck: 0.75,
     chip: false,
+    clap: true,
     drumGain: 1,
     fill: true,
   },
@@ -314,16 +429,7 @@ const THEMES: Record<MusicTheme, ThemeDef> = {
     bpm: 168,
     key: 36,
     leadOct: 24,
-    chords: [
-      [0, "M"],
-      [7, "M"],
-      [9, "m"],
-      [5, "M"],
-      [0, "M"],
-      [7, "M"],
-      [5, "M"],
-      [7, "M"],
-    ],
+    chords: prog("0 7 9:m 5 0 7 5 7"),
     melody: [
       "7 . 12 . 16 - 14 12",
       "14 . 11 . 7 - . 11",
@@ -338,31 +444,91 @@ const THEMES: Record<MusicTheme, ThemeDef> = {
     kick: "x.......x.x.....",
     snare: "....x.......x..x",
     hat: "x.x.x.x.x.x.x.x.",
-    lead: { wave: "pulse", detune: 0, cutoff: 9000, q: 0.5, gain: 0.07, vibrato: 0, pluck: 1, legato: 0.85 },
+    lead: V({ wave: "pulse", cutoff: 9000, q: 0.5, gain: 0.07, legato: 0.85 }),
     bassVoice: { wave: "triangle", cutoff: 5000, q: 0.5, gain: 0.26, sub: 0 },
     pad: null,
-    arp: { wave: "square", rate: 1, oct: 1, gain: 0.026, decay: 0.06, cutoff: 8000 },
+    arp: A({ wave: "square", rate: 1, oct: 1, gain: 0.026, perc: 0.035, cutoff: 8000 }),
     drive: 0,
     echo: 0,
+    reverb: 0.1,
+    duck: 0,
     chip: true,
+    clap: false,
     drumGain: 0.9,
     fill: true,
+  },
+  // Heroic and fast in D mixolydian: huge brassy supersaws, four-on-the-floor.
+  sun: {
+    bpm: 172,
+    key: 38,
+    leadOct: 24,
+    chords: prog("0 10 5 0 8 10 0 7"),
+    melody: [
+      "7 . 7 12 - - 14 16",
+      "17 - 14 - 10 - 12 14",
+      "12 - - 9 12 - 17 -",
+      "16 - - - 14 - 12 -",
+      "15 - 12 - 8 . 12 15",
+      "17 - - 19 17 - 14 -",
+      "19 . 19 . 21 - 19 16",
+      "14 - - - 19 - 16 -",
+    ],
+    bass: "0 . 12 . 0 . 12 . 0 . 12 . 0 12 0 12",
+    kick: "x...x...x...x...",
+    snare: "....x.......x...",
+    hat: "x-o-x-o-x-o-x-oo",
+    lead: V({ wave: "sawtooth", unison: 5, detune: 16, cutoff: 2600, q: 1.2, gain: 0.085, vibrato: 16, pluck: 0.3, legato: 0.95 }),
+    bassVoice: { wave: "sawtooth", cutoff: 700, q: 4, gain: 0.16, sub: 0.7 },
+    pad: P({ wave: "sawtooth", unison: 5, spread: 22, cutoff: 2200, gain: 0.015, attack: 0.05 }),
+    arp: A({ wave: "sawtooth", rate: 1, oct: 2, gain: 0.02, perc: 0.05, cutoff: 3000, pluck: 2.5 }),
+    drive: 1.5,
+    echo: 0.15,
+    reverb: 0.3,
+    duck: 0.6,
+    chip: false,
+    clap: true,
+    drumGain: 1,
+    fill: true,
+  },
+  // Crystalline in E major: glassy FM bells, shimmering wide pads, lots of air.
+  europa: {
+    bpm: 140,
+    key: 40,
+    leadOct: 24,
+    chords: prog("0:M7 9:m7 5:M7 7 0:M7 9:m7 5:M7 7"),
+    melody: [
+      "16 - 11 - 7 - 11 16",
+      "21 - 19 - 16 - 12 -",
+      "12 - 16 - 21 - 19 16",
+      "14 - - - 11 - 7 -",
+      "16 - 11 - 7 - 11 16",
+      "23 - 21 - 19 - 16 -",
+      "21 - 19 - 16 - 12 16",
+      "19 - - - 23 - - -",
+    ],
+    bass: "0 . . 0 . . 12 . 0 . . 0 . . 7 .",
+    kick: "x.......x.x.....",
+    snare: "....x.......x...",
+    hat: "--x---x---x-x-x-",
+    lead: V({ wave: "sine", gain: 0.1, perc: 0.35, fm: 2.2, fmRatio: 3.5, vibrato: 8 }),
+    bassVoice: { wave: "sine", cutoff: 900, q: 1, gain: 0.25, sub: 0 },
+    pad: P({ wave: "triangle", unison: 3, spread: 12, cutoff: 3500, gain: 0.03, attack: 0.4 }),
+    arp: A({ wave: "sine", rate: 1, oct: 1, gain: 0.03, perc: 0.15, fm: 1.2, fmRatio: 7 }),
+    drive: 0,
+    echo: 0.35,
+    reverb: 0.5,
+    duck: 0.4,
+    chip: false,
+    clap: false,
+    drumGain: 0.75,
+    fill: false,
   },
   // Chill menu loop in G major: jazzy sevenths, soft bells.
   menu: {
     bpm: 108,
     key: 43,
     leadOct: 12,
-    chords: [
-      [0, "M7"],
-      [9, "m7"],
-      [5, "M7"],
-      [7, "M"],
-      [0, "M7"],
-      [9, "m7"],
-      [5, "M7"],
-      [7, "M"],
-    ],
+    chords: prog("0:M7 9:m7 5:M7 7 0:M7 9:m7 5:M7 7"),
     melody: [
       "7 - 11 - 14 - - -",
       "12 - - 11 9 - - -",
@@ -376,18 +542,33 @@ const THEMES: Record<MusicTheme, ThemeDef> = {
     bass: "0 . . . . . . 7 . . 0 . . . 12 .",
     kick: "x.........x.....",
     snare: "....x.......x...",
-    hat: "x.x.x.x.x.x.x.x.",
-    lead: { wave: "triangle", detune: 4, cutoff: 3000, q: 0.7, gain: 0.1, vibrato: 10, pluck: 1.2, legato: 0.95 },
+    hat: "x-x-x-x-x-x-x-x-",
+    lead: V({ wave: "triangle", unison: 2, detune: 5, cutoff: 3000, q: 0.7, gain: 0.1, vibrato: 10, pluck: 1.2, legato: 0.95 }),
     bassVoice: { wave: "sine", cutoff: 800, q: 1, gain: 0.26, sub: 0 },
-    pad: { wave: "triangle", cutoff: 1800, gain: 0.032, attack: 0.25, gate: 0 },
-    arp: { wave: "sine", rate: 2, oct: 2, gain: 0.032, decay: 0.3, cutoff: 5000 },
+    pad: P({ wave: "triangle", unison: 3, spread: 10, cutoff: 1800, gain: 0.03, attack: 0.25 }),
+    arp: A({ wave: "sine", rate: 2, oct: 2, gain: 0.03, perc: 0.2, fm: 1.4, fmRatio: 3.5 }),
     drive: 0,
     echo: 0.3,
+    reverb: 0.35,
+    duck: 0.3,
     chip: false,
+    clap: false,
     drumGain: 0.55,
     fill: false,
   },
 };
+
+interface MelNote {
+  n: number;
+  len: number;
+}
+
+interface Theme extends ThemeDef {
+  bars: number;
+  mel: (MelNote | null)[];
+  bassSteps: (number | null)[];
+  bassLen: number[];
+}
 
 function compile(def: ThemeDef): Theme {
   const bars = def.chords.length;
@@ -434,6 +615,8 @@ function theme(name: MusicTheme): Theme {
 const mtof = (m: number): number => 440 * Math.pow(2, (m - 69) / 12);
 const fold = (n: number): number => ((n % 12) + 12) % 12;
 const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
+/** 808-style metallic hat partials (Hz). */
+const HAT_PARTIALS = [205.3, 304.4, 369.6, 522.7, 540, 800];
 
 /* ------------------------------------------------------------------------ */
 /* Engine graph                                                              */
@@ -494,6 +677,18 @@ interface NoiseOpts {
   a?: number;
 }
 
+/** Per-song routing. */
+interface SongBus {
+  out: GainNode;
+  drums: GainNode;
+  duck: GainNode;
+  lead: GainNode;
+  fx: GainNode | null;
+  delay: DelayNode | null;
+  verb: AudioNode | null;
+  nodes: AudioNode[];
+}
+
 /* ------------------------------------------------------------------------ */
 /* RaceAudio                                                                 */
 /* ------------------------------------------------------------------------ */
@@ -502,24 +697,29 @@ export class RaceAudio {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private sfxBus: GainNode | null = null;
+  private sfxVerb: ConvolverNode | null = null;
   private engBus: GainNode | null = null;
   private musicBus: GainNode | null = null;
   private noise: AudioBuffer | null = null;
+  private impulse: AudioBuffer | null = null;
   private pulse: PeriodicWave | null = null;
   private enabled = true;
   private off: (() => void) | null = null;
   private last = new Map<string, number>();
   private eng: EngineNodes | null = null;
 
+  // Announcer.
+  private announcerOn = true;
+  private speechVoice: SpeechSynthesisVoice | null = null;
+  private voicesListener: (() => void) | null = null;
+  private speaking = false;
+
   // Music state.
   private musicVol = 0.5;
   private wantTheme: MusicTheme | null = null;
   private curTheme: MusicTheme | null = null;
   private song: Theme | null = null;
-  private mOut: GainNode | null = null;
-  private mLead: AudioNode | null = null;
-  private mFx: AudioNode | null = null;
-  private mNodes: AudioNode[] = [];
+  private bus: SongBus | null = null;
   private timer: number | null = null;
   private step = 0;
   private nextTime = 0;
@@ -533,6 +733,7 @@ export class RaceAudio {
     this.off = onSoundChange((on) => {
       this.enabled = on;
       if (this.master && this.ctx) this.master.gain.setTargetAtTime(on ? MASTER : 0, this.ctx.currentTime, 0.05);
+      if (!on) this.hush();
     });
     if (this.master && this.ctx) this.master.gain.setTargetAtTime(this.enabled ? MASTER : 0, this.ctx.currentTime, 0.05);
   }
@@ -541,21 +742,21 @@ export class RaceAudio {
   detach(): void {
     this.off?.();
     this.off = null;
+    this.hush();
     this.stopScheduler();
     this.eng = null;
     this.song = null;
     this.curTheme = null;
-    this.mOut = null;
-    this.mLead = null;
-    this.mFx = null;
-    this.mNodes = [];
+    this.bus = null;
     const ctx = this.ctx;
     this.ctx = null;
     this.master = null;
     this.sfxBus = null;
+    this.sfxVerb = null;
     this.engBus = null;
     this.musicBus = null;
     this.noise = null;
+    this.impulse = null;
     this.pulse = null;
     if (ctx) void ctx.close().catch(() => {});
   }
@@ -569,6 +770,14 @@ export class RaceAudio {
     this.wantTheme = null;
     this.detach();
     this.last.clear();
+    if (this.voicesListener && typeof window !== "undefined" && window.speechSynthesis) {
+      try {
+        window.speechSynthesis.removeEventListener("voiceschanged", this.voicesListener);
+      } catch {
+        // ignore
+      }
+    }
+    this.voicesListener = null;
   }
 
   private ensure(): AudioContext | null {
@@ -596,20 +805,36 @@ export class RaceAudio {
       trim.gain.value = 0.9;
       master.connect(comp).connect(trim).connect(ctx.destination);
       this.master = master;
-      this.sfxBus = ctx.createGain();
-      this.sfxBus.gain.value = SFX_BUS;
-      this.sfxBus.connect(master);
-      this.engBus = ctx.createGain();
-      this.engBus.gain.value = ENGINE_BUS;
-      this.engBus.connect(master);
-      this.musicBus = ctx.createGain();
-      this.musicBus.gain.value = this.musicVol * MUSIC_BUS;
-      this.musicBus.connect(master);
 
       const len = ctx.sampleRate * 2;
       this.noise = ctx.createBuffer(1, len, ctx.sampleRate);
       const d = this.noise.getChannelData(0);
       for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      this.impulse = this.makeImpulse(ctx, 2.4, 3.2);
+
+      this.sfxBus = ctx.createGain();
+      this.sfxBus.gain.value = SFX_BUS;
+      this.sfxBus.connect(master);
+      this.sfxVerb = ctx.createConvolver();
+      this.sfxVerb.buffer = this.makeImpulse(ctx, 1.6, 3.5);
+      const sfxWet = ctx.createGain();
+      sfxWet.gain.value = 0.5;
+      this.sfxVerb.connect(sfxWet).connect(this.sfxBus);
+
+      this.engBus = ctx.createGain();
+      this.engBus.gain.value = ENGINE_BUS;
+      this.engBus.connect(master);
+
+      // Music: its own glue compressor so the mix breathes with the kick.
+      this.musicBus = ctx.createGain();
+      this.musicBus.gain.value = this.musicVol * MUSIC_BUS;
+      const glue = ctx.createDynamicsCompressor();
+      glue.threshold.value = -20;
+      glue.knee.value = 10;
+      glue.ratio.value = 3;
+      glue.attack.value = 0.01;
+      glue.release.value = 0.15;
+      this.musicBus.connect(glue).connect(master);
 
       // 25% pulse for chiptune / nasal voices.
       const n = 32;
@@ -625,6 +850,107 @@ export class RaceAudio {
     }
     if (this.ctx.state === "suspended") void this.ctx.resume().catch(() => {});
     return this.ctx;
+  }
+
+  /** Stereo exponentially decaying noise, lightly darkened over time: a small hall. */
+  private makeImpulse(ctx: AudioContext, seconds: number, decay: number): AudioBuffer {
+    const rate = ctx.sampleRate;
+    const len = Math.floor(rate * seconds);
+    const pre = Math.floor(rate * 0.012);
+    const buf = ctx.createBuffer(2, len, rate);
+    for (let c = 0; c < 2; c++) {
+      const data = buf.getChannelData(c);
+      let lp = 0;
+      for (let i = pre; i < len; i++) {
+        const x = (i - pre) / (len - pre);
+        const white = Math.random() * 2 - 1;
+        const k = 0.15 + 0.8 * x; // more smoothing (darker) as the tail goes on
+        lp += (white - lp) * (1 - k);
+        data[i] = lp * Math.pow(1 - x, decay) * (i - pre < rate * 0.004 ? (i - pre) / (rate * 0.004) : 1);
+      }
+    }
+    return buf;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Announcer                                                               */
+  /* ---------------------------------------------------------------------- */
+
+  setAnnouncer(on: boolean): void {
+    this.announcerOn = on;
+    if (!on) this.hush();
+  }
+
+  /** Speak a short race callout. Cancels any line still being spoken. */
+  announce(line: AnnouncerLine, opts?: { rate?: number; pitch?: number; volume?: number }): void {
+    if (typeof window === "undefined" || !this.announcerOn) return;
+    if (!(this.off ? this.enabled : isSoundEnabled())) return;
+    const synth = window.speechSynthesis as SpeechSynthesis | undefined;
+    if (!synth || typeof SpeechSynthesisUtterance === "undefined") return;
+    const spec = LINES[line];
+    if (!spec) return;
+    try {
+      this.hookVoices(synth);
+      if (!this.speechVoice) this.speechVoice = this.pickVoice(synth);
+      synth.cancel();
+      const u = new SpeechSynthesisUtterance(spec.text);
+      const voice = this.speechVoice;
+      if (voice) u.voice = voice;
+      u.lang = voice?.lang ?? "en-US";
+      u.rate = clamp((opts?.rate ?? 1.05) * spec.rate, 0.5, 2);
+      u.pitch = clamp((opts?.pitch ?? 1.1) * spec.pitch, 0, 2);
+      u.volume = clamp(opts?.volume ?? 1, 0, 1);
+      u.onstart = () => this.duckMusicForVoice(true);
+      u.onend = () => this.duckMusicForVoice(false);
+      u.onerror = () => this.duckMusicForVoice(false);
+      synth.speak(u);
+    } catch {
+      // Speech is a nicety; never let it break the game.
+    }
+  }
+
+  private hookVoices(synth: SpeechSynthesis): void {
+    if (this.voicesListener) return;
+    this.voicesListener = () => {
+      this.speechVoice = this.pickVoice(synth);
+    };
+    try {
+      synth.addEventListener("voiceschanged", this.voicesListener);
+    } catch {
+      // Older engines: voices may simply be available already.
+    }
+  }
+
+  private pickVoice(synth: SpeechSynthesis): SpeechSynthesisVoice | null {
+    let best: SpeechSynthesisVoice | null = null;
+    let bestScore = -1;
+    for (const v of synth.getVoices()) {
+      const s = voiceScore(v);
+      if (s > bestScore) {
+        best = v;
+        bestScore = s;
+      }
+    }
+    return best;
+  }
+
+  /** Dip the music a little while the announcer talks. */
+  private duckMusicForVoice(on: boolean): void {
+    this.speaking = on;
+    if (this.musicBus && this.ctx) {
+      const level = this.musicVol * MUSIC_BUS * (on ? 0.55 : 1);
+      this.musicBus.gain.setTargetAtTime(level, this.ctx.currentTime, on ? 0.04 : 0.25);
+    }
+  }
+
+  private hush(): void {
+    if (typeof window === "undefined") return;
+    try {
+      window.speechSynthesis?.cancel();
+    } catch {
+      // ignore
+    }
+    if (this.speaking) this.duckMusicForVoice(false);
   }
 
   /* ---------------------------------------------------------------------- */
@@ -719,8 +1045,9 @@ export class RaceAudio {
     filt.connect(env).connect(v.out);
     const oscs: OscillatorNode[] = [];
     for (const [type, mul, det, lvl] of [
-      ["sawtooth", 1, -8, 1],
-      ["sawtooth", 1, 8, 1],
+      ["sawtooth", 1, -12, 0.8],
+      ["sawtooth", 1, 0, 0.8],
+      ["sawtooth", 1, 12, 0.8],
       ["square", 0.5, 0, 0.35],
     ] as const) {
       const o = ctx.createOscillator();
@@ -728,7 +1055,7 @@ export class RaceAudio {
       o.frequency.value = f * mul * v.p;
       o.detune.value = det;
       const lg = ctx.createGain();
-      lg.gain.value = lvl * 0.5;
+      lg.gain.value = lvl * 0.45;
       o.connect(lg).connect(filt);
       oscs.push(o);
     }
@@ -979,6 +1306,12 @@ export class RaceAudio {
       nodes.push(p);
     } else {
       out.connect(this.sfxBus);
+    }
+    if (this.sfxVerb) {
+      const send = ctx.createGain();
+      send.gain.value = VERB[sound] ?? 0.08;
+      out.connect(send).connect(this.sfxVerb);
+      nodes.push(send);
     }
     const pitch = opts?.pitch;
     const v: Voice = { ctx, out, t: ctx.currentTime + 0.005, p: pitch && pitch > 0 && Number.isFinite(pitch) ? pitch : 1 };
@@ -1321,13 +1654,20 @@ export class RaceAudio {
     this.startTheme(themeName);
   }
 
+  /** Final lap: ~8% faster, a semitone higher, plus a counter-melody and busier hats. */
   setIntensity(finalLap: boolean): void {
+    if (this.finalLap === finalLap) return;
     this.finalLap = finalLap;
+    const th = this.song;
+    const delay = this.bus?.delay;
+    if (th && delay && this.ctx) delay.delayTime.setTargetAtTime(3 * this.sixteenth(th), this.ctx.currentTime, 0.05);
   }
 
   setMusicVolume(v: number): void {
     this.musicVol = clamp(Number.isFinite(v) ? v : 0.5, 0, 1);
-    if (this.musicBus && this.ctx) this.musicBus.gain.setTargetAtTime(this.musicVol * MUSIC_BUS, this.ctx.currentTime, 0.05);
+    if (this.musicBus && this.ctx) {
+      this.musicBus.gain.setTargetAtTime(this.musicVol * MUSIC_BUS * (this.speaking ? 0.55 : 1), this.ctx.currentTime, 0.05);
+    }
   }
 
   private stopScheduler(): void {
@@ -1337,43 +1677,68 @@ export class RaceAudio {
 
   private fadeOutSong(seconds: number): void {
     const ctx = this.ctx;
-    const out = this.mOut;
-    const nodes = this.mNodes;
-    this.mOut = null;
-    this.mLead = null;
-    this.mFx = null;
-    this.mNodes = [];
-    if (!ctx || !out) return;
+    const bus = this.bus;
+    this.bus = null;
+    if (!ctx || !bus) return;
     const t = ctx.currentTime;
-    out.gain.cancelScheduledValues(t);
-    out.gain.setValueAtTime(out.gain.value, t);
-    out.gain.linearRampToValueAtTime(0, t + seconds);
+    const g = bus.out.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(0, t + seconds);
     window.setTimeout(
       () => {
-        for (const n of nodes) n.disconnect();
+        for (const n of bus.nodes) n.disconnect();
       },
-      seconds * 1000 + 800,
+      seconds * 1000 + 3000, // let the reverb tail die first
     );
   }
 
   private startTheme(name: MusicTheme): void {
     const ctx = this.ctx;
-    const bus = this.musicBus;
-    if (!ctx || !bus) return;
+    const musicBus = this.musicBus;
+    if (!ctx || !musicBus) return;
     this.fadeOutSong(0.5);
     const th = theme(name);
     this.song = th;
     this.curTheme = name;
+    const now = ctx.currentTime;
 
     const out = ctx.createGain();
-    out.gain.setValueAtTime(0, ctx.currentTime);
-    out.gain.linearRampToValueAtTime(1, ctx.currentTime + (name === "menu" ? 0.8 : 0.15));
-    out.connect(bus);
+    out.gain.setValueAtTime(0, now);
+    out.gain.linearRampToValueAtTime(1, now + (name === "menu" ? 0.8 : 0.15));
+    out.connect(musicBus);
     const nodes: AudioNode[] = [out];
+    const gain = (value: number): GainNode => {
+      const g = ctx.createGain();
+      g.gain.value = value;
+      nodes.push(g);
+      return g;
+    };
 
-    // Lead bus, optionally driven through a soft clipper.
-    const lead = ctx.createGain();
-    nodes.push(lead);
+    // Convolution reverb (shared impulse, per-song so it fades with the song).
+    let verb: ConvolverNode | null = null;
+    if (th.reverb > 0 && this.impulse) {
+      verb = ctx.createConvolver();
+      verb.buffer = this.impulse;
+      nodes.push(verb);
+      verb.connect(gain(th.reverb)).connect(out);
+    }
+    const send = (from: AudioNode, amount: number): void => {
+      if (verb && amount > 0) from.connect(gain(amount)).connect(verb);
+    };
+
+    const drums = gain(th.drumGain);
+    drums.connect(out);
+    send(drums, 0.15);
+
+    // Pads, arps and counter-melody pump under the kick.
+    const duck = gain(1);
+    duck.connect(out);
+    send(duck, 0.7);
+
+    // Lead, optionally driven through a soft clipper.
+    const lead = gain(1);
+    let leadOut: AudioNode = lead;
     if (th.drive > 0) {
       const shaper = ctx.createWaveShaper();
       const n = 1024;
@@ -1385,41 +1750,37 @@ export class RaceAudio {
       }
       shaper.curve = curve;
       shaper.oversample = "2x";
-      const post = ctx.createGain();
-      post.gain.value = 0.55;
-      lead.connect(shaper).connect(post).connect(out);
-      nodes.push(shaper, post);
-    } else {
-      lead.connect(out);
+      nodes.push(shaper);
+      leadOut = lead.connect(shaper).connect(gain(0.55));
     }
+    leadOut.connect(out);
+    send(leadOut, 0.5);
 
-    // Tempo-synced dotted-eighth echo.
-    let fx: AudioNode | null = null;
+    // Tempo-synced dotted-eighth feedback delay.
+    let fx: GainNode | null = null;
+    let delay: DelayNode | null = null;
     if (th.echo > 0) {
-      const send = ctx.createGain();
-      const delay = ctx.createDelay(2);
-      delay.delayTime.value = (3 * 60) / th.bpm / 4;
-      const fb = ctx.createGain();
-      fb.gain.value = 0.32;
+      fx = gain(1);
+      delay = ctx.createDelay(2);
+      delay.delayTime.value = 3 * this.sixteenth(th);
       const damp = ctx.createBiquadFilter();
       damp.type = "lowpass";
-      damp.frequency.value = 3000;
-      const wet = ctx.createGain();
-      wet.gain.value = th.echo;
-      send.connect(delay);
-      delay.connect(damp).connect(fb).connect(delay);
+      damp.frequency.value = 3200;
+      const hp = ctx.createBiquadFilter();
+      hp.type = "highpass";
+      hp.frequency.value = 250;
+      nodes.push(delay, damp, hp);
+      fx.connect(hp).connect(delay);
+      delay.connect(damp).connect(gain(0.36)).connect(delay);
+      const wet = gain(th.echo);
       damp.connect(wet).connect(out);
-      nodes.push(send, delay, fb, damp, wet);
-      fx = send;
+      send(wet, 0.5);
     }
 
-    this.mOut = out;
-    this.mLead = lead;
-    this.mFx = fx;
-    this.mNodes = nodes;
+    this.bus = { out, drums, duck, lead, fx, delay, verb, nodes };
     this.step = 0;
     this.arpIdx = 0;
-    this.nextTime = ctx.currentTime + 0.08;
+    this.nextTime = now + 0.08;
     if (this.timer === null) this.timer = window.setInterval(() => this.tick(), 25);
   }
 
@@ -1449,104 +1810,162 @@ export class RaceAudio {
 
   private scheduleStep(th: Theme, step: number, time: number): void {
     const ctx = this.ctx;
-    const out = this.mOut;
-    const lead = this.mLead;
-    if (!ctx || !out || !lead || !this.enabled) return;
+    const bus = this.bus;
+    if (!ctx || !bus || !this.enabled) return;
     const bar = Math.floor(step / 16);
     const s = step % 16;
     const [rawRoot, quality] = th.chords[bar];
+    const intense = this.finalLap;
+    const key = th.key + (intense ? 1 : 0); // final lap: up a semitone
     const root = fold(rawRoot);
     const iv = QUALITY[quality];
     const six = this.sixteenth(th);
-    const v: Voice = { ctx, out, t: time, p: 1 };
-    const dg = th.drumGain;
-    const intense = this.finalLap;
+    const dv: Voice = { ctx, out: bus.drums, t: time, p: 1 };
 
     // Drums.
-    if (th.kick[s] === "x") this.mKick(v, 0.55 * dg, th.chip);
+    if (th.kick[s] === "x") {
+      this.mKick(dv, 0.6, th.chip);
+      this.pump(bus.duck, time, th.duck, six);
+    }
     const fill = th.fill && bar === th.bars - 1 && s >= 12;
-    if (th.snare[s] === "x" || fill) this.mSnare(v, (fill ? 0.14 + (s - 12) * 0.05 : 0.26) * dg, th.chip);
+    if (th.snare[s] === "x" || fill) this.mSnare(dv, fill ? 0.14 + (s - 12) * 0.05 : 0.26, th.chip, th.clap && !fill);
     const h = th.hat[s];
-    if (h === "x") this.mHat(v, (s % 4 === 0 ? 0.07 : 0.05) * dg, false);
-    else if (h === "o") this.mHat(v, 0.06 * dg, true);
-    else if (intense && s % 2 === 1) this.mHat(v, 0.035 * dg, false);
-    if (step === 0) this.cymbal(v, 0, 1.2, 0.05 * dg);
+    if (h === "x") this.mHat(dv, s % 4 === 0 ? 0.065 : 0.05, false, th.chip);
+    else if (h === "o") this.mHat(dv, 0.05, true, th.chip);
+    else if (h === "-" || (intense && s % 2 === 1)) this.mHat(dv, 0.022, false, th.chip);
+    if (step === 0) this.cymbal(dv, 0, 1.4, 0.05);
 
     // Bass.
     const b = th.bassSteps[s];
-    if (b !== null && b !== undefined) this.mBass(v, th, th.key + root + b, th.bassLen[s] * six * 0.9);
+    if (b !== null && b !== undefined) this.mBass(bus.out, time, th, key + root + b, th.bassLen[s] * six * 0.9);
 
-    // Pad.
+    // Chords.
     if (th.pad) {
       const gate = th.pad.gate;
       if (gate === 0 ? s === 0 : s % gate === 0) {
         const len = gate === 0 ? 16 * six : gate * six * 0.75;
-        for (const i of iv) this.mPad(v, th, th.key + 24 + root + i, len);
+        for (const i of iv) this.mPad(bus.duck, time, th.pad, key + 24 + root + i, len);
       }
     }
 
-    // Arpeggio.
+    // Arpeggio (ping-pong over two octaves of the chord).
     if (th.arp && s % th.arp.rate === 0) {
       const tones = [...iv.slice(0, 3), ...iv.slice(0, 3).map((x) => x + 12)];
       const idx = this.arpIdx++ % (tones.length * 2 - 2);
       const pick = idx < tones.length ? tones[idx] : tones[tones.length * 2 - 2 - idx];
-      this.mArp(v, th, th.key + 12 + th.arp.oct * 12 + root + pick);
+      this.mNote(time, key + 12 + th.arp.oct * 12 + root + pick, six * th.arp.rate * 0.9, th.arp, bus.duck, bus.fx);
     }
 
-    // Lead.
+    // Lead hook.
     if (s % 2 === 0) {
       const ev = th.mel[bar * 8 + s / 2];
-      if (ev) this.mNote(lead, time, th.key + th.leadOct + ev.n, ev.len * 2 * six * th.lead.legato, th.lead);
+      if (ev) this.mNote(time, key + th.leadOct + ev.n, ev.len * 2 * six * th.lead.legato, th.lead, bus.lead, bus.fx);
     }
 
-    // Final-lap counter melody: off-beat bell arpeggio an octave above the lead.
+    // Final-lap counter-melody: off-beat chord-tone bells an octave above the lead.
     if (intense && s % 4 === 2) {
       const tones = [iv[0], iv[1], iv[2], 12];
-      const f = mtof(th.key + th.leadOct + 12 + root + tones[(s >> 2) % 4]);
-      const cv: Voice = { ctx, out, t: time, p: 1 };
-      this.tone(cv, { f, type: th.chip ? "square" : "triangle", dur: six * 1.8, g: th.chip ? 0.025 : 0.045, a: 0.003 });
-      this.tone(cv, { f: f * 2, dur: six * 1.2, g: 0.015, a: 0.002 });
-      if (this.mFx) this.tone({ ctx, out: this.mFx, t: time, p: 1 }, { f, type: "triangle", dur: six * 1.5, g: 0.02 });
+      const cm = th.chip ? COUNTER_CHIP : COUNTER;
+      this.mNote(time, key + th.leadOct + 12 + root + tones[(s >> 2) % 4], six * 1.8, cm, bus.duck, bus.fx);
     }
   }
 
+  /** Sidechain-style pump: pull the pad bus down on the kick and let it swell back. */
+  private pump(duck: GainNode, t: number, depth: number, six: number): void {
+    if (depth <= 0) return;
+    const g = duck.gain;
+    g.setValueAtTime(1, t);
+    g.linearRampToValueAtTime(1 - depth, t + 0.012);
+    g.linearRampToValueAtTime(1, t + Math.min(0.2, six * 1.9));
+  }
+
+  /** Layered kick: pitched sine body + transient click + noise snap. */
   private mKick(v: Voice, g: number, chip: boolean): void {
     const { ctx } = v;
     const t = v.t;
     const o = ctx.createOscillator();
-    o.type = chip ? "square" : "sine";
-    o.frequency.setValueAtTime(chip ? 220 : 160, t);
-    o.frequency.exponentialRampToValueAtTime(chip ? 50 : 52, t + (chip ? 0.05 : 0.07));
-    o.frequency.exponentialRampToValueAtTime(40, t + 0.25);
     const env = ctx.createGain();
-    const len = chip ? 0.09 : 0.24;
+    if (chip) {
+      o.type = "square";
+      o.frequency.setValueAtTime(220, t);
+      o.frequency.exponentialRampToValueAtTime(50, t + 0.05);
+      env.gain.setValueAtTime(0.0001, t);
+      env.gain.exponentialRampToValueAtTime(g * 0.45, t + 0.003);
+      env.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+      o.connect(env).connect(v.out);
+      o.start(t);
+      o.stop(t + 0.12);
+      return;
+    }
+    o.type = "sine";
+    o.frequency.setValueAtTime(175, t);
+    o.frequency.exponentialRampToValueAtTime(58, t + 0.055);
+    o.frequency.exponentialRampToValueAtTime(43, t + 0.3);
     env.gain.setValueAtTime(0.0001, t);
-    env.gain.exponentialRampToValueAtTime(chip ? g * 0.45 : g, t + 0.003);
-    env.gain.exponentialRampToValueAtTime(0.0001, t + len);
+    env.gain.exponentialRampToValueAtTime(g, t + 0.002);
+    env.gain.exponentialRampToValueAtTime(g * 0.75, t + 0.07);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
     o.connect(env).connect(v.out);
     o.start(t);
-    o.stop(t + len + 0.02);
-    if (!chip) this.tone(v, { f: 1200, to: 200, type: "triangle", dur: 0.012, g: g * 0.25, a: 0.001 });
+    o.stop(t + 0.45);
+    this.tone(v, { f: 3200, to: 500, type: "triangle", dur: 0.012, g: g * 0.3, a: 0.0005 });
+    this.hiss(v, { from: 5000, to: 3000, dur: 0.012, g: g * 0.22, type: "highpass", a: 0.0005 });
   }
 
-  private mSnare(v: Voice, g: number, chip: boolean): void {
+  /** Snare: bandpassed noise + bright sizzle + two-partial tonal body (optional clap layer). */
+  private mSnare(v: Voice, g: number, chip: boolean, clap: boolean): void {
     if (chip) {
       this.hiss(v, { from: 5000, to: 2500, dur: 0.08, g, type: "highpass", a: 0.001 });
       this.tone(v, { f: 240, to: 120, type: "square", dur: 0.04, g: g * 0.35 });
       return;
     }
-    this.hiss(v, { from: 2400, to: 1400, dur: 0.17, g, q: 0.8, a: 0.001 });
-    this.hiss(v, { from: 7000, to: 5000, dur: 0.09, g: g * 0.5, type: "highpass", a: 0.001 });
-    this.tone(v, { f: 200, to: 140, type: "triangle", dur: 0.08, g: g * 0.7, a: 0.001 });
+    this.hiss(v, { from: 1900, to: 1400, dur: 0.2, g: g * 0.85, q: 0.8, a: 0.001 });
+    this.hiss(v, { from: 7000, to: 6000, dur: 0.11, g: g * 0.45, type: "highpass", a: 0.001 });
+    this.tone(v, { f: 190, to: 160, type: "triangle", dur: 0.11, g: g * 0.7, a: 0.001 });
+    this.tone(v, { f: 330, to: 280, type: "triangle", dur: 0.06, g: g * 0.35, a: 0.001 });
+    if (clap) {
+      for (const at of [0, 0.01, 0.021]) this.hiss(v, { from: 1300, to: 1100, at, dur: 0.018, g: g * 0.55, q: 1.6, a: 0.0008 });
+      this.hiss(v, { from: 1300, to: 900, at: 0.03, dur: 0.16, g: g * 0.45, q: 1.2, a: 0.002 });
+    }
   }
 
-  private mHat(v: Voice, g: number, open: boolean): void {
-    this.hiss(v, { from: 8000, to: 9000, dur: open ? 0.16 : 0.035, g, type: "highpass", q: 0.7, a: 0.001 });
-  }
-
-  private mBass(v: Voice, th: Theme, midi: number, dur: number): void {
+  /** Hats: 808-style metallic square cluster + noise; open hats ring longer. */
+  private mHat(v: Voice, g: number, open: boolean, chip: boolean): void {
+    const dur = open ? 0.28 : 0.045;
+    if (chip) {
+      this.hiss(v, { from: 8000, to: 9000, dur: open ? 0.14 : 0.03, g, type: "highpass", q: 0.7, a: 0.001 });
+      return;
+    }
     const { ctx } = v;
     const t = v.t;
+    const mix = ctx.createGain();
+    mix.gain.value = 1 / HAT_PARTIALS.length;
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.value = 10000;
+    bp.Q.value = 0.8;
+    const hp = ctx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.value = 7000;
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.0001, t);
+    env.gain.exponentialRampToValueAtTime(g * 1.6, t + 0.001);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    mix.connect(bp).connect(hp).connect(env).connect(v.out);
+    for (const f of HAT_PARTIALS) {
+      const o = ctx.createOscillator();
+      o.type = "square";
+      o.frequency.value = f * 1.6;
+      o.connect(mix);
+      o.start(t);
+      o.stop(t + dur + 0.02);
+    }
+    this.hiss(v, { from: 9000, to: 10000, dur, g: g * 0.5, type: "highpass", q: 0.7, a: 0.001 });
+  }
+
+  private mBass(dest: AudioNode, t: number, th: Theme, midi: number, dur: number): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
     const bv = th.bassVoice;
     const f = mtof(midi);
     const filt = ctx.createBiquadFilter();
@@ -1559,7 +1978,7 @@ export class RaceAudio {
     env.gain.linearRampToValueAtTime(bv.gain, t + 0.005);
     env.gain.linearRampToValueAtTime(bv.gain * 0.7, t + dur);
     env.gain.linearRampToValueAtTime(0, t + dur + 0.04);
-    filt.connect(env).connect(v.out);
+    filt.connect(env).connect(dest);
     const o = this.osc(ctx, bv.wave);
     o.frequency.value = f;
     o.connect(filt);
@@ -1576,42 +1995,48 @@ export class RaceAudio {
     }
   }
 
-  private mPad(v: Voice, th: Theme, midi: number, dur: number): void {
-    const pad = th.pad;
-    if (!pad) return;
-    const { ctx } = v;
-    const t = v.t;
+  /** Chord voice: `unison` detuned oscillators spread across the stereo field (supersaw). */
+  private mPad(dest: AudioNode, t: number, pad: PadDef, midi: number, dur: number): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
     const filt = ctx.createBiquadFilter();
     filt.type = "lowpass";
-    filt.frequency.value = pad.cutoff;
-    const env = ctx.createGain();
+    filt.Q.value = 0.8;
     const atk = Math.min(pad.attack, dur * 0.5);
+    filt.frequency.setValueAtTime(pad.cutoff * 0.5, t);
+    filt.frequency.linearRampToValueAtTime(pad.cutoff, t + atk + 0.05);
+    const env = ctx.createGain();
     env.gain.setValueAtTime(0, t);
     env.gain.linearRampToValueAtTime(pad.gain, t + atk + 0.003);
     env.gain.setValueAtTime(pad.gain, t + dur);
     env.gain.linearRampToValueAtTime(0, t + dur + Math.min(0.25, atk + 0.04));
-    filt.connect(env).connect(v.out);
+    filt.connect(env).connect(dest);
     const f = mtof(midi);
-    const dets = pad.wave === "sawtooth" ? [-7, 7] : [0];
-    for (const d of dets) {
+    const n = Math.max(1, Math.round(pad.unison));
+    const level = 1 / Math.sqrt(n);
+    const canPan = typeof ctx.createStereoPanner === "function";
+    for (let i = 0; i < n; i++) {
+      const x = n === 1 ? 0 : (i / (n - 1)) * 2 - 1;
       const o = this.osc(ctx, pad.wave);
       o.frequency.value = f;
-      o.detune.value = d;
-      o.connect(filt);
+      o.detune.value = x * pad.spread + (Math.random() - 0.5) * 3;
+      const g = ctx.createGain();
+      g.gain.value = level;
+      o.connect(g);
+      if (canPan && n > 1) {
+        const p = ctx.createStereoPanner();
+        p.pan.value = x * 0.7;
+        g.connect(p).connect(filt);
+      } else {
+        g.connect(filt);
+      }
       o.start(t);
       o.stop(t + dur + 0.3);
     }
   }
 
-  private mArp(v: Voice, th: Theme, midi: number): void {
-    const arp = th.arp;
-    if (!arp) return;
-    const target = this.mFx;
-    this.tone(v, { f: mtof(midi), type: arp.wave, dur: arp.decay, g: arp.gain, lp: [arp.cutoff, arp.cutoff * 0.4], a: 0.002 });
-    if (target) this.tone({ ...v, out: target }, { f: mtof(midi), type: arp.wave, dur: arp.decay, g: arp.gain * 0.6, lp: [arp.cutoff, arp.cutoff * 0.4], a: 0.002 });
-  }
-
-  private mNote(dest: AudioNode, t: number, midi: number, dur: number, lv: VoiceDef): void {
+  /** Melodic voice: unison saws / plucks / FM bells through a filter envelope. */
+  private mNote(t: number, midi: number, dur: number, lv: VoiceDef, dest: AudioNode, fx: AudioNode | null): void {
     const ctx = this.ctx;
     if (!ctx) return;
     const f = mtof(midi);
@@ -1619,27 +2044,64 @@ export class RaceAudio {
     filt.type = "lowpass";
     filt.Q.value = lv.q;
     filt.frequency.setValueAtTime(Math.min(18000, lv.cutoff * lv.pluck), t);
-    filt.frequency.setTargetAtTime(lv.cutoff, t, 0.06);
+    filt.frequency.setTargetAtTime(lv.cutoff, t, lv.pluck < 1 ? 0.05 : 0.06);
     const env = ctx.createGain();
-    env.gain.setValueAtTime(0, t);
-    env.gain.linearRampToValueAtTime(lv.gain, t + 0.008);
-    env.gain.linearRampToValueAtTime(lv.gain * 0.65, t + Math.max(0.02, dur));
-    env.gain.linearRampToValueAtTime(0, t + dur + 0.07);
+    let end: number;
+    if (lv.perc > 0) {
+      env.gain.setValueAtTime(0.0001, t);
+      env.gain.exponentialRampToValueAtTime(lv.gain, t + 0.003);
+      env.gain.setTargetAtTime(0, t + 0.003, lv.perc);
+      end = t + Math.max(dur, lv.perc * 6) + 0.02;
+    } else {
+      env.gain.setValueAtTime(0, t);
+      env.gain.linearRampToValueAtTime(lv.gain, t + 0.008);
+      env.gain.linearRampToValueAtTime(lv.gain * 0.65, t + Math.max(0.02, dur));
+      env.gain.linearRampToValueAtTime(0, t + dur + 0.07);
+      end = t + dur + 0.1;
+    }
     filt.connect(env).connect(dest);
-    if (this.mFx) env.connect(this.mFx);
-    const end = t + dur + 0.1;
-    const dets = lv.detune > 0 ? [-lv.detune, lv.detune] : [0];
+    if (fx) env.connect(fx);
+
     const oscs: OscillatorNode[] = [];
-    for (const d of dets) {
-      const o = this.osc(ctx, lv.wave);
-      o.frequency.value = f;
-      o.detune.value = d;
-      const g = ctx.createGain();
-      g.gain.value = 1 / dets.length;
-      o.connect(g).connect(filt);
-      o.start(t);
-      o.stop(end);
-      oscs.push(o);
+    if (lv.fm > 0) {
+      // Two-operator FM: glassy/bell timbre whose brightness decays.
+      const car = ctx.createOscillator();
+      car.frequency.value = f;
+      const mod = ctx.createOscillator();
+      mod.frequency.value = Math.min(18000, f * lv.fmRatio);
+      const idx = ctx.createGain();
+      idx.gain.setValueAtTime(f * lv.fm, t);
+      idx.gain.setTargetAtTime(f * lv.fm * 0.12, t, 0.12);
+      mod.connect(idx).connect(car.frequency);
+      car.connect(filt);
+      mod.start(t);
+      mod.stop(end);
+      car.start(t);
+      car.stop(end);
+      oscs.push(car);
+    } else {
+      const n = Math.max(1, Math.round(lv.unison));
+      const level = 1 / Math.sqrt(n);
+      const canPan = typeof ctx.createStereoPanner === "function";
+      for (let i = 0; i < n; i++) {
+        const x = n === 1 ? 0 : (i / (n - 1)) * 2 - 1;
+        const o = this.osc(ctx, lv.wave);
+        o.frequency.value = f;
+        o.detune.value = x * lv.detune;
+        const g = ctx.createGain();
+        g.gain.value = level;
+        o.connect(g);
+        if (canPan && n > 2) {
+          const p = ctx.createStereoPanner();
+          p.pan.value = x * 0.5;
+          g.connect(p).connect(filt);
+        } else {
+          g.connect(filt);
+        }
+        o.start(t);
+        o.stop(end);
+        oscs.push(o);
+      }
     }
     if (lv.vibrato > 0 && dur > 0.2) {
       const lfo = ctx.createOscillator();

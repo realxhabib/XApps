@@ -14,11 +14,11 @@ import { Avatar } from "@/components/ui/avatar";
 import { play } from "@/lib/sfx";
 import { ItemIcon } from "./icons";
 import { ITEMS, type ItemId } from "./items";
-import { SPEED_CLASSES, parseSettings, type SpeedClass } from "./logic";
+import { SPEED_CLASSES, formatTime, parseSettings, type SpeedClass } from "./logic";
 import { MatchView } from "./match";
 import { ShipPreview } from "./preview";
-import { liveryFor, type ShipChoice } from "./race";
-import { LIVERY_SWATCHES, SHIPS, shipIconSvg } from "./ships";
+import { bestTrialTime, liveryFor, type ShipChoice } from "./race";
+import { LIVERY_SWATCHES, PILOTS, SHIPS, pilotPortraitSvg, shipIconSvg } from "./ships";
 import { CUPS, TRACKS, trackById } from "./tracks";
 
 const CHOICE_KEY = "nova-rally:ship";
@@ -27,12 +27,16 @@ function loadChoice(): ShipChoice {
   try {
     const raw = JSON.parse(window.localStorage.getItem(CHOICE_KEY) ?? "null") as ShipChoice | null;
     if (raw && typeof raw.design === "number" && typeof raw.livery === "number") {
-      return { design: Math.abs(raw.design) % SHIPS.length, livery: Math.max(-1, Math.min(LIVERY_SWATCHES.length - 1, raw.livery)) };
+      return {
+        design: Math.abs(raw.design) % SHIPS.length,
+        livery: Math.max(-1, Math.min(LIVERY_SWATCHES.length - 1, raw.livery)),
+        pilot: typeof raw.pilot === "number" ? Math.abs(raw.pilot) % PILOTS.length : 0,
+      };
     }
   } catch {
     // First visit.
   }
-  return { design: 0, livery: -1 };
+  return { design: 0, livery: -1, pilot: 0 };
 }
 
 export function NovaRallyApp() {
@@ -48,6 +52,7 @@ function Race() {
   const started = useMatchStarted();
   const [choice, setChoice] = useState<ShipChoice | null>(null);
   const [locked, setLocked] = useState<ShipChoice | null>(null);
+  const [trial, setTrial] = useState<{ track: string; run: number } | null>(null);
   const xapps = useXApps();
   const readyRef = useRef(false);
 
@@ -82,9 +87,18 @@ function Race() {
         <motion.div key="race" className="absolute inset-0" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }}>
           <MatchView choice={active ?? loadChoice()} />
         </motion.div>
+      ) : trial ? (
+        <motion.div key={`trial${trial.run}`} className="absolute inset-0" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <MatchView
+            choice={active ?? loadChoice()}
+            trial={trial.track}
+            onExit={() => setTrial(null)}
+            onRetry={() => setTrial((t) => (t ? { ...t, run: t.run + 1 } : t))}
+          />
+        </motion.div>
       ) : (
         <motion.div key="garage" className="absolute inset-0 overflow-y-auto" exit={{ opacity: 0, scale: 1.04, filter: "blur(10px)" }} transition={{ duration: 0.35 }}>
-          <Garage onChange={setChoice} onReady={ready} locked={!!locked} />
+          <Garage onChange={setChoice} onReady={ready} locked={!!locked} onTrial={(track) => setTrial({ track, run: 0 })} />
         </motion.div>
       )}
     </AnimatePresence>
@@ -109,11 +123,22 @@ function StatBar({ label, value }: { label: string; value: number }) {
   );
 }
 
-function Garage({ onChange, onReady, locked }: { onChange: (c: ShipChoice) => void; onReady: (c: ShipChoice) => void; locked: boolean }) {
+function Garage({
+  onChange,
+  onReady,
+  onTrial,
+  locked,
+}: {
+  onChange: (c: ShipChoice) => void;
+  onReady: (c: ShipChoice) => void;
+  onTrial: (track: string) => void;
+  locked: boolean;
+}) {
   const xapps = useXApps();
   const reduced = useReducedMotion() ?? false;
   const { players, me } = usePlayers();
-  const [choice, setChoice] = useState<ShipChoice>(() => (typeof window === "undefined" ? { design: 0, livery: -1 } : loadChoice()));
+  const [choice, setChoice] = useState<ShipChoice>(() => (typeof window === "undefined" ? { design: 0, livery: -1, pilot: 0 } : loadChoice()));
+  const pilot = PILOTS[(choice.pilot ?? 0) % PILOTS.length]!;
   const settings = parseSettings(xapps.match.settings);
   const design = SHIPS[choice.design]!;
   const livery = liveryFor(design, choice.livery);
@@ -177,7 +202,7 @@ function Garage({ onChange, onReady, locked }: { onChange: (c: ShipChoice) => vo
       <div className="relative grid gap-4 md:grid-cols-[1.1fr_1fr]">
         <div className="relative flex flex-col overflow-hidden rounded-3xl border border-white/15 bg-[radial-gradient(circle_at_50%_60%,rgba(120,80,255,0.35),rgba(10,6,30,0.6))]">
           <div className="relative h-[clamp(170px,42vw,250px)]">
-            <ShipPreview design={design} livery={livery} reduced={reduced} />
+            <ShipPreview design={design} livery={livery} pilot={pilot} reduced={reduced} />
           </div>
           <div className="flex flex-col gap-1.5 px-4 pb-4">
             <div className="flex items-baseline justify-between">
@@ -199,7 +224,7 @@ function Garage({ onChange, onReady, locked }: { onChange: (c: ShipChoice) => vo
                 <motion.button
                   key={s.id}
                   type="button"
-                  onClick={() => pick({ design: i, livery: choice.livery })}
+                  onClick={() => pick({ ...choice, design: i })}
                   whileTap={{ scale: 0.94 }}
                   className="flex flex-col items-center gap-0.5 rounded-2xl border-2 px-1 py-1.5 text-[10px] font-bold"
                   style={{
@@ -208,15 +233,41 @@ function Garage({ onChange, onReady, locked }: { onChange: (c: ShipChoice) => vo
                     opacity: locked && !selected ? 0.4 : 1,
                   }}
                 >
-                  <span className="block h-8 w-14" dangerouslySetInnerHTML={{ __html: shipIconSvg(s, liveryFor(s, selected ? choice.livery : -1)) }} />
-                  <span className="truncate">{s.name}</span>
+                  <span className="block h-10 w-16" dangerouslySetInnerHTML={{ __html: shipIconSvg(s, liveryFor(s, selected ? choice.livery : -1)) }} />
+                  <span className="w-full truncate text-center">{s.name}</span>
                 </motion.button>
               );
             })}
           </div>
           <div>
+            <div className="mb-1 flex items-baseline justify-between text-[11px] font-bold uppercase tracking-wider text-white/60">
+              <span>Pilot</span>
+              <span className="normal-case tracking-normal text-white/80">
+                <b className="text-white">{pilot.name}</b> · {pilot.tagline}
+              </span>
+            </div>
+            <div className="grid grid-cols-8 gap-1.5">
+              {PILOTS.map((pl, i) => {
+                const selected = i === (choice.pilot ?? 0);
+                return (
+                  <motion.button
+                    key={pl.id}
+                    type="button"
+                    aria-label={pl.name}
+                    title={`${pl.name} (${pl.species})`}
+                    onClick={() => pick({ ...choice, pilot: i })}
+                    whileTap={{ scale: 0.9 }}
+                    className="aspect-square w-full overflow-hidden rounded-full border-2"
+                    style={{ borderColor: selected ? "#ffd166" : "transparent", boxShadow: selected ? `0 0 14px ${pl.color}` : "none", opacity: locked && !selected ? 0.4 : 1 }}
+                    dangerouslySetInnerHTML={{ __html: pilotPortraitSvg(pl).replace("<svg", '<svg width="100%" height="100%"') }}
+                  />
+                );
+              })}
+            </div>
+          </div>
+          <div>
             <div className="mb-1 text-[11px] font-bold uppercase tracking-wider text-white/60">Paint</div>
-            <div className="flex flex-wrap gap-2">
+            <div className="grid grid-cols-9 gap-1.5">
               {[-1, ...LIVERY_SWATCHES.map((_, i) => i)].map((li) => {
                 const l = liveryFor(design, li);
                 const selected = li === choice.livery;
@@ -225,8 +276,8 @@ function Garage({ onChange, onReady, locked }: { onChange: (c: ShipChoice) => vo
                     key={li}
                     type="button"
                     aria-label={li < 0 ? "Factory paint" : `Paint ${li + 1}`}
-                    onClick={() => pick({ design: choice.design, livery: li })}
-                    className="size-8 rounded-full border-2"
+                    onClick={() => pick({ ...choice, livery: li })}
+                    className="aspect-square w-full max-w-8 rounded-full border-2"
                     style={{
                       background: `conic-gradient(${l.primary} 0 50%, ${l.secondary} 50% 80%, ${l.glow} 80%)`,
                       borderColor: selected ? "#fff" : "rgba(255,255,255,0.2)",
@@ -262,11 +313,13 @@ function Garage({ onChange, onReady, locked }: { onChange: (c: ShipChoice) => vo
         </div>
       </div>
 
+      <TimeTrials onTrial={onTrial} />
+
       <div className="relative grid gap-3 md:grid-cols-2">
         <div className="rounded-2xl border border-white/10 bg-white/5 p-3 text-[12px] leading-relaxed text-white/80">
           <div className="mb-1 font-bold text-white">How to race</div>
           <b>Drift</b> (hold Space / DRIFT while turning) to charge blue → orange → purple mini-turbos. Hold throttle as the
-          last red light goes out for a <b>rocket start</b>. Press drift in the air off a ramp for a <b>trick boost</b>. Tuck in behind a rival to
+          last red light goes out for a <b>rocket start</b>. Press drift in the air off a ramp for a <b>trick boost</b>. Hold drift going straight, then release for a <b>charge jump</b>. Tuck in behind a rival to
           <b> slipstream</b>. Grab stardust (up to 10) for top speed. 3 races, points 15-12-10-8-6-4-2-1.
         </div>
         <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
@@ -280,6 +333,35 @@ function Garage({ onChange, onReady, locked }: { onChange: (c: ShipChoice) => vo
             ))}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function TimeTrials({ onTrial }: { onTrial: (track: string) => void }) {
+  const [bests] = useState(() => Object.fromEntries(TRACKS.map((t) => [t.id, bestTrialTime(t.id)])));
+  return (
+    <div className="relative rounded-2xl border border-white/10 bg-white/5 p-3">
+      <div className="mb-2 flex items-baseline justify-between">
+        <span className="text-[12px] font-bold text-white">⏱ Time Trial while you wait</span>
+        <span className="text-[11px] text-white/55">Solo vs your ghost · nothing is submitted</span>
+      </div>
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {TRACKS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => {
+              play("pop");
+              onTrial(t.id);
+            }}
+            className="flex min-w-[120px] flex-col items-start rounded-xl px-3 py-2 text-left"
+            style={{ background: `linear-gradient(135deg, ${t.accent[0]}44, ${t.accent[1]}22)`, border: `1px solid ${t.accent[0]}88` }}
+          >
+            <span className="text-[12px] font-black italic text-white">{t.name}</span>
+            <span className="font-mono text-[11px] text-white/75">{bests[t.id] ? formatTime(bests[t.id]!) : "no time yet"}</span>
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -315,14 +397,19 @@ function Setup() {
   const [cup, setCup] = useState<string>(start.cup.id.startsWith("single:") ? start.cup.id.slice(7) : start.cup.id);
   const [cc, setCc] = useState<SpeedClass>(start.cc);
   const [laps, setLaps] = useState(start.laps);
+  const [mirror, setMirror] = useState(start.mirror);
+  const [knockout, setKnockout] = useState(start.knockout);
   const [busy, setBusy] = useState(false);
   const single = TRACKS.some((t) => t.id === cup);
   const name = single ? trackById(cup).name : (CUPS.find((c) => c.id === cup)?.name ?? "Solar Cup");
 
   const send = () => {
     setBusy(true);
-    const settings: { [key: string]: string | number } = single ? { track: cup, cc, laps } : { cup, cc, laps };
-    submit(settings, `${name} · ${cc}cc · ${laps} laps`).catch(() => setBusy(false));
+    const settings: { [key: string]: string | number | boolean } = single ? { track: cup, cc, laps } : { cup, cc, laps };
+    if (mirror) settings.mirror = true;
+    if (knockout) settings.mode = "knockout";
+    const extras = [mirror ? "mirror" : "", knockout ? "knockout" : ""].filter(Boolean).join(" · ");
+    submit(settings, `${name} · ${cc}cc · ${laps} laps${extras ? ` · ${extras}` : ""}`).catch(() => setBusy(false));
   };
 
   const option = (selected: boolean) =>
@@ -367,6 +454,19 @@ function Setup() {
               {n}
             </button>
           ))}
+        </div>
+      </section>
+      <section className="flex flex-col gap-2">
+        <div className="text-xs font-bold uppercase tracking-wider text-white/60">Rules</div>
+        <div className="grid grid-cols-2 gap-2">
+          <button type="button" className={option(mirror)} onClick={() => setMirror((m) => !m)}>
+            🪞 Mirror mode
+            <span className="block text-xs font-medium text-white/60">Every track flipped</span>
+          </button>
+          <button type="button" className={option(knockout)} onClick={() => setKnockout((k) => !k)}>
+            💥 Knockout
+            <span className="block text-xs font-medium text-white/60">Slowest racers eliminated each lap</span>
+          </button>
         </div>
       </section>
       <div className="mt-auto flex gap-2">

@@ -32,11 +32,11 @@ interface Touch {
   brake: boolean;
 }
 
-export function MatchView({ choice }: { choice: ShipChoice }) {
+export function MatchView({ choice, trial, onExit, onRetry }: { choice: ShipChoice; trial?: string; onExit?: () => void; onRetry?: () => void }) {
   const xapps = useXApps();
   const reduced = useReducedMotion() ?? false;
   const result = useMatchResult();
-  const [rt] = useState(() => new RaceRuntime(xapps, reduced, choice));
+  const [rt] = useState(() => new RaceRuntime(xapps, reduced, choice, { trial }));
   const hud = useSyncExternalStore(rt.subscribe, rt.getSnapshot, rt.getSnapshot);
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -95,7 +95,7 @@ export function MatchView({ choice }: { choice: ShipChoice }) {
     let mapPath: Path2D | null = null;
     let mapFit = { x: 0, z: 0, k: 1 };
     const loop = (now: number) => {
-      const dt = Math.min(0.1, (now - last) / 1000);
+      const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
       last = now;
       // Controls.
       const k = keys.current;
@@ -345,7 +345,7 @@ export function MatchView({ choice }: { choice: ShipChoice }) {
             </div>
           ))}
       </div>
-      <RaceHud hud={hud} minimap={<canvas ref={miniRef} width={150} height={150} className="size-[118px] sm:size-[150px]" />} />
+      <RaceHud hud={hud} onExit={onExit} onRetry={onRetry} minimap={<canvas ref={miniRef} width={150} height={150} className="size-[118px] sm:size-[150px]" />} />
       {isTouch && !hud.spectator && (hud.phase === "race" || hud.phase === "countdown") ? (
         <TouchControls
           knob={steerKnob}

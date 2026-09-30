@@ -359,7 +359,170 @@ const LUNA: TrackDef = {
   ],
 };
 
-export const TRACKS: readonly TrackDef[] = [MARS, BELT, SATURN, NEBULA, LUNA];
+/** A star's corona: skimming a boiling plasma surface, a corkscrew and solar-flare strikes. */
+const SUN: TrackDef = {
+  id: "sun",
+  name: "Solar Corona",
+  theme: "sun",
+  blurb: "Skim a boiling star. Dodge solar-flare strikes, corkscrew through the corona and leap a plasma gap.",
+  accent: ["#ff9a2e", "#ffe066"],
+  halfWidth: 12.5,
+  shoulder: 2.5,
+  autoBank: 1,
+  gravity: 1,
+  floating: true,
+  nodes: [
+    n(0, 0, 0),
+    n(0, 4, -140),
+    n(40, 14, -250),
+    n(140, 24, -300),
+    n(250, 18, -260),
+    n(300, 6, -160),
+    n(280, -8, -50),
+    n(200, -14, 20, { w: 13.5 }),
+    n(120, -4, -10, { w: 13.5 }),
+    n(90, 10, 90),
+    n(160, 24, 170, { bank: 0 }),
+    n(260, 30, 230, { bank: 120 }),
+    n(200, 20, 320, { bank: 240 }),
+    n(80, 8, 300, { bank: 360 }),
+    n(-40, 0, 280),
+    n(-150, -6, 300),
+    n(-250, 4, 220),
+    n(-280, 16, 110),
+    n(-220, 22, 10),
+    n(-150, 12, -60),
+    n(-100, 4, 20, { w: 12 }),
+    n(-60, 0, 110, { w: 12 }),
+    n(-15, 0, 90),
+  ],
+  boostPads: [
+    { at: 0.6, d: 0 },
+    { at: 4.5, d: -0.35 },
+    { at: 9.4, d: 0.3 },
+    { at: 13.6, d: 0 },
+    { at: 17.5, d: -0.4 },
+    { at: 21.3, d: 0 },
+  ],
+  itemRows: [1.6, 8.6, 14.4, 19.4],
+  coins: [
+    { at: 2.3, d: 0.4, n: 5 },
+    { at: 5.2, d: -0.3, n: 5 },
+    { at: 10.5, d: 0, n: 6 },
+    { at: 12.4, d: 0, n: 5 },
+    { at: 16.2, d: 0.4, n: 5 },
+    { at: 20.4, d: -0.3, n: 4 },
+  ],
+  ramps: [{ at: 7.62, lift: 15 }],
+  gaps: [{ from: 7.76, to: 8.08 }],
+  open: [
+    { from: 14.2, to: 15.8, side: 0 },
+    { from: 2.4, to: 3.2, side: 1 },
+  ],
+  hazards: [
+    { kind: "meteor", at: 3.5, d: 0.3, period: 6, phase: 0 },
+    { kind: "meteor", at: 5.6, d: -0.3, period: 6.5, phase: 2.5 },
+    { kind: "meteor", at: 16.6, d: 0.2, period: 5.5, phase: 1.2 },
+    { kind: "arc", at: 18.7, period: 3.2, phase: 0.6 },
+    { kind: "arc", at: 6.5, period: 3.6, phase: 1.8 },
+  ],
+};
+
+/** Europa: Jupiter's ice moon. Low gravity, rolling ice boulders, jumps over cracked lineae. */
+const EUROPA: TrackDef = {
+  id: "europa",
+  name: "Europa Ice",
+  theme: "europa",
+  blurb: "Race the cracked ice of Jupiter's moon. Low gravity, rolling ice boulders and jumps over the lineae.",
+  accent: ["#7fd6ff", "#ff7a5a"],
+  halfWidth: 13,
+  shoulder: 6,
+  autoBank: 0.6,
+  gravity: 0.8,
+  floating: false,
+  nodes: [
+    n(0, 0, 0),
+    n(0, 0, -130),
+    n(-30, 6, -240),
+    n(-130, 12, -290),
+    n(-240, 8, -240),
+    n(-280, 0, -140),
+    n(-230, -6, -50, { w: 12 }),
+    n(-260, 0, 50, { w: 12 }),
+    n(-200, 8, 150),
+    n(-90, 14, 190),
+    n(10, 8, 250),
+    n(130, 4, 260),
+    n(240, 10, 200),
+    n(280, 16, 90),
+    n(220, 10, 0),
+    n(250, 4, -100),
+    n(190, 0, -200),
+    n(100, 0, -160, { w: 12.5 }),
+    n(80, 0, -60, { w: 12.5 }),
+    n(90, 0, 50),
+    n(40, 0, 100),
+  ],
+  boostPads: [
+    { at: 0.5, d: 0.35 },
+    { at: 2.45, d: 0 },
+    { at: 7.5, d: -0.3 },
+    { at: 12.45, d: 0 },
+    { at: 16.5, d: 0.35 },
+  ],
+  itemRows: [1.4, 6.4, 11.4, 17.4],
+  coins: [
+    { at: 1.8, d: -0.4, n: 5 },
+    { at: 4.4, d: 0.3, n: 5 },
+    { at: 8.4, d: 0, n: 6 },
+    { at: 10.5, d: -0.3, n: 5 },
+    { at: 14.4, d: 0.4, n: 5 },
+    { at: 18.6, d: -0.2, n: 4 },
+  ],
+  ramps: [
+    { at: 2.62, lift: 16 },
+    { at: 12.6, lift: 15 },
+  ],
+  gaps: [
+    { from: 2.76, to: 3.06 },
+    { from: 12.74, to: 13.02 },
+  ],
+  open: [],
+  hazards: [
+    { kind: "asteroid", at: 6.5, size: 4, period: 6, phase: 0 },
+    { kind: "asteroid", at: 14.6, size: 5, period: 7, phase: 2.2 },
+    { kind: "asteroid", at: 19.5, size: 3.5, period: 5, phase: 1 },
+    { kind: "meteor", at: 9.5, d: 0.3, period: 6.5, phase: 1.5 },
+    { kind: "meteor", at: 17.3, d: -0.3, period: 6, phase: 3.3 },
+  ],
+};
+
+export const TRACKS: readonly TrackDef[] = [MARS, BELT, SATURN, NEBULA, LUNA, SUN, EUROPA];
+
+/** The same course in mirror image (left turns become right turns). */
+export function mirrorTrack(def: TrackDef): TrackDef {
+  const flip = <T extends { d: number }>(x: T): T => ({ ...x, d: -x.d });
+  return {
+    ...def,
+    id: `${def.id}-mirror`,
+    name: `${def.name} (Mirror)`,
+    nodes: def.nodes.map((node) => ({ ...node, p: [-node.p[0], node.p[1], node.p[2]] as const, bank: node.bank === undefined ? undefined : -node.bank })),
+    boostPads: def.boostPads.map(flip),
+    coins: def.coins.map(flip),
+    open: def.open.map((o) => ({ ...o, side: (o.side === 0 ? 0 : -o.side) as -1 | 0 | 1 })),
+    hazards: def.hazards.map((h) => (h.kind === "meteor" ? { ...h, d: -h.d } : h)),
+  };
+}
+
+const mirrors = new Map<string, TrackDef>();
+export function mirrored(def: TrackDef): TrackDef {
+  let m = mirrors.get(def.id);
+  if (!m) {
+    m = mirrorTrack(def);
+    mirrors.set(def.id, m);
+  }
+  return m;
+}
 
 export function trackById(id: string): TrackDef {
   return TRACKS.find((t) => t.id === id) ?? MARS;
@@ -374,6 +537,7 @@ export interface Cup {
 
 export const CUPS: readonly Cup[] = [
   { id: "solar", name: "Solar Cup", icon: "☀️", tracks: ["mars", "belt", "saturn"] },
-  { id: "void", name: "Void Cup", icon: "🌌", tracks: ["nebula", "luna", "belt"] },
-  { id: "grand", name: "Galaxy Cup", icon: "🪐", tracks: ["mars", "saturn", "nebula", "luna"] },
+  { id: "void", name: "Void Cup", icon: "🌌", tracks: ["nebula", "luna", "europa"] },
+  { id: "star", name: "Star Cup", icon: "🌟", tracks: ["sun", "europa", "nebula"] },
+  { id: "grand", name: "Galaxy Cup", icon: "🪐", tracks: ["mars", "saturn", "sun", "europa"] },
 ];

@@ -12,6 +12,7 @@ import {
   AdditiveBlending,
   BufferGeometry,
   CanvasTexture,
+  CapsuleGeometry,
   CircleGeometry,
   Color,
   CylinderGeometry,
@@ -20,6 +21,7 @@ import {
   ExtrudeGeometry,
   Float32BufferAttribute,
   Group,
+  IcosahedronGeometry,
   LatheGeometry,
   type Material,
   Matrix4,
@@ -146,6 +148,8 @@ export interface ShipModel {
   setDriftGlow(tier: 0 | 1 | 2 | 3): void;
   setShield(on: boolean, time: number): void;
   setGhost(alpha: number): void;
+  /** Podium celebration: the canopy clears, the pilot bounces and waves. t in seconds, 0 = stop. */
+  celebrate(t: number): void;
   dispose(): void;
 }
 
@@ -407,15 +411,13 @@ void main() {
 /* Model context                                                      */
 /* ------------------------------------------------------------------ */
 
-type MatKey = "paint" | "paint2" | "chrome" | "dark" | "trim" | "glass" | "helmet" | "visor" | "glowN" | "decal";
+type MatKey = "paint" | "paint2" | "chrome" | "dark" | "trim" | "glass" | "glowN" | "decal";
 const MAT_KEYS: readonly MatKey[] = [
   "paint",
   "paint2",
   "chrome",
   "dark",
   "trim",
-  "helmet",
-  "visor",
   "glowN",
   "decal",
   "glass",
@@ -444,6 +446,9 @@ class Ctx {
   readonly tube: readonly [number, number];
   underglow: readonly [number, number, number] = [1.7, 3.0, 0];
   sparks: readonly [number, number, number] = [0.6, 0.22, 1.0];
+  /** Pilot seat: head centre and scale (1 unit of pilot space). */
+  seat = { x: 0, y: 0.8, z: 0, s: 0.12 };
+  glassMesh: Mesh | null = null;
 
   constructor(
     readonly q: Quality,
@@ -458,8 +463,6 @@ class Ctx {
       dark: b(),
       trim: b(),
       glass: b(),
-      helmet: b(),
-      visor: b(),
       glowN: b(),
       decal: b(),
     };
@@ -506,25 +509,17 @@ class Ctx {
     return zLathe(profile, segs, phiStart, phiLen);
   }
 
-  /** Glass canopy (half ellipsoid) with a chrome sill and a pilot inside. */
-  cockpit(x: number, y: number, z: number, sx: number, sy: number, sz: number): void {
-    this.batches.glass.add(this.sphere(0, Math.PI / 2), { p: [x, y, z], s: [sx, sy, sz] });
+  /** Glass canopy (half ellipsoid) with a chrome sill; records the pilot seat. */
+  cockpit(x: number, y: number, z: number, sx0: number, sy0: number, sz: number): void {
+    const sx = sx0 * 1.12;
+    const sy = sy0 * 1.3;
+    const lift = 0.08;
+    // a bubble that dips below its sill so it always meets the hull
+    this.batches.glass.add(this.sphere(0, Math.PI * 0.62), { p: [x, y + lift, z], s: [sx, sy, sz] });
     const sill = this.torus(1, 0.045);
     sill.rotateX(Math.PI / 2);
-    this.chrome.add(sill, { p: [x, y + 0.01, z], s: [sx * 1.01, 0.7, sz * 1.01] });
-    // pilot
-    const hr = Math.min(sx, sy) * 0.58;
-    const hy = y + sy * 0.34;
-    const hz = z + sz * 0.12;
-    this.batches.helmet.add(this.sphere(), { p: [x, hy, hz], s: hr });
-    this.batches.visor.add(this.sphere(0.95, 0.85, Math.PI * 1.5 - 0.95, 1.9), {
-      p: [x, hy, hz],
-      s: hr * 1.05,
-    });
-    // glowing mohawk ridge on the helmet
-    this.trim.add(this.sphere(), { p: [x, hy + hr * 0.82, hz + hr * 0.15], s: [hr * 0.16, hr * 0.32, hr * 0.85] });
-    // shoulders
-    this.dark.add(this.sphere(), { p: [x, hy - hr * 1.05, hz + hr * 0.3], s: [hr * 1.5, hr * 0.7, hr * 1.1] });
+    this.chrome.add(sill, { p: [x, y + 0.01, z], s: [sx * 1.0, 0.7, sz * 1.0] });
+    this.seat = { x, y: y + lift + sy * 0.3, z: z + sz * 0.1, s: Math.min(sy * 0.42, sx * 0.55) };
   }
 
   /** A thruster: chrome bell, dark throat, emissive core disc and ring. Exit plane at z. */
@@ -602,7 +597,10 @@ class Ctx {
       mesh.castShadow = key !== "glass" && key !== "decal" && key !== "glowN";
       mesh.receiveShadow = key === "paint" || key === "paint2";
       if (key === "decal") mesh.renderOrder = 1;
-      if (key === "glass") mesh.renderOrder = 2;
+      if (key === "glass") {
+        mesh.renderOrder = 2;
+        this.glassMesh = mesh;
+      }
       this.body.add(mesh);
     }
   }
@@ -1280,9 +1278,9 @@ function makeMaterials(livery: Livery, q: Quality, num: number): MatSet {
         clearcoat: 1,
         clearcoatRoughness: 0.02,
         transparent: true,
-        opacity: 0.4,
+        opacity: 0.26,
         depthWrite: false,
-        envMapIntensity: 1.6,
+        envMapIntensity: 1.2,
       })
     : new MeshStandardMaterial({
         color: glassTint,
@@ -1291,20 +1289,9 @@ function makeMaterials(livery: Livery, q: Quality, num: number): MatSet {
         metalness: 0.2,
         roughness: 0.05,
         transparent: true,
-        opacity: 0.45,
+        opacity: 0.3,
         depthWrite: false,
       });
-  const helmet = paint("#fbfbf8");
-  const visor = hi
-    ? new MeshPhysicalMaterial({
-        color: "#0b0e18",
-        emissive: glow,
-        emissiveIntensity: 0.45,
-        metalness: 0.7,
-        roughness: 0.08,
-        clearcoat: 1,
-      })
-    : new MeshStandardMaterial({ color: "#0b0e18", emissive: glow, emissiveIntensity: 0.45, metalness: 0.7, roughness: 0.1 });
   const glowN = new MeshStandardMaterial({ color: "#000000", emissive: glow, emissiveIntensity: 2 });
   const tex = decalTexture(num, livery);
   const decalOpts = {
@@ -1326,8 +1313,6 @@ function makeMaterials(livery: Livery, q: Quality, num: number): MatSet {
       dark,
       trim,
       glass,
-      helmet,
-      visor,
       glowN,
       decal,
     },
@@ -1388,10 +1373,398 @@ function colorU(m: ShaderMaterial, name: string): Color {
 }
 
 /* ------------------------------------------------------------------ */
+/* Pilots                                                             */
+/* ------------------------------------------------------------------ */
+
+export interface Pilot {
+  id: string;
+  name: string;
+  species: string;
+  tagline: string;
+  color: string;
+}
+
+export const PILOTS: readonly Pilot[] = [
+  { id: "whiskers", name: "Captain Whiskers", species: "Space cat", tagline: "Nine lives, zero brakes", color: "#ff9a3c" },
+  { id: "bolt", name: "Bolt", species: "Robot", tagline: "Beep boop, full throttle", color: "#4fd6ff" },
+  { id: "zib", name: "Zib", species: "Little green alien", tagline: "Came in peace, leaving in first", color: "#7dff5a" },
+  { id: "inky", name: "Inky", species: "Octopus", tagline: "Eight arms, all on the wheel", color: "#b86bff" },
+  { id: "rita", name: "Rocket Rita", species: "Retro rocket girl", tagline: "Buckle up, buttercup!", color: "#ff4f6d" },
+  { id: "boulder", name: "Boulder", species: "Moon-rock golem", tagline: "Slow to anger, hard to pass", color: "#a69cc0" },
+  { id: "twinkle", name: "Twinkle", species: "Star sprite", tagline: "Shine bright, drive brighter", color: "#ffd83a" },
+  { id: "biscuit", name: "Biscuit", species: "Corgi cosmonaut", tagline: "Short legs, long lead", color: "#f0a24a" },
+];
+
+type PMat = "skin" | "shade" | "suit" | "white" | "black" | "accent" | "pink" | "glow" | "bowl";
+const PMAT_KEYS: readonly PMat[] = ["skin", "shade", "suit", "white", "black", "accent", "pink", "glow", "bowl"];
+const PINK = "#ff8fb1";
+const INK = "#171926";
+
+interface PilotLook {
+  skin: string;
+  suit: string;
+  accent: string;
+  glow: string;
+  skinGlow?: number;
+  head(k: PilotKit): void;
+}
+
+/** Builds a pilot in "pilot units": head centre at the origin, head radius ≈ 1, face toward −Z. */
+class PilotKit {
+  readonly b: Record<PMat, Batch>;
+  private readonly segs: readonly [number, number];
+
+  constructor(readonly q: Quality) {
+    this.b = {
+      skin: new Batch(),
+      shade: new Batch(),
+      suit: new Batch(),
+      white: new Batch(),
+      black: new Batch(),
+      accent: new Batch(),
+      pink: new Batch(),
+      glow: new Batch(),
+      bowl: new Batch(),
+    };
+    this.segs = q === "high" ? [22, 14] : [10, 7];
+  }
+
+  sph(): SphereGeometry {
+    return new SphereGeometry(1, this.segs[0], this.segs[1]);
+  }
+
+  part(thetaStart: number, thetaLen: number, phiStart: number, phiLen: number): SphereGeometry {
+    return new SphereGeometry(1, this.segs[0], this.segs[1], phiStart, phiLen, thetaStart, thetaLen);
+  }
+
+  cone(r: number, h: number): CylinderGeometry {
+    return new CylinderGeometry(0.02, r, h, this.segs[0], 1);
+  }
+
+  cyl(r: number, h: number): CylinderGeometry {
+    return new CylinderGeometry(r, r, h, Math.max(6, this.segs[0] >> 1), 1);
+  }
+
+  torus(r: number, tube: number, arc = Math.PI * 2): TorusGeometry {
+    return new TorusGeometry(r, tube, 8, this.segs[0], arc);
+  }
+
+  /** Big cartoon eye: white ball, glossy pupil, sparkle. */
+  eye(x: number, y: number, z: number, r: number): void {
+    this.b.white.add(this.sph(), { p: [x, y, z], s: [r, r * 1.1, r * 0.8] });
+    this.b.black.add(this.sph(), { p: [x, y - r * 0.05, z - r * 0.45], s: [r * 0.62, r * 0.74, r * 0.45] });
+    this.b.white.add(this.sph(), { p: [x + r * 0.22, y + r * 0.28, z - r * 0.85], s: r * 0.2 });
+  }
+
+  eyes(x: number, y: number, z: number, r: number): void {
+    this.eye(x, y, z, r);
+    this.eye(-x, y, z, r);
+  }
+
+  smile(y: number, z: number, w: number): void {
+    const g = this.torus(w, w * 0.2, Math.PI);
+    g.rotateZ(Math.PI);
+    this.b.black.add(g, { p: [0, y, z], r: [0.25, 0, 0] });
+  }
+}
+
+const PILOT_LOOKS: Record<string, PilotLook> = {
+  whiskers: {
+    skin: "#ff9a3c",
+    suit: "#f4f4f8",
+    accent: "#2f6bff",
+    glow: "#7ff6ff",
+    head(k) {
+      k.b.skin.add(k.sph(), { s: [1.05, 0.95, 0.95] });
+      k.b.skin.add(k.cone(0.36, 0.62), { p: [0.58, 0.84, 0.05], r: [0, 0, -0.38], mirror: true });
+      k.b.pink.add(k.cone(0.22, 0.42), { p: [0.57, 0.8, -0.08], r: [0, 0, -0.38], mirror: true });
+      // tabby stripes over the crown and back
+      for (const [x, rz] of [
+        [0, 0],
+        [0.32, -0.35],
+        [-0.32, 0.35],
+      ] as const) {
+        k.b.shade.add(k.sph(), { p: [x, 0.62, 0.35], r: [0.75, 0, rz], s: [0.1, 0.42, 0.5] });
+      }
+      k.b.white.add(k.sph(), { p: [0.19, -0.3, -0.78], s: [0.27, 0.22, 0.2], mirror: true });
+      k.b.pink.add(k.sph(), { p: [0, -0.14, -0.93], s: [0.13, 0.09, 0.08] });
+      k.eyes(0.36, 0.12, -0.72, 0.21);
+      for (const rz of [0.12, -0.14]) {
+        k.b.black.add(k.cyl(0.018, 0.55), { p: [0.62, -0.28 + rz * 0.5, -0.74], r: [0, 0.3, Math.PI / 2 + rz], mirror: true });
+      }
+    },
+  },
+  bolt: {
+    skin: "#b4c4d6",
+    suit: "#33415c",
+    accent: "#ff8a1f",
+    glow: "#4fe3ff",
+    head(k) {
+      k.b.skin.add(new RoundedBoxGeometry(1.9, 1.55, 1.7, k.q === "high" ? 3 : 1, 0.32));
+      k.b.black.add(new RoundedBoxGeometry(1.5, 0.62, 0.2, 2, 0.1), { p: [0, 0.12, -0.8] });
+      k.b.glow.add(k.sph(), { p: [0.38, 0.12, -0.9], s: [0.24, 0.22, 0.08], mirror: true });
+      k.b.shade.add(new RoundedBoxGeometry(0.8, 0.16, 0.1, 1, 0.04), { p: [0, -0.45, -0.85] });
+      k.b.shade.add(k.cyl(0.05, 0.6), { p: [0, 1.05, 0.1] });
+      k.b.glow.add(k.sph(), { p: [0, 1.4, 0.1], s: 0.16 });
+      k.b.accent.add(k.cyl(0.26, 0.2), { p: [1.0, 0.05, 0], r: [0, 0, Math.PI / 2], mirror: true });
+      for (const y of [0.35, 0.1, -0.15]) {
+        k.b.shade.add(new RoundedBoxGeometry(0.9, 0.08, 0.1, 1, 0.03), { p: [0, y, 0.84] });
+      }
+    },
+  },
+  zib: {
+    skin: "#7dff5a",
+    suit: "#6b3cff",
+    accent: "#ff5ad1",
+    glow: "#ff5ad1",
+    head(k) {
+      k.b.skin.add(k.sph(), { p: [0, 0.05, 0], s: [1.0, 1.1, 0.95] });
+      k.b.black.add(k.sph(), { p: [0.37, 0.12, -0.74], r: [0, 0, -0.45], s: [0.27, 0.4, 0.18], mirror: true });
+      k.b.white.add(k.sph(), { p: [0.3, 0.28, -0.9], s: 0.07, mirror: true });
+      k.b.shade.add(k.cyl(0.04, 0.55), { p: [0.36, 1.1, 0], r: [0, 0, -0.4], mirror: true });
+      k.b.glow.add(k.sph(), { p: [0.47, 1.36, 0], s: 0.14, mirror: true });
+      k.b.pink.add(k.sph(), { p: [0.56, -0.22, -0.7], s: [0.14, 0.08, 0.05], mirror: true });
+      k.smile(-0.42, -0.85, 0.18);
+    },
+  },
+  inky: {
+    skin: "#b86bff",
+    suit: "#1d8fb3",
+    accent: "#ffd23f",
+    glow: "#7ff6ff",
+    head(k) {
+      k.b.skin.add(k.sph(), { p: [0, 0.08, 0], s: [0.9, 1.05, 0.9] });
+      for (const [x, y, z, r] of [
+        [0.4, 0.62, 0.45, 0.14],
+        [-0.32, 0.78, 0.25, 0.11],
+        [0.08, 0.35, 0.82, 0.13],
+        [-0.55, 0.2, 0.55, 0.1],
+      ] as const) {
+        k.b.pink.add(k.sph(), { p: [x, y, z], s: [r, r, r * 0.5] });
+      }
+      k.eyes(0.33, 0.08, -0.7, 0.24);
+      k.b.black.add(k.sph(), { p: [0, -0.4, -0.84], s: [0.08, 0.06, 0.05] });
+      for (const [x, z, rz] of [
+        [0.5, -0.35, 0.4],
+        [0.18, -0.6, 0.2],
+        [-0.18, -0.6, -0.2],
+        [-0.5, -0.35, -0.4],
+      ] as const) {
+        k.b.skin.add(k.torus(0.24, 0.1, Math.PI * 1.3), { p: [x, -0.95, z], r: [0, 0, rz - 0.4] });
+      }
+      k.b.bowl.add(k.sph(), { p: [0, 0.05, 0], s: 1.42 });
+      const rim = k.torus(1.02, 0.1);
+      rim.rotateX(Math.PI / 2);
+      k.b.accent.add(rim, { p: [0, -0.95, 0] });
+    },
+  },
+  rita: {
+    skin: "#ffd2a8",
+    suit: "#f4f0e6",
+    accent: "#e8322f",
+    glow: "#6fe0ff",
+    head(k) {
+      k.b.skin.add(k.sph(), { s: 0.95 });
+      // hair: back shell + crown + buns
+      k.b.accent.add(k.part(0, Math.PI * 0.82, -0.25, Math.PI + 0.5), { p: [0, 0.04, 0.04], s: 1.03 });
+      k.b.accent.add(k.part(0, 0.95, 0, Math.PI * 2), { p: [0, 0.05, 0], s: 1.04 });
+      k.b.accent.add(k.sph(), { p: [0.78, 0.6, 0.25], s: 0.36, mirror: true });
+      // goggles on the forehead
+      for (const x of [0.27, -0.27]) {
+        k.b.white.add(k.torus(0.19, 0.06), { p: [x, 0.52, -0.8], r: [-0.55, 0, 0] });
+        k.b.glow.add(k.sph(), { p: [x, 0.52, -0.8], r: [-0.55, 0, 0], s: [0.17, 0.17, 0.06] });
+      }
+      k.b.shade.add(k.torus(1.0, 0.045), { p: [0, 0.48, 0], r: [Math.PI / 2 + 0.5, 0, 0], s: [1, 1, 1] });
+      k.eyes(0.32, 0.02, -0.75, 0.17);
+      k.b.pink.add(k.sph(), { p: [0.52, -0.22, -0.72], s: [0.13, 0.08, 0.05], mirror: true });
+      k.smile(-0.38, -0.86, 0.16);
+    },
+  },
+  boulder: {
+    skin: "#9a93ad",
+    suit: "#3b3550",
+    accent: "#7ccf5a",
+    glow: "#ffae2a",
+    head(k) {
+      const rock = (r: number): BufferGeometry => {
+        const g = new IcosahedronGeometry(r, 1);
+        g.computeVertexNormals();
+        return g;
+      };
+      k.b.skin.add(rock(1), { s: [1.15, 0.98, 1.05] });
+      for (const [x, y, z, r] of [
+        [0.55, 0.72, 0.2, 0.36],
+        [-0.45, 0.82, 0.35, 0.32],
+        [0.05, 0.9, -0.15, 0.3],
+        [0.78, 0.15, 0.55, 0.28],
+      ] as const) {
+        k.b.shade.add(rock(r), { p: [x, y, z], r: [x, y, z] });
+      }
+      k.b.accent.add(k.sph(), { p: [-0.2, 0.95, 0.45], s: [0.3, 0.1, 0.25] });
+      k.b.glow.add(k.sph(), { p: [0.38, 0.1, -0.95], s: [0.2, 0.13, 0.08], mirror: true });
+      k.b.shade.add(new RoundedBoxGeometry(0.45, 0.14, 0.22, 1, 0.05), { p: [0.38, 0.34, -0.95], r: [0, 0, -0.25], mirror: true });
+      k.b.black.add(new RoundedBoxGeometry(0.5, 0.08, 0.1, 1, 0.03), { p: [0, -0.4, -0.98] });
+      for (const [x, y, z, rz] of [
+        [0.55, -0.1, 0.78, 0.4],
+        [-0.4, 0.2, 0.86, -0.3],
+        [0.95, 0.3, -0.2, 0.1],
+      ] as const) {
+        k.b.glow.add(new RoundedBoxGeometry(0.06, 0.5, 0.06, 1, 0.02), { p: [x, y, z], r: [0.2, 0, rz] });
+      }
+    },
+  },
+  twinkle: {
+    skin: "#ffd83a",
+    suit: "#ff6fb5",
+    accent: "#ff9ad0",
+    glow: "#fff6b0",
+    skinGlow: 0.35,
+    head(k) {
+      const star = new Shape();
+      for (let i = 0; i < 10; i++) {
+        const a = Math.PI / 2 + (i * Math.PI) / 5;
+        const r = i % 2 === 0 ? 1.2 : 0.62;
+        if (i === 0) star.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+        else star.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+      }
+      star.closePath();
+      const g = new ExtrudeGeometry(star, {
+        depth: 0.3,
+        bevelEnabled: true,
+        bevelThickness: 0.24,
+        bevelSize: 0.18,
+        bevelSegments: k.q === "high" ? 4 : 2,
+        curveSegments: 4,
+      });
+      g.translate(0, 0, -0.15);
+      k.b.skin.add(g, { p: [0, 0.05, 0] });
+      k.eyes(0.28, 0.12, -0.42, 0.17);
+      k.b.pink.add(k.sph(), { p: [0.5, -0.12, -0.4], s: [0.12, 0.08, 0.04], mirror: true });
+      k.smile(-0.2, -0.43, 0.14);
+      for (const [x, y] of [
+        [1.15, 0.7],
+        [-1.1, -0.35],
+        [0.9, -0.9],
+      ] as const) {
+        k.b.glow.add(k.sph(), { p: [x, y, 0], s: [0.07, 0.2, 0.07] });
+        k.b.glow.add(k.sph(), { p: [x, y, 0], s: [0.2, 0.07, 0.07] });
+      }
+    },
+  },
+  biscuit: {
+    skin: "#f0a24a",
+    suit: "#2f6bff",
+    accent: "#e8322f",
+    glow: "#7ff6ff",
+    head(k) {
+      k.b.skin.add(k.sph(), { s: [1.0, 0.92, 0.95] });
+      k.b.white.add(k.sph(), { p: [0, -0.08, -0.42], s: [0.4, 0.78, 0.6] });
+      k.b.white.add(k.sph(), { p: [0, -0.36, -0.74], s: [0.42, 0.3, 0.36] });
+      k.b.black.add(k.sph(), { p: [0, -0.24, -1.08], s: [0.14, 0.1, 0.1] });
+      k.b.pink.add(k.sph(), { p: [0, -0.6, -0.9], s: [0.1, 0.12, 0.06] });
+      k.b.skin.add(k.cone(0.36, 0.8), { p: [0.55, 0.98, 0.1], r: [0, 0, -0.32], mirror: true });
+      k.b.pink.add(k.cone(0.22, 0.52), { p: [0.54, 0.93, -0.02], r: [0, 0, -0.32], mirror: true });
+      k.eyes(0.37, 0.16, -0.72, 0.17);
+    },
+  },
+};
+
+interface PilotRig {
+  group: Group;
+  arm: Group;
+  meshes: Mesh[];
+  mats: Material[];
+  geos: BufferGeometry[];
+}
+
+const ARM_REST = new Euler(-0.75, 0, 0.12);
+
+function pilotMaterials(look: PilotLook, q: Quality): Record<PMat, Material> {
+  const hi = q === "high";
+  const vinyl = (color: string, emissive = 0): Material =>
+    hi
+      ? new MeshPhysicalMaterial({
+          color,
+          roughness: 0.42,
+          metalness: 0,
+          clearcoat: 0.7,
+          clearcoatRoughness: 0.2,
+          emissive: color,
+          emissiveIntensity: emissive,
+        })
+      : new MeshStandardMaterial({ color, roughness: 0.45, emissive: color, emissiveIntensity: emissive });
+  const shade = new Color(look.skin).multiplyScalar(0.7).getStyle();
+  return {
+    skin: vinyl(look.skin, look.skinGlow ?? 0),
+    shade: vinyl(shade),
+    suit: vinyl(look.suit),
+    white: vinyl("#fbfbf7"),
+    accent: vinyl(look.accent),
+    pink: vinyl(PINK),
+    black: hi
+      ? new MeshPhysicalMaterial({ color: INK, roughness: 0.12, clearcoat: 1, clearcoatRoughness: 0.03 })
+      : new MeshStandardMaterial({ color: INK, roughness: 0.15 }),
+    glow: new MeshStandardMaterial({ color: look.glow, emissive: look.glow, emissiveIntensity: 1.8 }),
+    bowl: hi
+      ? new MeshPhysicalMaterial({
+          color: "#cdf3ff",
+          roughness: 0.03,
+          clearcoat: 1,
+          transparent: true,
+          opacity: 0.22,
+          depthWrite: false,
+        })
+      : new MeshStandardMaterial({ color: "#cdf3ff", roughness: 0.05, transparent: true, opacity: 0.25, depthWrite: false }),
+  };
+}
+
+function buildPilot(pilot: Pilot, q: Quality): PilotRig {
+  const look = PILOT_LOOKS[pilot.id] ?? PILOT_LOOKS.whiskers;
+  const mats = pilotMaterials(look, q);
+  const k = new PilotKit(q);
+  // torso, collar and resting left arm
+  k.b.suit.add(new CapsuleGeometry(0.72, 0.5, 4, q === "high" ? 16 : 8), { p: [0, -1.75, 0.1], s: [1.15, 1, 0.85] });
+  const collar = k.torus(0.55, 0.14);
+  collar.rotateX(Math.PI / 2);
+  k.b.accent.add(collar, { p: [0, -0.98, 0.05] });
+  const armGeo = (): BufferGeometry => new CapsuleGeometry(0.2, 0.55, 3, q === "high" ? 10 : 6).translate(0, -0.5, 0);
+  const gloveGeo = (): BufferGeometry => k.sph().scale(0.27, 0.27, 0.27).translate(0, -0.98, 0);
+  const leftArm: Place = { p: [-0.95, -1.2, 0.05], r: [ARM_REST.x, 0, -ARM_REST.z] };
+  k.b.suit.add(armGeo(), leftArm);
+  k.b.white.add(gloveGeo(), leftArm);
+  look.head(k);
+
+  const group = new Group();
+  group.name = `pilot:${pilot.id}`;
+  const meshes: Mesh[] = [];
+  const geos: BufferGeometry[] = [];
+  for (const key of PMAT_KEYS) {
+    const geo = k.b[key].build();
+    if (!geo) continue;
+    geos.push(geo);
+    const mesh = new Mesh(geo, mats[key]);
+    mesh.castShadow = key !== "bowl";
+    if (key === "bowl") mesh.renderOrder = 2;
+    group.add(mesh);
+    meshes.push(mesh);
+  }
+  // animated right arm
+  const arm = new Group();
+  arm.position.set(0.95, -1.2, 0.05);
+  arm.rotation.copy(ARM_REST);
+  const sleeve = armGeo();
+  const glove = gloveGeo();
+  geos.push(sleeve, glove);
+  arm.add(new Mesh(sleeve, mats.suit), new Mesh(glove, mats.white));
+  group.add(arm);
+  return { group, arm, meshes, mats: Object.values(mats), geos };
+}
+
+/* ------------------------------------------------------------------ */
 /* buildShip                                                          */
 /* ------------------------------------------------------------------ */
 
-export function buildShip(design: ShipDesign, livery: Livery, quality: "high" | "low"): ShipModel {
+export function buildShip(design: ShipDesign, livery: Livery, quality: "high" | "low", pilot?: Pilot): ShipModel {
   const root = new Group();
   root.name = `ship:${design.id}`;
   const body = new Group();
@@ -1403,6 +1776,13 @@ export function buildShip(design: ShipDesign, livery: Livery, quality: "high" | 
   ctx.finish();
 
   const geos = ctx.geos;
+  const rig = buildPilot(pilot ?? PILOTS[0], quality);
+  const seat = ctx.seat;
+  rig.group.position.set(seat.x, seat.y, seat.z);
+  rig.group.scale.setScalar(seat.s);
+  body.add(rig.group);
+  geos.push(...rig.geos);
+  let celebrating = false;
   const shaderMats: ShaderMaterial[] = [];
   const glowColor = new Color(livery.glow);
 
@@ -1512,7 +1892,7 @@ export function buildShip(design: ShipDesign, livery: Livery, quality: "high" | 
   root.add(shield);
 
   // Ghost bookkeeping for the standard materials.
-  const allMats = Object.values(mats);
+  const allMats = [...Object.values(mats), ...rig.mats];
   const baseState = new Map<Material, { opacity: number; transparent: boolean; depthWrite: boolean }>();
   for (const m of allMats) baseState.set(m, { opacity: m.opacity, transparent: m.transparent, depthWrite: m.depthWrite });
 
@@ -1551,6 +1931,12 @@ export function buildShip(design: ShipDesign, livery: Livery, quality: "high" | 
       tmpColor.copy(glowColor).lerp(BOOST_CORE, bo * 0.5);
       glowMat.emissive.copy(tmpColor);
       setU(ugMat, "uOpacity", 0.6 + 0.15 * th + 0.08 * Math.sin(time * 5.3) + (driftTier > 0 ? 0.25 : 0));
+      if (!celebrating) {
+        // the pilot leans harder than the hull and bobs with the engine
+        rig.group.rotation.z = body.rotation.z * 0.6 + Math.sin(time * 2.3) * 0.04;
+        rig.group.rotation.x = -0.1 * th - 0.12 * bo;
+        rig.group.position.y = seat.y + Math.sin(time * 17) * 0.004 * (0.5 + th);
+      }
       for (const w of ctx.wobbles) {
         const v = w.base + Math.sin(time * (3.1 + th * 2) + w.phase) * w.amp * (0.4 + 0.6 * th);
         if (w.axis === 0) w.obj.rotation.x = v;
@@ -1606,6 +1992,21 @@ export function buildShip(design: ShipDesign, livery: Livery, quality: "high" | 
         m.depthWrite = ghost ? false : b.depthWrite;
       }
       for (const m of shaderMats) setU(m, "uAlpha", a);
+    },
+
+    celebrate(t: number): void {
+      celebrating = t > 0;
+      if (ctx.glassMesh) ctx.glassMesh.visible = !celebrating;
+      if (!celebrating) {
+        rig.group.position.set(seat.x, seat.y, seat.z);
+        rig.group.rotation.set(0, 0, 0);
+        rig.arm.rotation.copy(ARM_REST);
+        return;
+      }
+      const hop = Math.abs(Math.sin(t * 5.5));
+      rig.group.position.set(seat.x, seat.y + hop * seat.s * 1.2, seat.z);
+      rig.group.rotation.set(0.05, Math.sin(t * 1.7) * 0.25, Math.sin(t * 5.5) * 0.12);
+      rig.arm.rotation.set(-0.2, 0, 2.5 + Math.sin(t * 9) * 0.45);
     },
 
     dispose(): void {
@@ -1708,6 +2109,137 @@ export function shipIconSvg(design: ShipDesign, livery: Livery): string {
     (spec.dark ?? []).map((d) => `<path d="${d}" fill="#3a4050" stroke="#12141c" stroke-width="0.6"/>`).join("") +
     `<ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="${g}" opacity="0.85" stroke="#12141c" stroke-width="0.8"/>` +
     `<ellipse cx="${cx - rx * 0.3}" cy="${cy - ry * 0.35}" rx="${rx * 0.35}" ry="${ry * 0.25}" fill="#fff" opacity="0.7"/>` +
+    `</svg>`
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Pilot portraits                                                    */
+/* ------------------------------------------------------------------ */
+
+const O = `stroke="${INK}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"`;
+
+function svgEye(cx: number, cy: number, r: number): string {
+  return (
+    `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#fff" ${O}/>` +
+    `<circle cx="${cx}" cy="${cy + r * 0.12}" r="${(r * 0.62).toFixed(2)}" fill="${INK}"/>` +
+    `<circle cx="${(cx + r * 0.25).toFixed(2)}" cy="${(cy - r * 0.22).toFixed(2)}" r="${(r * 0.26).toFixed(2)}" fill="#fff"/>`
+  );
+}
+
+function svgStar(cx: number, cy: number, R: number, r: number): string {
+  const pts: string[] = [];
+  for (let i = 0; i < 10; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI) / 5;
+    const rr = i % 2 === 0 ? R : r;
+    pts.push(`${(cx + Math.cos(a) * rr).toFixed(1)},${(cy + Math.sin(a) * rr).toFixed(1)}`);
+  }
+  return pts.join(" ");
+}
+
+const SPARK = (x: number, y: number, s: number, c: string): string =>
+  `<path d="M${x} ${y - s} L${x + s * 0.3} ${y - s * 0.3} L${x + s} ${y} L${x + s * 0.3} ${y + s * 0.3} L${x} ${y + s} L${x - s * 0.3} ${y + s * 0.3} L${x - s} ${y} L${x - s * 0.3} ${y - s * 0.3}Z" fill="${c}"/>`;
+
+const PORTRAITS: Record<string, (l: PilotLook, shade: string) => string> = {
+  whiskers: (l, d) =>
+    `<path d="M17 25 L15 5 L29 15Z" fill="${l.skin}" ${O}/><path d="M47 25 L49 5 L35 15Z" fill="${l.skin}" ${O}/>` +
+    `<path d="M19 19 L18 10 L25 15Z M45 19 L46 10 L39 15Z" fill="${PINK}"/>` +
+    `<circle cx="32" cy="30" r="17" fill="${l.skin}" ${O}/>` +
+    `<path d="M32 14 L32 20 M26 15 L27.5 20 M38 15 L36.5 20" stroke="${d}" stroke-width="2.6" stroke-linecap="round"/>` +
+    `<circle cx="28.6" cy="37.5" r="4.8" fill="#fff" ${O}/><circle cx="35.4" cy="37.5" r="4.8" fill="#fff" ${O}/>` +
+    `<path d="M29.4 33 L34.6 33 L32 36Z" fill="${PINK}" ${O}/>` +
+    svgEye(25, 27, 4.3) +
+    svgEye(39, 27, 4.3) +
+    `<path d="M21 36 L10 34 M21 39.5 L10 41 M43 36 L54 34 M43 39.5 L54 41" stroke="${INK}" stroke-width="1.4" stroke-linecap="round"/>`,
+  bolt: (l, d) =>
+    `<path d="M32 15 L32 7" stroke="${INK}" stroke-width="2.6"/><circle cx="32" cy="6" r="3.8" fill="${l.glow}" ${O}/>` +
+    `<rect x="9" y="24" width="7" height="11" rx="2.5" fill="${l.accent}" ${O}/><rect x="48" y="24" width="7" height="11" rx="2.5" fill="${l.accent}" ${O}/>` +
+    `<rect x="14" y="14" width="36" height="32" rx="9" fill="${l.skin}" ${O}/>` +
+    `<rect x="18" y="20.5" width="28" height="13" rx="6.5" fill="${INK}"/>` +
+    `<circle cx="25" cy="27" r="4" fill="${l.glow}"/><circle cx="39" cy="27" r="4" fill="${l.glow}"/>` +
+    `<circle cx="26.2" cy="25.8" r="1.2" fill="#fff"/><circle cx="40.2" cy="25.8" r="1.2" fill="#fff"/>` +
+    `<rect x="24" y="37.5" width="16" height="4.5" rx="2.2" fill="${d}" ${O}/>` +
+    `<path d="M28 37.5 V42 M32 37.5 V42 M36 37.5 V42" stroke="${INK}" stroke-width="1.2"/>`,
+  zib: (l, d) =>
+    `<path d="M26 14 L21 5.5 M38 14 L43 5.5" stroke="${d}" stroke-width="2.6" stroke-linecap="round"/>` +
+    `<circle cx="21" cy="5.5" r="3.6" fill="${l.glow}" ${O}/><circle cx="43" cy="5.5" r="3.6" fill="${l.glow}" ${O}/>` +
+    `<ellipse cx="32" cy="29" rx="17" ry="19" fill="${l.skin}" ${O}/>` +
+    `<ellipse cx="24.5" cy="28.5" rx="5" ry="7.8" transform="rotate(-28 24.5 28.5)" fill="${INK}"/>` +
+    `<ellipse cx="39.5" cy="28.5" rx="5" ry="7.8" transform="rotate(28 39.5 28.5)" fill="${INK}"/>` +
+    `<circle cx="23" cy="25" r="1.7" fill="#fff"/><circle cx="38" cy="25" r="1.7" fill="#fff"/>` +
+    `<ellipse cx="19.5" cy="37" rx="3" ry="1.8" fill="${PINK}"/><ellipse cx="44.5" cy="37" rx="3" ry="1.8" fill="${PINK}"/>` +
+    `<path d="M27.5 39.5 Q32 43.5 36.5 39.5" fill="none" ${O}/>`,
+  inky: (l) =>
+    `<circle cx="32" cy="29" r="24" fill="#bfefff" fill-opacity="0.22" stroke="#e6fbff" stroke-width="2.2"/>` +
+    `<path d="M20 43 q-7 3 -4 9 M26 45 q-3 5 1 9 M38 45 q3 5 -1 9 M44 43 q7 3 4 9" fill="none" stroke="${l.skin}" stroke-width="4.2" stroke-linecap="round"/>` +
+    `<ellipse cx="32" cy="29" rx="14" ry="16.5" fill="${l.skin}" ${O}/>` +
+    `<circle cx="37" cy="17" r="2.4" fill="${PINK}"/><circle cx="25" cy="19" r="1.8" fill="${PINK}"/><circle cx="42" cy="24" r="1.6" fill="${PINK}"/>` +
+    svgEye(26.5, 30, 4.6) +
+    svgEye(37.5, 30, 4.6) +
+    `<ellipse cx="32" cy="39" rx="1.8" ry="1.4" fill="${INK}"/>` +
+    `<path d="M14 22 Q17 11 27 7.5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" opacity="0.8"/>` +
+    `<ellipse cx="32" cy="50.5" rx="15" ry="3" fill="${l.accent}" ${O}/>`,
+  rita: (l, d) =>
+    `<circle cx="13" cy="19" r="6.5" fill="${l.accent}" ${O}/><circle cx="51" cy="19" r="6.5" fill="${l.accent}" ${O}/>` +
+    `<circle cx="32" cy="29" r="19" fill="${l.accent}" ${O}/>` +
+    `<circle cx="32" cy="32.5" r="14" fill="${l.skin}" ${O}/>` +
+    `<path d="M18 29 Q19 15 32 15 Q45 15 46 29 Q40 21.5 32 22.5 Q24 21.5 18 29Z" fill="${l.accent}" ${O}/>` +
+    `<path d="M14 20 L50 20" stroke="${d}" stroke-width="2"/>` +
+    `<circle cx="26" cy="19.5" r="4.6" fill="${l.glow}" ${O}/><circle cx="38" cy="19.5" r="4.6" fill="${l.glow}" ${O}/>` +
+    `<circle cx="24.8" cy="18.3" r="1.3" fill="#fff"/><circle cx="36.8" cy="18.3" r="1.3" fill="#fff"/>` +
+    svgEye(26.5, 32, 3.5) +
+    svgEye(37.5, 32, 3.5) +
+    `<ellipse cx="22" cy="38" rx="2.6" ry="1.6" fill="${PINK}"/><ellipse cx="42" cy="38" rx="2.6" ry="1.6" fill="${PINK}"/>` +
+    `<path d="M28.5 39.5 Q32 43 35.5 39.5" fill="none" ${O}/>`,
+  boulder: (l, d) =>
+    `<path d="M13 36 L15 19 L24 10 L41 10 L51 19 L52 36 L43 47 L21 47Z" fill="${l.skin}" ${O}/>` +
+    `<path d="M20 12 L27 5 L35 9 L30 13Z" fill="${d}" ${O}/><path d="M40 10 L46 6 L51 13 L47 16Z" fill="${d}" ${O}/>` +
+    `<path d="M15 19 L24 22 L41 21 L51 19 M24 22 L21 47 M41 21 L43 47" fill="none" stroke="${d}" stroke-width="1.4"/>` +
+    `<ellipse cx="33" cy="11.5" rx="5" ry="2" fill="${l.accent}"/>` +
+    `<path d="M19 25.5 L29 28 M45 25.5 L35 28" stroke="${INK}" stroke-width="3.2" stroke-linecap="round"/>` +
+    `<ellipse cx="25" cy="31" rx="3.8" ry="2.6" fill="${l.glow}" ${O}/><ellipse cx="39" cy="31" rx="3.8" ry="2.6" fill="${l.glow}" ${O}/>` +
+    `<path d="M27 40 L37 40" stroke="${INK}" stroke-width="2.4" stroke-linecap="round"/>` +
+    `<path d="M47 24 L44 30 L47 35" fill="none" stroke="${l.glow}" stroke-width="1.6" stroke-linecap="round"/>`,
+  twinkle: (l) =>
+    `<polygon points="${svgStar(32, 31, 25, 12.5)}" fill="${l.skin}" stroke="${INK}" stroke-width="3" stroke-linejoin="round"/>` +
+    svgEye(27, 30.5, 3.8) +
+    svgEye(37, 30.5, 3.8) +
+    `<ellipse cx="22.5" cy="36" rx="2.6" ry="1.6" fill="${PINK}"/><ellipse cx="41.5" cy="36" rx="2.6" ry="1.6" fill="${PINK}"/>` +
+    `<path d="M29 36.5 Q32 40 35 36.5" fill="none" ${O}/>` +
+    SPARK(9, 13, 4, l.glow) +
+    SPARK(55, 44, 3.5, l.glow) +
+    SPARK(53, 9, 2.6, "#fff"),
+  biscuit: (l) =>
+    `<path d="M15 27 L13 3 L29 14Z" fill="${l.skin}" ${O}/><path d="M49 27 L51 3 L35 14Z" fill="${l.skin}" ${O}/>` +
+    `<path d="M17.5 20 L16.5 9 L25 15Z M46.5 20 L47.5 9 L39 15Z" fill="${PINK}"/>` +
+    `<circle cx="32" cy="30" r="17" fill="${l.skin}" ${O}/>` +
+    `<path d="M29 13.5 Q32 12 35 13.5 L37.5 31 Q32 33 26.5 31Z" fill="#fff"/>` +
+    `<path d="M30 43 Q32 49 34 43Z" fill="${PINK}" ${O}/>` +
+    `<ellipse cx="32" cy="38.5" rx="9" ry="6.2" fill="#fff" ${O}/>` +
+    `<ellipse cx="32" cy="35.2" rx="3.3" ry="2.4" fill="${INK}"/>` +
+    `<path d="M29 40.5 Q32 42.5 35 40.5" fill="none" stroke="${INK}" stroke-width="1.6" stroke-linecap="round"/>` +
+    svgEye(24.5, 27.5, 4) +
+    svgEye(39.5, 27.5, 4),
+};
+
+/** Self-contained bust portrait (viewBox 0 0 64 64) with bold outlines, for menus and the HUD. */
+export function pilotPortraitSvg(pilot: Pilot): string {
+  const look = PILOT_LOOKS[pilot.id] ?? PILOT_LOOKS.whiskers;
+  const draw = PORTRAITS[pilot.id] ?? PORTRAITS.whiskers;
+  const ring = pilot.color.replace(/[^#0-9a-zA-Z]/g, "");
+  const shade = `#${new Color(look.skin).multiplyScalar(0.7).getHexString()}`;
+  const clip = `np-clip-${pilot.id.replace(/[^a-z0-9-]/gi, "")}`;
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">` +
+    `<defs><clipPath id="${clip}"><circle cx="32" cy="32" r="30"/></clipPath></defs>` +
+    `<circle cx="32" cy="32" r="30" fill="#1d2142"/>` +
+    `<g clip-path="url(#${clip})">` +
+    `<circle cx="32" cy="26" r="20" fill="${ring}" opacity="0.28"/>` +
+    `<path d="M7 66 Q9 49 32 47 Q55 49 57 66Z" fill="${look.suit}" ${O}/>` +
+    `<path d="M22 49.5 Q32 55 42 49.5" fill="none" stroke="${look.accent}" stroke-width="3.2" stroke-linecap="round"/>` +
+    draw(look, shade) +
+    `</g>` +
+    `<circle cx="32" cy="32" r="30" fill="none" stroke="${ring}" stroke-width="3"/>` +
     `</svg>`
   );
 }

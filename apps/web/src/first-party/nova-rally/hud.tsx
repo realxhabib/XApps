@@ -15,8 +15,7 @@ import { CoinIcon, ItemIcon } from "./icons";
 import { ITEM_IDS, ITEMS, MAX_COINS } from "./items";
 import { formatTime, placeSuffix } from "./logic";
 import type { HudSnapshot, StandingRow } from "./race";
-import { liveryFor } from "./race";
-import { SHIPS, shipIconSvg } from "./ships";
+import { PILOTS, pilotPortraitSvg } from "./ships";
 import { trackById } from "./tracks";
 
 const PLACE_COLORS = [
@@ -69,7 +68,7 @@ function ItemSlots({ hud }: { hud: HudSnapshot }) {
   return (
     <div className="flex items-start gap-2">
       <Slot size={78} glow={main ? ITEMS[main].color : null} spinning={hud.roulette && !first}>
-        {main ? <ItemIcon id={main} className="size-[62px]" /> : null}
+        {main ? <ItemIcon id={main} className="size-[62px]" /> : <EmptyGlyph size={30} />}
         {first && first.uses > 1 ? (
           <span className="absolute -bottom-1 -right-1 grid size-6 place-items-center rounded-full bg-white text-[13px] font-black text-ink-900 shadow">
             ×{first.uses}
@@ -77,9 +76,17 @@ function ItemSlots({ hud }: { hud: HudSnapshot }) {
         ) : null}
       </Slot>
       <Slot size={48} glow={secondId ? ITEMS[secondId].color : null} spinning={hud.roulette && !!first}>
-        {secondId ? <ItemIcon id={secondId} className="size-[38px]" /> : null}
+        {secondId ? <ItemIcon id={secondId} className="size-[38px]" /> : <EmptyGlyph size={18} />}
       </Slot>
     </div>
+  );
+}
+
+function EmptyGlyph({ size }: { size: number }) {
+  return (
+    <span className="grid place-items-center font-black italic text-white/25" style={{ width: size, height: size, fontSize: size * 0.9 }}>
+      ?
+    </span>
   );
 }
 
@@ -90,8 +97,10 @@ function Slot({ size, glow, spinning, children }: { size: number; glow: string |
       style={{
         width: size,
         height: size,
-        background: "radial-gradient(circle at 35% 30%, rgba(255,255,255,0.28), rgba(20,16,40,0.72) 62%)",
-        border: "3px solid rgba(255,255,255,0.85)",
+        background: "radial-gradient(circle at 35% 30%, rgba(255,255,255,0.3), rgba(40,26,90,0.78) 55%, rgba(12,8,30,0.9))",
+        border: "3px solid rgba(255,255,255,0.9)",
+        outline: "2px solid rgba(255,190,60,0.85)",
+        outlineOffset: 2,
         boxShadow: `0 4px 0 rgba(10,6,30,0.6), inset 0 0 14px rgba(0,0,0,0.5)${glow ? `, 0 0 22px ${glow}` : ""}`,
       }}
     >
@@ -136,25 +145,24 @@ function Standings({ rows }: { rows: readonly StandingRow[] }) {
 }
 
 function RacerFace({ row, size }: { row: StandingRow; size: number }) {
-  if (row.avatarUrl || row.kind === "human" || row.kind === "me") {
+  const pilot = PILOTS[row.pilotIndex % PILOTS.length]!;
+  if (row.kind === "human" || (row.kind === "me" && row.avatarUrl)) {
     return (
       <span className="relative inline-block rounded-full" style={{ boxShadow: `0 0 0 2px ${row.color}` }}>
         <Avatar person={{ name: row.name, handle: row.name, avatarUrl: row.avatarUrl }} size={size} />
       </span>
     );
   }
-  const design = SHIPS[row.designIndex % SHIPS.length]!;
-  const svg = shipIconSvg(design, liveryFor(design, row.liveryIndex));
   return (
     <span
-      className="inline-grid place-items-center overflow-hidden rounded-full bg-white/90"
-      style={{ width: size, height: size, boxShadow: `0 0 0 2px ${row.color}` }}
-      dangerouslySetInnerHTML={{ __html: svg.replace("<svg", `<svg width="${size * 1.25}" height="${size * 0.8}"`) }}
+      className="inline-block shrink-0 overflow-hidden rounded-full"
+      style={{ width: size, height: size }}
+      dangerouslySetInnerHTML={{ __html: pilotPortraitSvg(pilot).replace("<svg", `<svg width="${size}" height="${size}"`) }}
     />
   );
 }
 
-export function RaceHud({ hud, minimap }: { hud: HudSnapshot; minimap: ReactNode }) {
+export function RaceHud({ hud, minimap, onExit, onRetry }: { hud: HudSnapshot; minimap: ReactNode; onExit?: () => void; onRetry?: () => void }) {
   const racing = hud.phase === "race" || hud.phase === "countdown";
   const showRace = racing || hud.phase === "finished";
   return (
@@ -215,7 +223,18 @@ export function RaceHud({ hud, minimap }: { hud: HudSnapshot; minimap: ReactNode
         </motion.div>
       ) : null}
       <AnimatePresence>{hud.phase === "intro" ? <TitleCard key={`t${hud.raceIndex}`} hud={hud} /> : null}</AnimatePresence>
-      <AnimatePresence>{hud.phase === "results" ? <Results key={`r${hud.raceIndex}`} hud={hud} /> : null}</AnimatePresence>
+      <AnimatePresence>
+        {hud.phase === "results" ? (
+          hud.trial ? <TrialResults key="trial" hud={hud} onExit={onExit} onRetry={onRetry} /> : <Results key={`r${hud.raceIndex}`} hud={hud} />
+        ) : null}
+      </AnimatePresence>
+      {showRace && (hud.knockout || hud.mirror || hud.trial) ? (
+        <div className="absolute left-1/2 top-3 flex -translate-x-1/2 gap-1.5">
+          {hud.trial ? <Pill className="text-[11px] not-italic">⏱ TIME TRIAL{hud.trial.best ? ` · best ${formatTime(hud.trial.best)}` : ""}</Pill> : null}
+          {hud.knockout ? <Pill className="text-[11px] not-italic">💥 KNOCKOUT</Pill> : null}
+          {hud.mirror ? <Pill className="text-[11px] not-italic">🪞 MIRROR</Pill> : null}
+        </div>
+      ) : null}
       <AnimatePresence>{hud.phase === "podium" ? <Podium key="podium" hud={hud} /> : null}</AnimatePresence>
       <AnimatePresence>
         {hud.phase === "finished" && hud.finishedPlace !== null ? (
@@ -297,7 +316,13 @@ function CalloutView({ hud }: { hud: HudSnapshot }) {
 function TitleCard({ hud }: { hud: HudSnapshot }) {
   const def = trackById(hud.trackId);
   return (
-    <motion.div className="absolute inset-x-0 bottom-[14%] flex flex-col items-center gap-1 text-center" initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.5 }}>
+    <motion.div
+      className="absolute inset-x-0 bottom-[14%] flex flex-col items-center gap-1 text-center"
+      initial={{ opacity: 0, y: 30 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -10, transition: { duration: 0.12 } }}
+      transition={{ duration: 0.5 }}
+    >
       <div className="rounded-full bg-black/45 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-white/85">
         {hud.cupName} · Race {hud.raceIndex + 1}/{hud.raceCount} · {hud.cc}cc
       </div>
@@ -366,39 +391,87 @@ function Results({ hud }: { hud: HudSnapshot }) {
 
 function Podium({ hud }: { hud: HudSnapshot }) {
   const rows = hud.standings;
-  const top = [rows[1], rows[0], rows[2]];
-  const heights = [96, 132, 72];
   const me = rows.find((r) => r.isMe);
   return (
-    <motion.div className="pointer-events-auto absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[rgba(8,4,24,0.5)] p-4" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-      <div className="text-[12px] font-bold uppercase tracking-[0.25em] text-white/80">{hud.cupName} · final standings</div>
-      <div className="flex items-end gap-2">
-        {top.map((row, i) =>
-          row ? (
-            <motion.div key={row.idx} className="flex w-[92px] flex-col items-center gap-1" initial={{ y: 80, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ ...spring.bouncy, delay: [0.5, 0.9, 0.2][i] }}>
-              <RacerFace row={row} size={44} />
-              <span className="max-w-full truncate text-xs font-bold text-white">{row.name}</span>
-              <div
-                className="flex w-full flex-col items-center justify-start rounded-t-xl pt-2"
-                style={{
-                  height: heights[i],
-                  background: `linear-gradient(180deg, ${placeColors(row.place)[0]}, ${placeColors(row.place)[1]})`,
-                  border: "2px solid rgba(255,255,255,0.7)",
-                }}
-              >
+    <motion.div className="pointer-events-auto absolute inset-0 flex flex-col items-center justify-between p-4" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+      <motion.div className="flex flex-col items-center gap-1 text-center" initial={{ y: -30, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ ...spring.bouncy, delay: 0.3 }}>
+        <div className="rounded-full bg-black/45 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.25em] text-white/85">{hud.cupName} · final standings</div>
+        {rows[0] ? (
+          <div
+            className="text-[clamp(30px,7vw,56px)] font-black italic leading-none"
+            style={{
+              backgroundImage: "linear-gradient(180deg, #fff6a8 15%, #ffb800 85%)",
+              WebkitBackgroundClip: "text",
+              backgroundClip: "text",
+              color: "transparent",
+              WebkitTextStroke: "2px rgba(20,8,50,0.85)",
+              filter: "drop-shadow(0 4px 0 rgba(0,0,0,0.5))",
+            }}
+          >
+            {rows[0].isMe ? "YOU WIN!" : `${rows[0].name} wins!`}
+          </div>
+        ) : null}
+      </motion.div>
+      <div className="flex w-full max-w-md flex-col gap-1.5">
+        <ol className="grid grid-cols-2 gap-1">
+          {rows.map((row, i) => (
+            <motion.li
+              key={row.idx}
+              initial={{ y: 20, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              transition={{ ...spring.snappy, delay: 0.8 + i * 0.06 }}
+              className="flex items-center gap-1.5 rounded-xl px-1.5 py-1 text-white"
+              style={{
+                background: row.isMe ? "linear-gradient(90deg, #ffcf40, #ff8a1f)" : "rgba(14,8,36,0.78)",
+                border: `1.5px solid ${row.isMe ? "#fff" : "rgba(255,255,255,0.2)"}`,
+                color: row.isMe ? "#2a1400" : "#fff",
+              }}
+            >
+              <span className="w-7 text-center">
                 <PlaceBadge place={row.place} />
-                <span className="text-sm font-black text-[#2a1400]">{row.points} pts</span>
-              </div>
-            </motion.div>
-          ) : null,
-        )}
+              </span>
+              <RacerFace row={row} size={22} />
+              <span className="min-w-0 flex-1 truncate text-xs font-bold">{row.name}</span>
+              <span className="text-xs font-black">{row.points}</span>
+            </motion.li>
+          ))}
+        </ol>
+        {me ? (
+          <div className="text-center text-xs font-semibold text-white/80">
+            {hud.submitError ? "Couldn't send your result. Retrying…" : hud.submitted ? "Result sent" : "Sending result…"}
+          </div>
+        ) : null}
       </div>
-      {me ? (
-        <div className="text-center text-sm font-bold text-white">
-          You finished <PlaceBadge place={me.place} /> with {me.points} pts
-          <div className="mt-1 text-xs font-medium text-white/70">{hud.submitError ? "Couldn't send your result. Retrying…" : hud.submitted ? "Result sent" : "Sending result…"}</div>
-        </div>
+    </motion.div>
+  );
+}
+
+function TrialResults({ hud, onExit, onRetry }: { hud: HudSnapshot; onExit?: () => void; onRetry?: () => void }) {
+  const t = hud.trial!;
+  return (
+    <motion.div className="pointer-events-auto absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[rgba(8,4,24,0.5)] p-4" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <div className="text-[12px] font-bold uppercase tracking-[0.25em] text-white/80">{hud.trackName} · time trial</div>
+      <div className="font-mono text-[clamp(40px,10vw,72px)] font-black text-white drop-shadow">{formatTime(t.time)}</div>
+      {t.record ? (
+        <motion.div className="rounded-full bg-gradient-to-r from-[#ffe27a] to-[#ff9a1f] px-4 py-1 text-lg font-black italic text-[#2a1400]" initial={{ scale: 0.4 }} animate={{ scale: [1.2, 1] }} transition={spring.bouncy}>
+          NEW RECORD!
+        </motion.div>
+      ) : t.best !== null ? (
+        <div className="text-sm font-semibold text-white/80">Best {formatTime(t.best)} · +{(t.time - t.best).toFixed(2)}s</div>
       ) : null}
+      <div className="text-xs text-white/60">{t.record ? "Your ghost will race you next time." : "Beat your ghost to set a new record."}</div>
+      <div className="mt-2 flex gap-2">
+        {onRetry ? (
+          <button type="button" onClick={onRetry} className="rounded-2xl bg-gradient-to-b from-[#ffe27a] to-[#ff9a1f] px-5 py-2.5 font-black italic text-[#2a1400]">
+            Race again
+          </button>
+        ) : null}
+        {onExit ? (
+          <button type="button" onClick={onExit} className="rounded-2xl border border-white/30 px-5 py-2.5 font-bold text-white">
+            Back to garage
+          </button>
+        ) : null}
+      </div>
     </motion.div>
   );
 }

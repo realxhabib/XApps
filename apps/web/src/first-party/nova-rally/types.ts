@@ -4,7 +4,7 @@
  * are roughly metres; ships are ~3.2 units long and tracks 20–34 units wide.
  */
 
-export type ThemeId = "mars" | "belt" | "saturn" | "nebula" | "luna";
+export type ThemeId = "mars" | "belt" | "saturn" | "nebula" | "luna" | "sun" | "europa";
 
 /** Stats are 1–5. */
 export interface ShipStats {

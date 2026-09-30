@@ -22,12 +22,12 @@ import {
   WebGLRenderer,
 } from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import { buildShip, type ShipDesign } from "./ships";
+import { buildShip, type Pilot, type ShipDesign } from "./ships";
 import type { Livery } from "./types";
 
-export function ShipPreview({ design, livery, reduced }: { design: ShipDesign; livery: Livery; reduced: boolean }) {
+export function ShipPreview({ design, livery, pilot, reduced }: { design: ShipDesign; livery: Livery; pilot: Pilot; reduced: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const stateRef = useRef<{ scene: Scene; swap: (d: ShipDesign, l: Livery) => void } | null>(null);
+  const stateRef = useRef<{ scene: Scene; swap: (d: ShipDesign, l: Livery, p: Pilot) => void } | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -54,7 +54,7 @@ export function ShipPreview({ design, livery, reduced }: { design: ShipDesign; l
     rim.position.set(-5, 3, -4);
     scene.add(key, rim);
     const camera = new PerspectiveCamera(32, 1, 0.1, 100);
-    camera.position.set(0, 2.6, 7.4);
+    camera.position.set(0, 2.4, 6.4);
     camera.lookAt(0, 0.35, 0);
 
     const padMat = new MeshBasicMaterial({ color: new Color("#ffffff"), transparent: true, opacity: 0.12 });
@@ -68,12 +68,12 @@ export function ShipPreview({ design, livery, reduced }: { design: ShipDesign; l
     ring.position.y = -0.34;
     scene.add(ring);
 
-    let model = buildShip(design, livery, "high");
+    let model = buildShip(design, livery, "high", pilot);
     scene.add(model.root);
-    const swap = (d: ShipDesign, l: Livery) => {
+    const swap = (d: ShipDesign, l: Livery, p: Pilot) => {
       scene.remove(model.root);
       model.dispose();
-      model = buildShip(d, l, "high");
+      model = buildShip(d, l, "high", p);
       scene.add(model.root);
       ringMat.color.set(l.glow);
     };
@@ -117,8 +117,8 @@ export function ShipPreview({ design, livery, reduced }: { design: ShipDesign; l
   }, [reduced]);
 
   useEffect(() => {
-    stateRef.current?.swap(design, livery);
-  }, [design, livery]);
+    stateRef.current?.swap(design, livery, pilot);
+  }, [design, livery, pilot]);
 
   return <canvas ref={canvasRef} className="size-full" />;
 }

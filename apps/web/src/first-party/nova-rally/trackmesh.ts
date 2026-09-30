@@ -30,7 +30,7 @@ import {
   type Material,
   type Texture,
 } from "three";
-import { paintChecker, paintChevrons, paintCurb, paintRoad, paintShoulder, paintSign } from "./textures";
+import { ROAD_LOOKS, paintChecker, paintChevrons, paintCurb, paintRoad, paintShoulder, paintSign } from "./textures";
 import { PAD_LENGTH, RAMP_LENGTH, frameAt, newFrame, wrapS, type CompiledTrack } from "./track";
 
 export interface TrackView {
@@ -190,10 +190,10 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
       map: road.map,
       emissiveMap: road.emissive,
       emissive: new Color("#ffffff"),
-      emissiveIntensity: 1.1,
+      emissiveIntensity: ROAD_LOOKS[theme].emissive,
       roughnessMap: road.rough,
-      roughness: 0.55,
-      metalness: 0.35,
+      roughness: 1,
+      metalness: ROAD_LOOKS[theme].metalness,
     }),
   );
   const roadGeo = own(strip(track, { d0: (i) => -hw(i), d1: hw, h0: 0, h1: 0, across: 8, vScale: 16, skip: noFloor }));
@@ -202,7 +202,7 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
   group.add(roadMesh);
 
   /* Curbs */
-  const curbTex = own(paintCurb(grounded ? "#e8363f" : def.accent[0], "#f4f4f4"));
+  const curbTex = own(paintCurb(ROAD_LOOKS[theme].curb[0], ROAD_LOOKS[theme].curb[1]));
   const curbMat = own(new MeshStandardMaterial({ map: curbTex, roughness: 0.6, metalness: 0.1, emissive: accent, emissiveIntensity: grounded ? 0 : 0.35 }));
   for (const side of [-1, 1] as const) {
     const g = own(

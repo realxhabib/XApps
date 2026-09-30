@@ -18,11 +18,13 @@ import {
   BufferGeometry,
   Color,
   CubeCamera,
+  CubicBezierCurve3,
   CustomBlending,
   CylinderGeometry,
   CanvasTexture,
   DataTexture,
   DoubleSide,
+  Euler,
   Float32BufferAttribute,
   Fog,
   FogExp2,
@@ -57,6 +59,7 @@ import {
   SrcAlphaFactor,
   type Texture,
   TorusGeometry,
+  TubeGeometry,
   Vector2,
   Vector3,
   Vector4,
@@ -403,6 +406,44 @@ void main() {
   gl_FragColor = vec4(clamp(col, 0.0, 200.0), 1.0);
 }
 `,
+  sun: /* glsl */ `
+void main() {
+  vec3 d = normalize(vDir);
+  float sd = max(dot(d, uSun), 0.0);
+  float cd = max(dot(d, uA), 0.0);
+  vec3 col = vec3(0.006, 0.003, 0.006);
+  float w = fbm(d * 2.0 + 3.0);
+  float n1 = fbm(d * 3.0 + w * 1.8);
+  col += vec3(0.20, 0.05, 0.03) * pow(smoothstep(0.45, 0.9, n1), 1.5) * 0.9;
+  col += vec3(0.08, 0.02, 0.10) * smoothstep(0.5, 0.85, fbm(d * 4.0 - w * 2.0 + 9.0));
+  // Scattered glow from the star below.
+  col += vec3(1.0, 0.35, 0.08) * pow(cd, 3.0) * 0.9 + vec3(0.9, 0.3, 0.05) * pow(cd, 1.2) * 0.12;
+  float s = starLayer(d, 240.0, 0.985) * 1.2 + starLayer(d, 520.0, 0.975) * 0.5;
+  col += starTint(d) * s * (1.0 - smoothstep(0.1, 0.5, cd));
+  col += sunGlow(sd, 0.0, 0.0, 0.25);
+  gl_FragColor = vec4(clamp(col, 0.0, 200.0), 1.0);
+}
+`,
+  europa: /* glsl */ `
+void main() {
+  vec3 d = normalize(vDir);
+  float sd = max(dot(d, uSun), 0.0);
+  vec3 col = vec3(0.002, 0.003, 0.007);
+  float mw = dot(d, uA);
+  float band = exp(-mw * mw * 8.0);
+  float w = fbm(d * 2.3 + 5.0);
+  col += vec3(0.07, 0.08, 0.11) * band * (0.25 + pow(fbm(d * 6.0 + w * 2.0), 2.0) * 1.6);
+  col *= 1.0 - 0.7 * band * smoothstep(0.5, 0.72, fbm(d * 10.0 + w * 3.0));
+  col += vec3(0.02, 0.05, 0.10) * smoothstep(0.45, 0.9, fbm(d * 1.6 + 20.0)) * 0.7;
+  // Faint Jupiter-shine around the giant.
+  col += vec3(0.35, 0.25, 0.15) * pow(max(dot(d, uB), 0.0), 12.0) * 0.08;
+  float s = starLayer(d, 250.0, 0.972) * 1.6 + starLayer(d, 560.0, 0.955 - band * 0.06) * 0.8;
+  col += starTint(d) * s;
+  col += uSunCol * (smoothstep(0.99975, 0.99985, sd) * 120.0 + pow(sd, 2500.0) * 10.0 + pow(sd, 250.0) * 0.3 + pow(sd, 20.0) * 0.04);
+  if (d.y < 0.0) col = mix(col, vec3(0.03, 0.05, 0.09), rstep(0.0, -0.2, d.y));
+  gl_FragColor = vec4(clamp(col, 0.0, 200.0), 1.0);
+}
+`,
   luna: /* glsl */ `
 void main() {
   vec3 d = normalize(vDir);
@@ -607,8 +648,9 @@ function equirect(ctx: Ctx, w: number, h: number, fn: (x: number, y: number, z: 
 }
 
 /** Tiling greyscale detail (multiplier around 1) for the terrain's triplanar mapping. */
-function detailTexture(ctx: Ctx, seed: number, kind: "mars" | "luna"): DataTexture {
-  const S = 256;
+function detailTexture(ctx: Ctx, seed: number, kind: "mars" | "luna" | "europa"): DataTexture {
+  const S = ctx.hi ? 512 : 256;
+  const sc = S / 256;
   const data = new Uint8Array(S * S * 4);
   const r = rng(seed);
   const hgt = new Float32Array(S * S);
@@ -621,6 +663,11 @@ function detailTexture(ctx: Ctx, seed: number, kind: "mars" | "luna"): DataTextu
         // Wind ripples plus grit.
         const rip = Math.sin((u * 48 + fbm2(u * 4, v * 4, seed + 9, 3, 4) * 6) * Math.PI * 2) * 0.5 + 0.5;
         h = h * 0.82 + rip * rip * 0.14 + noise2(x, y, seed + 3, S) * 0.03;
+      } else if (kind === "europa") {
+        // Frost grain with a web of hairline cracks.
+        const c1 = Math.abs(fbm2(u * 6, v * 6, seed + 21, 4, 6) - 0.5);
+        const c2 = Math.abs(fbm2(u * 14, v * 14, seed + 22, 3, 14) - 0.5);
+        h = h * 0.7 + 0.25 - smooth(0.035, 0.0, c1) * 0.3 - smooth(0.025, 0.0, c2) * 0.15 + noise2(x, y, seed + 3, S) * 0.02;
       } else {
         h = h * 0.85 + noise2(x, y, seed + 3, S) * 0.03;
       }
@@ -628,11 +675,11 @@ function detailTexture(ctx: Ctx, seed: number, kind: "mars" | "luna"): DataTextu
     }
   }
   // Pebbles (mars) or micro-craters (luna).
-  const n = kind === "mars" ? 900 : 260;
+  const n = kind === "mars" ? 900 * sc * sc : kind === "luna" ? 260 : 0;
   for (let k = 0; k < n; k++) {
     const px = r() * S;
     const py = r() * S;
-    const rad = kind === "mars" ? 1 + r() * 2.5 : 2 + Math.pow(r(), 3) * 18;
+    const rad = (kind === "mars" ? 1 + r() * 2.5 : 2 + Math.pow(r(), 3) * 18) * sc;
     const R = Math.ceil(rad * 1.6);
     for (let dy = -R; dy <= R; dy++) {
       for (let dx = -R; dx <= R; dx++) {
@@ -652,7 +699,9 @@ function detailTexture(ctx: Ctx, seed: number, kind: "mars" | "luna"): DataTextu
     data[i * 4 + 2] = v * 255;
     data[i * 4 + 3] = 255;
   }
-  return dataTexture(ctx, S, S, data, { srgb: false, repeat: true, mips: true });
+  const t = dataTexture(ctx, S, S, data, { srgb: false, repeat: true, mips: true });
+  t.anisotropy = Math.min(16, ctx.renderer.capabilities.getMaxAnisotropy());
+  return t;
 }
 
 function makeCanvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] | null {
@@ -1149,7 +1198,7 @@ void main() {
   float b = 1.0;
   if (aBlink.y > 0.0) b = 0.06 + 0.94 * pow(0.5 + 0.5 * sin(uTime * aBlink.y + aBlink.x), 6.0);
   float dist = -mv.z;
-  vC = aColor * b * (1.0 - smoothstep(1400.0, 2200.0, dist));
+  vC = aColor * b * (1.0 - smoothstep(1400.0, 2200.0, dist)) * smoothstep(2.0, 9.0, dist);
   gl_PointSize = clamp(aSize * uScale / max(dist, 0.1), 2.0, 160.0);
 }
 `;
@@ -1435,7 +1484,7 @@ const ROCK_NOISE = GLSL_NOISE.replace(/FBM_OCT/g, "3");
 
 function rockMaterial(
   ctx: Ctx,
-  opts: { rough: number; metal?: number; glow?: Color; flat?: boolean; envI?: number; emissive?: Color; bump?: number; freq?: number },
+  opts: { rough: number; metal?: number; glow?: Color; flat?: boolean; envI?: number; emissive?: Color; bump?: number; freq?: number; ice?: Color; contrast?: number },
 ): MeshStandardMaterial {
   const m = new MeshStandardMaterial({
     vertexColors: true,
@@ -1449,8 +1498,12 @@ function rockMaterial(
   const uTime = ctx.uTime;
   const bump = opts.bump ?? 1;
   const freq = opts.freq ?? 3.2;
+  const ice = opts.ice ?? null;
+  const contrast = opts.contrast ?? 1;
   m.onBeforeCompile = (s: WebGLProgramParametersWithUniforms) => {
     s.uniforms.uGlowColor = { value: glow ?? new Color(0) };
+    s.uniforms.uIce = { value: ice ?? new Color(0) };
+    s.uniforms.uRockC = { value: contrast };
     s.uniforms.uTime = uTime;
     s.uniforms.uRockBump = { value: bump };
     s.uniforms.uRockFreq = { value: freq };
@@ -1465,6 +1518,8 @@ uniform vec3 uGlowColor;
 uniform float uTime;
 uniform float uRockBump;
 uniform float uRockFreq;
+uniform vec3 uIce;
+uniform float uRockC;
 varying vec3 vRockP;
 ${glow ? "varying float vGlow;" : ""}
 ${ROCK_NOISE}`,
@@ -1473,7 +1528,7 @@ ${ROCK_NOISE}`,
         "#include <map_fragment>",
         `float rockH = fbm(vRockP * uRockFreq);
 float rockPit = smoothstep(0.7, 0.85, vnoise(vRockP * uRockFreq * 3.3 + 7.0));
-diffuseColor.rgb *= (0.62 + 0.7 * rockH) * (1.0 - 0.2 * rockPit);
+diffuseColor.rgb *= mix(1.0, (0.62 + 0.7 * rockH) * (1.0 - 0.2 * rockPit), uRockC);
 rockH -= rockPit * 0.15;`,
       )
       .replace(
@@ -1494,10 +1549,23 @@ rockH -= rockPit * 0.15;`,
       )
       .replace(
         "#include <emissivemap_fragment>",
-        glow ? "#include <emissivemap_fragment>\ntotalEmissiveRadiance += uGlowColor * vGlow * (0.7 + 0.3 * sin(uTime * 1.7 + vGlow * 9.0));" : "#include <emissivemap_fragment>",
+        `#include <emissivemap_fragment>
+${glow ? "totalEmissiveRadiance += uGlowColor * vGlow * (0.7 + 0.3 * sin(uTime * 1.7 + vGlow * 9.0));" : ""}
+${
+  ice
+    ? `{
+  float fr = pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 2.2);
+  float thick = fbm(vRockP * 2.1 + 4.0);
+  totalEmissiveRadiance += uIce * (fr * 1.1 + (1.0 - thick) * 0.18);
+  vec3 cell = floor(vRockP * 38.0);
+  float spk = hash13(cell + floor(uTime * 1.5 + hash13(cell + 3.1) * 7.0));
+  totalEmissiveRadiance += vec3(0.9, 0.97, 1.0) * step(0.985, spk) * (2.0 + 6.0 * fr);
+}`
+    : ""
+}`,
       );
   };
-  m.customProgramCacheKey = () => (glow ? "nova-rock-glow" : "nova-rock");
+  m.customProgramCacheKey = () => `nova-rock-${glow ? "g" : ""}${ice ? "i" : ""}`;
   return m;
 }
 
@@ -1915,11 +1983,15 @@ float triDetail(float sc, vec3 bw) {
         "#include <map_fragment>",
         `vec3 tbw = pow(abs(normalize(vWNrm)), vec3(4.0));
 tbw /= (tbw.x + tbw.y + tbw.z);
+float viewD = length(vViewPosition);
+float nearK = 1.0 - smoothstep(14.0, 42.0, viewD);
 float dA = triDetail(uScales.x, tbw);
 float dB = triDetail(uScales.y, tbw);
 float dC = triDetail(uScales.x * 0.23, tbw);
-float detailH = dA * 0.7 + dC * 0.3;
-diffuseColor.rgb *= (0.62 + 0.75 * detailH) * (0.82 + 0.36 * dB);`,
+float dF = 0.5;
+if (nearK > 0.0) dF = triDetail(uScales.x * 9.7, tbw) * 0.6 + triDetail(uScales.x * 4.1, tbw) * 0.4;
+float detailH = dA * 0.6 + dC * 0.3 + (dF - 0.5) * 0.45 * nearK;
+diffuseColor.rgb *= (0.64 + 0.7 * (dA * 0.7 + dC * 0.3)) * (0.82 + 0.36 * dB) * (1.0 + (dF - 0.5) * 0.55 * nearK);`,
       )
       .replace(
         "#include <normal_fragment_maps>",
@@ -1927,8 +1999,9 @@ diffuseColor.rgb *= (0.62 + 0.75 * detailH) * (0.82 + 0.36 * dB);`,
 {
   vec3 dpx = dFdx(-vViewPosition);
   vec3 dpy = dFdy(-vViewPosition);
-  float dhx = dFdx(detailH) * uBump;
-  float dhy = dFdy(detailH) * uBump;
+  float bk = uBump * mix(0.4, 1.0, smoothstep(3.0, 26.0, viewD)) * (1.0 - 0.5 * smoothstep(150.0, 500.0, viewD));
+  float dhx = dFdx(detailH) * bk;
+  float dhy = dFdy(detailH) * bk;
   vec3 r1 = cross(dpy, normal);
   vec3 r2 = cross(normal, dpx);
   float det = dot(dpx, r1) * faceDirection;
@@ -2069,7 +2142,7 @@ function addSupports(ctx: Ctx, every: number, color: Color, metal: Color): void 
   }
   if (struts.length === 0) return;
   const geo = new CylinderGeometry(0.28, 0.28, 1, 8, 1);
-  const mat = new MeshStandardMaterial({ color: metal, metalness: 0.85, roughness: 0.3, emissive: color, emissiveIntensity: 0.25 });
+  const mat = nearFade(new MeshStandardMaterial({ color: metal, metalness: 0.85, roughness: 0.3, emissive: color, emissiveIntensity: 0.25 }));
   const mesh = new InstancedMesh(geo, mat, struts.length);
   const one = new Vector3();
   struts.forEach((s, i) => {
@@ -2080,7 +2153,7 @@ function addSupports(ctx: Ctx, every: number, color: Color, metal: Color): void 
   mesh.computeBoundingSphere();
   ctx.group.add(mesh);
   const ngeo = new SphereGeometry(1.1, 16, 12);
-  const nmat = new MeshStandardMaterial({ color: 0x111111, emissive: color, emissiveIntensity: 3, roughness: 0.4 });
+  const nmat = nearFade(new MeshStandardMaterial({ color: 0x111111, emissive: color, emissiveIntensity: 3, roughness: 0.4 }));
   const nm = new InstancedMesh(ngeo, nmat, nodes.length);
   nodes.forEach((n, i) => {
     _m4.makeTranslation(n.x, n.y, n.z);
@@ -2093,6 +2166,25 @@ function addSupports(ctx: Ctx, every: number, color: Color, metal: Color): void 
 /* ------------------------------------------------------------------ */
 /* Outposts: domes (mars), lunar base (luna)                          */
 /* ------------------------------------------------------------------ */
+
+/** Dithered fade for props that come too close to the camera (keeps the view clear). */
+function nearFade<T extends Material>(m: T, near = 5, far = 12): T {
+  const prev = m.onBeforeCompile;
+  m.onBeforeCompile = (s, r) => {
+    prev.call(m, s, r);
+    s.fragmentShader = s.fragmentShader.replace(
+      "#include <clipping_planes_fragment>",
+      `#include <clipping_planes_fragment>
+{
+  float nfK = smoothstep(${near.toFixed(1)}, ${far.toFixed(1)}, length(vViewPosition));
+  if (nfK < 0.999 && nfK < fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))))) discard;
+}`,
+    );
+  };
+  const key = m.customProgramCacheKey.bind(m);
+  m.customProgramCacheKey = () => key() + "-nf";
+  return m;
+}
 
 function hullMaterial(color: number, emissiveMap: Texture | null, emissive = 0xffffff, rough = 0.45, metal = 0.6): MeshStandardMaterial {
   return new MeshStandardMaterial({
@@ -2658,7 +2750,7 @@ function buildSaturn(ctx: Ctx): ThemeLook {
     ],
     0.06,
   );
-  const V = azEl(-25, 20);
+  const V = azEl(-45, 17);
   const side = new Vector3().crossVectors(V, new Vector3(0, 1, 0)).normalize();
   const upP = new Vector3().crossVectors(side, V).normalize();
   const roll = -0.45;
@@ -2670,7 +2762,7 @@ function buildSaturn(ctx: Ctx): ThemeLook {
     V,
     SKY_R,
     {
-      radius: 150,
+      radius: 190,
       map: tex,
       atmo: new Color(0.9, 0.8, 0.55),
       atmoK: 0.45,
@@ -2713,12 +2805,12 @@ function buildSaturn(ctx: Ctx): ThemeLook {
   addPlanet(ctx, azEl(-95, 42), SKY_R, { radius: 6, map: ice, atmo: new Color(0), atmoK: 0, ambient: 0.02, spin: 0.001, segments: 32 }, -965);
 
   // Ice shards: we race through a thin layer of the rings.
-  const iceMat = new MeshStandardMaterial({ vertexColors: true, roughness: 0.1, metalness: 0.15, flatShading: true, envMapIntensity: 2.4, emissive: new Color(0x10324a) });
+  const iceMat = rockMaterial(ctx, { rough: 0.14, metal: 0.1, envI: 2.2, ice: new Color(0.22, 0.55, 0.85), contrast: 0.35, bump: 0.5, freq: 2.4 });
   const shade: [Color, Color] = [new Color(0x6f9dc0), new Color(0xe6f6ff)];
   const shapes: RockShape[] = [
-    { seed: 31, detail: 0, lumpy: 0.25, stretch: [0.6, 1.8, 0.7], facets: true, shade },
-    { seed: 32, detail: 0, lumpy: 0.3, stretch: [1, 1, 1], facets: true, shade },
-    { seed: 33, detail: 1, lumpy: 0.3, stretch: [1.3, 0.8, 1], facets: true, shade },
+    { seed: 31, detail: ctx.hi ? 2 : 1, lumpy: 0.3, stretch: [0.6, 1.8, 0.7], shade },
+    { seed: 32, detail: ctx.hi ? 2 : 1, lumpy: 0.35, shade },
+    { seed: 33, detail: ctx.hi ? 3 : 2, lumpy: 0.3, stretch: [1.3, 0.8, 1], craters: 3, shade },
   ];
   const r = rng(77);
   const o = ctx.outline;
@@ -2857,9 +2949,12 @@ function billboardTexture(ctx: Ctx, kind: number): CanvasTexture | null {
 
 const HOLO_VERT = /* glsl */ `
 varying vec2 vUv;
+varying float vViewD;
 void main() {
   vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  vViewD = -mv.z;
+  gl_Position = projectionMatrix * mv;
 }
 `;
 
@@ -2869,6 +2964,7 @@ uniform float uTime;
 uniform float uSeed;
 uniform float uFlip;
 varying vec2 vUv;
+varying float vViewD;
 void main() {
   vec2 uv = vUv;
   if (uFlip > 0.5) uv.x = 1.0 - uv.x;
@@ -2878,7 +2974,7 @@ void main() {
   float scan = 0.82 + 0.18 * sin(uv.y * 380.0 - uTime * 14.0);
   float band = 0.6 + 0.4 * smoothstep(0.0, 0.12, fract(uv.y * 1.5 - uTime * 0.35 + uSeed));
   float flick = 0.88 + 0.12 * sin(uTime * 37.0 + uSeed * 10.0) * sin(uTime * 13.0);
-  vec3 col = t.rgb * scan * band * flick * 2.2;
+  vec3 col = t.rgb * scan * band * flick * 2.2 * smoothstep(6.0, 16.0, vViewD);
   gl_FragColor = vec4(col, 1.0);
   ${FRAG_TAIL}
 }
@@ -2966,7 +3062,7 @@ function buildNebula(ctx: Ctx): ThemeLook {
   const right = new Vector3();
   const fwd = new Vector3();
   const p = new Vector3();
-  const poleMat = new MeshStandardMaterial({ color: 0x8890b8, metalness: 0.75, roughness: 0.3, emissive: 0x2a1650, emissiveIntensity: 0.6 });
+  const poleMat = nearFade(new MeshStandardMaterial({ color: 0x8890b8, metalness: 0.75, roughness: 0.3, emissive: 0x2a1650, emissiveIntensity: 0.6 }), 6, 14);
   const boards = Math.min(12, Math.floor(o.count / 140));
   let kind = 0;
   for (let b = 0; b < boards; b++) {
@@ -2980,8 +3076,10 @@ function buildNebula(ctx: Ctx): ThemeLook {
     const nextR = new Vector3().fromArray(o.right, j * 3);
     const turn = fwd.dot(nextR) > 0 ? 1 : -1;
     const sideSign = b % 3 === 0 ? -turn : turn;
-    const off = o.halfWidth[i] + 12;
+    // The board spans ±11 across, so its inner edge stays ≥ halfWidth+14 from the centreline.
+    const off = o.halfWidth[i] + 26;
     const centre = p.clone().addScaledVector(right, sideSign * off).addScaledVector(up, 7.5);
+    if (!clearOfRoad(ctx, centre.x, centre.y, centre.z, 0, 24, 16)) continue;
     const isArrow = kind % 5 === 2;
     const t = tex[kind % 5];
     kind++;
@@ -3017,7 +3115,8 @@ function buildNebula(ctx: Ctx): ThemeLook {
     up.fromArray(o.up, i * 3);
     right.fromArray(o.right, i * 3);
     for (const s of [-1, 1]) {
-      const base = p.clone().addScaledVector(right, s * (o.halfWidth[i] + 5));
+      const base = p.clone().addScaledVector(right, s * (o.halfWidth[i] + 14));
+      if (!clearOfRoad(ctx, base.x, base.y, base.z, 0, 13, 14)) continue;
       pyl.push({ p: base.clone().addScaledVector(up, 2), q: new Quaternion().setFromUnitVectors(Y, up) });
       beacon(ctx, base.clone().addScaledVector(up, 11.5), s > 0 ? 0x3ff3ff : 0xff3fb4, 3.2, 5, -i * 0.12, 2.4);
       beacon(ctx, base.clone().addScaledVector(up, -7.5), 0x9b6bff, 2.2, 0, 0, 1.5);
@@ -3256,12 +3355,487 @@ function buildLuna(ctx: Ctx): ThemeLook {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* Solar Corona                                                       */
+/* ------------------------------------------------------------------ */
+
+const SUN_SURF_FRAG = /* glsl */ `
+uniform float uTime;
+varying vec3 vN;
+varying vec3 vP;
+varying vec3 vObj;
+varying vec3 vCenter;
+varying vec3 vAxis;
+${GLSL_NOISE}
+void main() {
+  vec3 o = normalize(vObj);
+  vec3 v = normalize(cameraPosition - vP);
+  float mu = clamp(dot(normalize(vN), v), 0.0, 1.0);
+  vec3 p = o * 16.0;
+  float t = uTime * 0.05;
+#ifdef WARP
+  vec3 w = vec3(fbm(p * 0.55 + vec3(t, 0.0, 0.0)), fbm(p * 0.55 + vec3(0.0, t, 5.2)), 0.0);
+#else
+  vec3 w = vec3(0.0);
+#endif
+  float g = fbm(p + w * 2.2 + vec3(0.0, 0.0, t * 2.0));
+  float cells = 1.0 - abs(vnoise(p * 5.0 + vec3(t * 4.0)) * 2.0 - 1.0);
+  cells = cells * cells;
+  float spots = smoothstep(0.7, 0.8, fbm(o * 2.4 + 11.0));
+  float heat = g * 0.8 + cells * 0.35 - 0.08;
+  heat *= 1.0 - spots * 0.85;
+  vec3 c = mix(vec3(0.16, 0.01, 0.0), vec3(0.7, 0.16, 0.015), smoothstep(0.2, 0.6, heat));
+  c = mix(c, vec3(1.5, 0.66, 0.16), smoothstep(0.6, 0.92, heat));
+  c *= 0.45 + 0.55 * pow(mu, 0.45);
+  c += vec3(1.1, 0.3, 0.04) * pow(1.0 - mu, 4.0) * 0.9;
+  gl_FragColor = vec4(clamp(c, 0.0, 3.0), 1.0);
+  ${FRAG_TAIL}
+}
+`;
+
+const PROM_VERT = /* glsl */ `
+varying vec2 vUv;
+varying vec3 vN;
+varying vec3 vP;
+void main() {
+  vUv = uv;
+  vN = normalize(mat3(modelMatrix) * normal);
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vP = wp.xyz;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+  ${SKY_Z}
+}
+`;
+
+const PROM_FRAG = /* glsl */ `
+uniform float uTime;
+uniform float uSeed;
+varying vec2 vUv;
+varying vec3 vN;
+varying vec3 vP;
+${GLSL_NOISE}
+void main() {
+  vec3 v = normalize(cameraPosition - vP);
+  float facing = abs(dot(normalize(vN), v));
+  float flow = vnoise(vec3(vUv.x * 30.0 - uTime * 1.6, vUv.y * 3.0, uSeed)) * 0.6 + vnoise(vec3(vUv.x * 80.0 - uTime * 3.0, vUv.y * 6.0, uSeed + 4.0)) * 0.4;
+  float ends = smoothstep(0.0, 0.08, vUv.x) * rstep(1.0, 0.92, vUv.x) * 0.6 + 0.4;
+  float a = pow(facing, 1.5) * (0.35 + flow * 1.1) * ends;
+  vec3 col = mix(vec3(1.4, 0.25, 0.03), vec3(2.6, 1.3, 0.35), flow * facing);
+  gl_FragColor = vec4(clamp(col * a * 0.7, 0.0, 2.0), 1.0);
+  ${FRAG_TAIL}
+}
+`;
+
+function buildSun(ctx: Ctx): ThemeLook {
+  addStars(ctx, ctx.hi ? 900 : 400, 0.5);
+  const C = azEl(90, -58);
+  const D = SKY_R;
+  const alpha = (78 * Math.PI) / 180;
+  const R = D * Math.sin(alpha);
+  const starG = new Group();
+  starG.position.copy(C).multiplyScalar(D);
+  const starMat = new ShaderMaterial({
+    vertexShader: PLANET_VERT,
+    fragmentShader: SUN_SURF_FRAG,
+    defines: ctx.hi ? { FBM_OCT: "4", WARP: "" } : { FBM_OCT: "3" },
+    uniforms: { uTime: ctx.uTime },
+    depthTest: false,
+    depthWrite: false,
+  });
+  const star = new Mesh(new SphereGeometry(R, ctx.hi ? 160 : 96, ctx.hi ? 96 : 56), starMat);
+  star.renderOrder = -985;
+  star.frustumCulled = false;
+  starG.add(star);
+  const corona = new Mesh(
+    new SphereGeometry(R * 1.08, 96, 48),
+    new ShaderMaterial({
+      vertexShader: PLANET_VERT,
+      fragmentShader: HALO_FRAG,
+      uniforms: { uSun: { value: C.clone().negate() }, uCol: { value: new Color(1.2, 0.36, 0.06) }, uR: { value: R }, uH: { value: 0.02 }, uK: { value: 0.9 } },
+      blending: AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  corona.renderOrder = -983;
+  corona.frustumCulled = false;
+  starG.add(corona);
+  ctx.updaters.push((time) => {
+    star.rotation.y = time * 0.004;
+  });
+  ctx.sky.add(starG);
+
+  // Prominences: plasma loops rooted just behind the visible limb.
+  const e1 = new Vector3().crossVectors(C, new Vector3(0, 1, 0)).normalize();
+  const e2 = new Vector3().crossVectors(e1, C).normalize();
+  const tangentD = Math.sqrt(D * D - R * R);
+  const limb = (th: number) =>
+    C.clone()
+      .multiplyScalar(Math.cos(alpha))
+      .addScaledVector(e1, Math.cos(th) * Math.sin(alpha))
+      .addScaledVector(e2, Math.sin(th) * Math.sin(alpha))
+      .normalize()
+      .multiplyScalar(tangentD);
+  const sc = C.clone().multiplyScalar(D);
+  const r = rng(314);
+  const loops = ctx.hi ? 7 : 4;
+  for (let k = 0; k < loops; k++) {
+    // Mostly on the upper limb (theta ~ pi/2 faces the zenith side).
+    const th = Math.PI / 2 + (r() - 0.5) * 2.4;
+    const span = 0.12 + r() * 0.2;
+    const a = limb(th - span / 2);
+    const b = limb(th + span / 2);
+    const mid = a.clone().add(b).multiplyScalar(0.5);
+    const n = mid.clone().sub(sc).normalize();
+    const h = 14 + r() * 30;
+    const push = (q: Vector3) => q.addScaledVector(q.clone().sub(sc).normalize(), -6);
+    const curve = new CubicBezierCurve3(
+      push(a.clone()),
+      a.clone().addScaledVector(n, h * 1.3).addScaledVector(b.clone().sub(a), -0.25),
+      b.clone().addScaledVector(n, h * 1.3).addScaledVector(b.clone().sub(a), 0.25),
+      push(b.clone()),
+    );
+    for (let strand = 0; strand < 2; strand++) {
+      const geo = new TubeGeometry(curve, 64, 0.9 + r() * 1.1 - strand * 0.4, 8, false);
+      const m = new Mesh(
+        geo,
+        new ShaderMaterial({
+          vertexShader: PROM_VERT,
+          fragmentShader: PROM_FRAG,
+          defines: { FBM_OCT: "2" },
+          uniforms: { uTime: ctx.uTime, uSeed: { value: k * 3.1 + strand } },
+          blending: AdditiveBlending,
+          depthTest: false,
+          depthWrite: false,
+          side: DoubleSide,
+        }),
+      );
+      m.renderOrder = -982;
+      m.frustumCulled = false;
+      m.scale.setScalar(1 + strand * 0.02);
+      ctx.sky.add(m);
+    }
+  }
+
+  // Solar research station: heat shield turned to the star, glowing radiators.
+  const st = new Group();
+  const away = new Vector3(Math.cos(2.2), 0, Math.sin(2.2));
+  st.position.set(ctx.cx + away.x * (ctx.extent + 260), ctx.cy + 60, ctx.cz + away.z * (ctx.extent + 260));
+  const gold = new MeshStandardMaterial({ color: 0xe0a93a, metalness: 1, roughness: 0.25 });
+  const white = new MeshStandardMaterial({ color: 0xd8d4cc, metalness: 0.4, roughness: 0.45 });
+  const hot = new MeshStandardMaterial({ color: 0x220800, emissive: 0xff4a10, emissiveIntensity: 1.8, roughness: 0.6, side: DoubleSide });
+  const shield = new Mesh(new CylinderGeometry(70, 60, 6, 64, 1), gold);
+  shield.position.y = -40;
+  const shaft = new Mesh(new CylinderGeometry(8, 8, 90, 24), white);
+  shaft.position.y = 5;
+  const ringM = new Mesh(new TorusGeometry(38, 5, 12, 64), white);
+  ringM.rotation.x = Math.PI / 2;
+  ringM.position.y = 20;
+  const neonR = new Mesh(new TorusGeometry(38, 1.2, 8, 64), new MeshStandardMaterial({ color: 0x000000, emissive: 0x7fe7ff, emissiveIntensity: 3 }));
+  neonR.rotation.x = Math.PI / 2;
+  neonR.position.y = 26;
+  st.add(shield, shaft, ringM, neonR);
+  for (let k = 0; k < 6; k++) {
+    const a = (k / 6) * Math.PI * 2;
+    const fin = new Mesh(new PlaneGeometry(26, 60), hot);
+    fin.position.set(Math.cos(a) * 26, 30, Math.sin(a) * 26);
+    fin.rotation.y = -a;
+    st.add(fin);
+  }
+  // Shield faces the star (its -Y towards C).
+  st.quaternion.setFromUnitVectors(new Vector3(0, -1, 0), C);
+  ctx.group.add(st);
+  st.updateMatrixWorld(true);
+  for (let k = 0; k < 12; k++) {
+    const a = (k / 12) * Math.PI * 2;
+    beacon(ctx, new Vector3(Math.cos(a) * 43, 20, Math.sin(a) * 43).applyMatrix4(st.matrixWorld), k % 3 ? 0x7fe7ff : 0xff3322, 6, k % 3 ? 0 : 2, k, 2);
+  }
+  beacon(ctx, new Vector3(0, 52, 0).applyMatrix4(st.matrixWorld), 0xff3322, 14, 1.5, 0, 3);
+  ctx.updaters.push((time) => {
+    ringM.rotation.z = time * 0.1;
+  });
+
+  addSupports(ctx, 60, new Color(0xffa040), new Color(0x4a3428));
+  // Heat shimmer: rising embers and glowing motes.
+  addDust(ctx, { count: ctx.hi ? 1200 : 450, box: 150, color: new Color(1.0, 0.45, 0.12), size: [0.15, 0.6], wind: new Vector3(0.5, 3.5, 0.3), swirl: 2.5, opacity: 0.9, additive: true, soft: 0 });
+  addDust(ctx, { count: ctx.hi ? 160 : 60, box: 320, color: new Color(0.9, 0.3, 0.08), size: [10, 30], wind: new Vector3(1, 5, 0), swirl: 10, opacity: 0.08, additive: true, soft: 1 });
+  addStreaks(ctx, ctx.hi ? 500 : 200, 150, new Color(0.7, 0.35, 0.12));
+  return {
+    fog: new FogExp2(new Color(0x2a0c05).getHex(), 0.00045),
+    sunIntensity: 3.0,
+    hemi: { sky: new Color(0x40306a), ground: new Color(0xff6a1a), intensity: 1.15 },
+    exposure: 0.95,
+    bloom: { strength: 0.75, threshold: 0.82, radius: 0.6 },
+    skyA: C,
+    skyB: new Vector3(0, 1, 0),
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Europa Ice                                                         */
+/* ------------------------------------------------------------------ */
+
+const GEYSER_VERT = /* glsl */ `
+attribute vec3 aBase;
+attribute float aSeed;
+uniform float uTime;
+uniform float uScale;
+varying float vA;
+void main() {
+  float life = 3.0 + aSeed * 2.5;
+  float t = fract(uTime / life + aSeed * 7.13);
+  float h = 55.0 + fract(aSeed * 13.7) * 45.0;
+  float rise = h * (1.0 - (1.0 - t) * (1.0 - t));
+  vec2 dir = vec2(sin(aSeed * 91.0), cos(aSeed * 53.0));
+  float spread = t * (2.0 + fract(aSeed * 31.0) * 10.0) + t * t * 8.0;
+  vec3 p = aBase + vec3(dir.x * spread + t * t * 10.0, rise, dir.y * spread);
+  vec4 mv = viewMatrix * vec4(p, 1.0);
+  gl_Position = projectionMatrix * mv;
+  float size = 2.0 + t * 15.0;
+  float dist = max(-mv.z, 0.1);
+  vA = sin(3.14159 * t) * (1.0 - t * 0.6) * smoothstep(3.0, 12.0, dist);
+  gl_PointSize = clamp(size * uScale / dist, 1.0, 256.0);
+}
+`;
+
+const GEYSER_FRAG = /* glsl */ `
+uniform vec3 uColor;
+varying float vA;
+void main() {
+  vec2 c = gl_PointCoord - 0.5;
+  float d2 = dot(c, c) * 4.0;
+  float a = max(exp(-d2 * 2.5) * (1.0 - d2), 0.0) * vA * 0.42;
+  gl_FragColor = vec4(uColor, a);
+  ${FRAG_TAIL}
+}
+`;
+
+function buildEuropa(ctx: Ctx): ThemeLook {
+  addStars(ctx, ctx.hi ? 2400 : 1000, 0.25);
+  const jTex = bandedPlanetTexture(
+    ctx,
+    61,
+    [
+      [0, new Color(0.35, 0.32, 0.32)],
+      [0.1, new Color(0.55, 0.45, 0.36)],
+      [0.2, new Color(0.8, 0.62, 0.42)],
+      [0.28, new Color(0.45, 0.24, 0.13)],
+      [0.35, new Color(0.95, 0.86, 0.7)],
+      [0.41, new Color(0.62, 0.34, 0.18)],
+      [0.47, new Color(0.98, 0.93, 0.82)],
+      [0.53, new Color(0.9, 0.72, 0.5)],
+      [0.59, new Color(0.5, 0.27, 0.14)],
+      [0.66, new Color(0.93, 0.82, 0.64)],
+      [0.74, new Color(0.6, 0.4, 0.26)],
+      [0.84, new Color(0.78, 0.66, 0.5)],
+      [0.92, new Color(0.5, 0.44, 0.4)],
+      [1, new Color(0.35, 0.32, 0.32)],
+    ],
+    0.12,
+    { lat: -0.36, lon: 2.1, color: new Color(0.85, 0.32, 0.14) },
+  );
+  const jDir = azEl(-60, 24);
+  addPlanet(ctx, jDir, SKY_R, { radius: 215, map: jTex, atmo: new Color(0.9, 0.75, 0.55), atmoK: 0.5, ambient: 0.012, spin: 0.0004, segments: ctx.hi ? 128 : 64, lightBoost: 1.15 }, -980, dir(0.1, 1, 0.15));
+  // Io, a small sulphur-yellow companion.
+  const io = equirect(
+    ctx,
+    128,
+    64,
+    (x, y, z, out) => {
+      const n = fbm3(x * 4, y * 4, z * 4, 71, 3);
+      out[0] = 0.85 + n * 0.1;
+      out[1] = 0.72 + n * 0.1;
+      out[2] = 0.3 + n * 0.1;
+    },
+    true,
+  );
+  addPlanet(ctx, azEl(-20, 38), SKY_R, { radius: 7, map: io, atmo: new Color(0), atmoK: 0, ambient: 0.02, spin: 0.002, segments: 32 }, -965);
+
+  const seed = 555;
+  const dirs = [0.35, 1.4, 2.5].map((a) => [Math.cos(a), Math.sin(a)]);
+  const spacing = [170, 230, 290];
+  /** Lineae: [ridge height, stain 0..1] at a point. */
+  const lineae = (x: number, z: number): [number, number] => {
+    let h = 0;
+    let c = 0;
+    for (let k = 0; k < 3; k++) {
+      const warp = (fbm2(x / 180, z / 180, seed + k * 7, 3) - 0.5) * 70;
+      const f = (x * dirs[k][0] + z * dirs[k][1] + warp) / spacing[k] + k * 0.37;
+      const dd = Math.abs(f - Math.round(f)) * spacing[k];
+      h += 2.4 * Math.exp(-((dd - 3.2) ** 2) / 3) + 0.6 * Math.exp(-(dd * dd) / 60);
+      c = Math.max(c, Math.exp(-(dd * dd) / 18) * 0.9 + Math.exp(-(dd * dd) / 180) * 0.35);
+    }
+    return [h, Math.min(1, c)];
+  };
+  const cx = ctx.cx;
+  const cz = ctx.cz;
+  const natural = (x: number, z: number, edge: number, base: number) => {
+    const far = smooth(30, 300, edge);
+    const [lh] = lineae(x, z);
+    const plain = (fbm2(x / 60, z / 60, seed + 1, 3) - 0.5) * 3 + lh * smooth(4, 30, edge);
+    const hills = (fbm2(x / 280, z / 280, seed + 2, 4) - 0.45) * 30 * far;
+    const chaos = terrace(clamp((ridge2(x / 140, z / 140, seed + 3, 3) - 0.5) * 2.2, 0, 1), 2) * 22 * smooth(80, 260, edge);
+    const rr = Math.hypot(x - cx, z - cz);
+    const rim = smooth(TERRAIN_HALF * 0.55, TERRAIN_HALF * 0.95, rr) * (90 + 120 * ridge2(x / 220, z / 220, seed + 4, 4));
+    return base - 0.8 + plain + hills + chaos + rim;
+  };
+  const ice = new Color(0xdce9f4);
+  const iceB = new Color(0x9fc0dd);
+  const stain = new Color(0x8c4a33);
+  const stainL = new Color(0xb9876c);
+  const slopeC = new Color(0x6f94bd);
+  const tmp = new Color();
+  const paint = (x: number, z: number, h: number, ny: number, edge: number, base: number, out: Color) => {
+    const n = fbm2(x / 70, z / 70, seed + 9, 3);
+    out.copy(iceB).lerp(ice, smooth(0.25, 0.7, n));
+    const [, c] = lineae(x, z);
+    tmp.copy(stainL).lerp(stain, smooth(0.5, 0.9, c));
+    out.lerp(tmp, c * 0.85);
+    const mottle = fbm2(x / 400, z / 400, seed + 10, 3);
+    out.lerp(stainL, smooth(0.6, 0.8, mottle) * 0.35);
+    out.lerp(slopeC, smooth(0.15, 0.5, 1 - ny) * 0.7);
+  };
+  const t = buildTerrain(ctx, {
+    seed,
+    natural,
+    paint,
+    chasmDepth: 60,
+    detail: detailTexture(ctx, 66, "europa"),
+    scales: [1 / 16, 1 / 70],
+    bump: 0.9,
+    roughness: 0.35,
+  });
+  (t.mesh.material as MeshStandardMaterial).metalness = 0.05;
+  (t.mesh.material as MeshStandardMaterial).envMapIntensity = 1.4;
+
+  const iceMat = rockMaterial(ctx, { rough: 0.16, metal: 0.05, envI: 2.0, ice: new Color(0.18, 0.45, 0.75), contrast: 0.35, bump: 0.5, freq: 2.2 });
+  const shade: [Color, Color] = [new Color(0x7fa6cc), new Color(0xeef8ff)];
+  scatterRocks(ctx, t, {
+    count: ctx.hi ? 900 : 300,
+    seed: 25,
+    shapes: [
+      { seed: 51, detail: ctx.hi ? 2 : 1, lumpy: 0.3, flat: 0.3, shade },
+      { seed: 52, detail: ctx.hi ? 2 : 1, lumpy: 0.35, flat: 0.25, stretch: [1.4, 0.8, 1], shade },
+    ],
+    size: [0.4, 7],
+    pow: 3.2,
+    minEdge: 4,
+    maxDist: ctx.extent + 400,
+    tint: [new Color(0.9, 0.95, 1), new Color(1.05, 1.05, 1.08)],
+    sink: 0.3,
+    mat: iceMat,
+    cast: true,
+  });
+
+  // Crystal spires in clusters.
+  const spireGeo = new CylinderGeometry(0.04, 1, 1, 6, 4);
+  spireGeo.translate(0, 0.5, 0);
+  {
+    const pa = spireGeo.getAttribute("position");
+    const col = new Float32Array(pa.count * 3);
+    for (let i = 0; i < pa.count; i++) {
+      const y = pa.getY(i);
+      tmp.setRGB(0.45, 0.68, 0.95).lerp(new Color(0.92, 0.97, 1), y);
+      col.set([tmp.r, tmp.g, tmp.b], i * 3);
+    }
+    spireGeo.setAttribute("color", new BufferAttribute(col, 3));
+  }
+  const spires: Matrix4[] = [];
+  const r = rng(808);
+  const clusters = ctx.hi ? 60 : 25;
+  const qq = new Quaternion();
+  const e = new Vector3();
+  for (let c = 0; c < clusters * 6 && spires.length < clusters * 7; c++) {
+    const a = r() * Math.PI * 2;
+    const rad = Math.sqrt(r()) * (ctx.extent + 450);
+    const x0 = ctx.cx + Math.cos(a) * rad;
+    const z0 = ctx.cz + Math.sin(a) * rad;
+    const edge = t.edgeAt(x0, z0);
+    if (edge < 22 || t.inChasm(x0, z0)) continue;
+    const big = 0.6 + r() * (edge > 80 ? 2.2 : 1);
+    const n = 3 + Math.floor(r() * 6);
+    for (let k = 0; k < n; k++) {
+      const x = x0 + (r() - 0.5) * 10 * big;
+      const z = z0 + (r() - 0.5) * 10 * big;
+      if (t.edgeAt(x, z) < 16) continue;
+      const hgt = (5 + r() * 18) * big;
+      const w = (0.8 + r() * 1.2) * big;
+      e.set((r() - 0.5) * 0.7, 0, (r() - 0.5) * 0.7);
+      qq.setFromEuler(new Euler(e.x, r() * 6, e.z));
+      spires.push(new Matrix4().compose(new Vector3(x, t.heightAt(x, z) - 0.5, z), qq, new Vector3(w, hgt, w)));
+    }
+  }
+  if (spires.length) {
+    const sm = new InstancedMesh(spireGeo, rockMaterial(ctx, { rough: 0.08, metal: 0.1, envI: 2.4, flat: true, ice: new Color(0.25, 0.6, 1.0), contrast: 0.2, bump: 0.2, freq: 1.5 }), spires.length);
+    spires.forEach((m, i) => sm.setMatrixAt(i, m));
+    sm.castShadow = true;
+    sm.receiveShadow = true;
+    sm.computeBoundingSphere();
+    ctx.group.add(sm);
+  } else spireGeo.dispose();
+
+  // Vapour geysers.
+  const sites: Vector3[] = [];
+  for (let k = 0; k < 400 && sites.length < (ctx.hi ? 8 : 5); k++) {
+    const a = r() * Math.PI * 2;
+    const rad = Math.sqrt(r()) * (ctx.extent + 300);
+    const x = ctx.cx + Math.cos(a) * rad;
+    const z = ctx.cz + Math.sin(a) * rad;
+    const edge = t.edgeAt(x, z);
+    if (edge < 40 || edge > 320 || t.inChasm(x, z) || sites.some((q) => Math.hypot(q.x - x, q.z - z) < 150)) continue;
+    sites.push(new Vector3(x, t.heightAt(x, z), z));
+  }
+  if (sites.length) {
+    const per = ctx.hi ? 380 : 140;
+    const n = per * sites.length;
+    const base = new Float32Array(n * 3);
+    const sd = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const sIdx = Math.floor(i / per);
+      base.set([sites[sIdx].x, sites[sIdx].y, sites[sIdx].z], i * 3);
+      sd[i] = r();
+    }
+    const geo = new BufferGeometry();
+    geo.setAttribute("position", new BufferAttribute(base.slice(), 3));
+    geo.setAttribute("aBase", new BufferAttribute(base, 3));
+    geo.setAttribute("aSeed", new BufferAttribute(sd, 1));
+    const pts = new Points(
+      geo,
+      new ShaderMaterial({
+        vertexShader: GEYSER_VERT,
+        fragmentShader: GEYSER_FRAG,
+        uniforms: { uTime: ctx.uTime, uScale: ctx.uScale, uColor: { value: new Color(0.85, 0.92, 1.0) } },
+        transparent: true,
+        depthWrite: false,
+      }),
+    );
+    pts.frustumCulled = false;
+    pts.renderOrder = 9;
+    ctx.group.add(pts);
+    for (const s0 of sites) {
+      beacon(ctx, s0.clone().setY(s0.y + 1), 0x9fdcff, 9, 0.8, s0.x, 1.2);
+    }
+  }
+  addDust(ctx, { count: ctx.hi ? 900 : 350, box: 140, color: new Color(0.8, 0.9, 1.0), size: [0.12, 0.4], wind: new Vector3(1.5, -0.2, 0.6), swirl: 1.2, opacity: 0.7, additive: true, soft: 0 });
+  return {
+    fog: new FogExp2(new Color(0x0c1a30).getHex(), 0.0006),
+    sunIntensity: 2.7,
+    hemi: { sky: new Color(0x6c90d0), ground: new Color(0x3a2c2a), intensity: 0.6 },
+    exposure: 1.05,
+    bloom: { strength: 0.45, threshold: 0.85, radius: 0.5 },
+    skyA: dir(0.3, 0.6, 0.7),
+    skyB: jDir,
+  };
+}
+
 const SUN: Record<ThemeId, { dir: Vector3; color: Color }> = {
   mars: { dir: azEl(-60, 24), color: new Color(0xfff0dc) },
   belt: { dir: azEl(-130, 30), color: new Color(0xfff4e2) },
-  saturn: { dir: azEl(-75, 32), color: new Color(0xfff6ea) },
+  saturn: { dir: azEl(160, 35), color: new Color(0xfff6ea) },
   nebula: { dir: azEl(150, 26), color: new Color(0xffd6f2) },
   luna: { dir: azEl(-15, 17), color: new Color(0xffffff) },
+  sun: { dir: azEl(90, 12), color: new Color(0xffb070) },
+  europa: { dir: azEl(95, 22), color: new Color(0xe8f0ff) },
 };
 
 /* ------------------------------------------------------------------ */
@@ -3304,6 +3878,7 @@ export function buildEnvironment(theme: ThemeId, outline: TrackOutline, renderer
   const sun = sunInfo.dir.clone();
   const sunColor = sunInfo.color.clone();
   const hi = quality === "high";
+  const grounded = theme === "mars" || theme === "luna" || theme === "europa";
   const ctx: Ctx = {
     theme,
     outline,
@@ -3329,7 +3904,7 @@ export function buildEnvironment(theme: ThemeId, outline: TrackOutline, renderer
     extent,
     minY,
     maxY,
-    field: buildField(outline, cx, cz, (theme === "mars" || theme === "luna" ? TERRAIN_HALF : extent + 900), theme === "mars" || theme === "luna" ? 4 : 6, () => true),
+    field: buildField(outline, cx, cz, grounded ? TERRAIN_HALF : extent + 900, grounded ? 4 : 6, () => true),
   };
 
   let look: ThemeLook;
@@ -3345,6 +3920,12 @@ export function buildEnvironment(theme: ThemeId, outline: TrackOutline, renderer
       break;
     case "nebula":
       look = buildNebula(ctx);
+      break;
+    case "sun":
+      look = buildSun(ctx);
+      break;
+    case "europa":
+      look = buildEuropa(ctx);
       break;
     default:
       look = buildLuna(ctx);
