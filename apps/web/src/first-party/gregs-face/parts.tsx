@@ -1,7 +1,7 @@
 "use client";
 
-import { AnimatePresence, motion, useMotionValue, useTransform } from "motion/react";
-import { useEffect, useEffectEvent, type ReactNode, type Ref } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import { useEffectEvent, useLayoutEffect, useRef, type ReactNode, type Ref } from "react";
 import { spring } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { PART_LABEL, PART_ORDER, type FaceConfig, type PartId } from "./face";
@@ -83,8 +83,10 @@ export type FeatureState = "intro" | "moving" | "dropped" | "placed" | "reveal";
 
 /**
  * One feature sprite. While `moving` it follows its slide from
- * requestAnimationFrame (a motion value, no React renders); once dropped it
- * stamps down onto the face with a squash, and on the reveal it wobbles.
+ * requestAnimationFrame (a motion value, no React renders) at exactly its true
+ * height, and reports each painted frame's time through `onFrame` so a drop
+ * lands where the player saw it (what you see is what you score). Once dropped
+ * it settles with a small squash in place, and on the reveal it wobbles.
  */
 export function Feature({
   kit,
@@ -96,6 +98,7 @@ export function Feature({
   reduced,
   order = 0,
   onBounce,
+  onFrame,
 }: {
   kit: FaceKit;
   part: PartId;
@@ -107,29 +110,37 @@ export function Feature({
   reduced: boolean;
   order?: number;
   onBounce?: () => void;
+  /** Called with the slide time (ms) of every frame painted while moving. */
+  onFrame?: (tMs: number) => void;
 }) {
   const { face } = kit;
-  const initial = drop ? offsetPct(face, part, drop.x) : offsetPct(face, part, trackX(face, slideU(slide, 0)));
-  const offset = useMotionValue(initial);
-  const x = useTransform(offset, (v) => `${v}%`);
+  // The horizontal position is written straight to this element inside the rAF
+  // callback (not through a motion value, which lands a frame later), so what's
+  // painted is exactly the slide time reported to `onFrame`.
+  const slider = useRef<HTMLDivElement>(null);
   const bounce = useEffectEvent(() => onBounce?.());
+  const frame = useEffectEvent((tMs: number) => onFrame?.(tMs));
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const el = slider.current;
+    if (!el) return;
+    const place = (x: number) => {
+      el.style.transform = `translateX(${offsetPct(face, part, x)}%)`;
+    };
     if (drop) {
-      offset.set(offsetPct(face, part, drop.x));
+      place(drop.x);
       return;
     }
-    if (state === "intro") {
-      offset.set(offsetPct(face, part, trackX(face, slideU(slide, 0))));
-      return;
-    }
+    place(trackX(face, slideU(slide, state === "moving" ? Math.max(0, performance.now() - startAt) : 0)));
     if (state !== "moving") return;
     let raf = 0;
     let lastU = slideU(slide, performance.now() - startAt);
     let lastDir = 0;
     const tick = () => {
-      const u = slideU(slide, performance.now() - startAt);
-      offset.set(offsetPct(face, part, trackX(face, u)));
+      const t = performance.now() - startAt;
+      const u = slideU(slide, t);
+      place(trackX(face, u));
+      frame(t);
       const dir = Math.sign(u - lastU);
       if (dir !== 0) {
         if (lastDir !== 0 && dir !== lastDir) bounce();
@@ -140,41 +151,43 @@ export function Feature({
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [state, startAt, slide, face, part, drop, offset]);
+  }, [state, startAt, slide, face, part, drop]);
 
   const hovering = state === "intro" || state === "moving";
+  // A small settle in place: the sprite never shifts on a drop, so the landing matches the tap.
   const squash =
     state === "dropped" && !reduced
-      ? { scaleX: [1.22, 0.92, 1.04, 1], scaleY: [0.78, 1.08, 0.98, 1], rotate: 0 }
+      ? { scaleX: [1.06, 0.98, 1], scaleY: [0.94, 1.02, 1], rotate: 0 }
       : state === "reveal" && !reduced
         ? { scaleX: [1, 1.08, 0.96, 1.02, 1], scaleY: [1, 0.92, 1.05, 0.99, 1], rotate: [0, -7, 6, -3, 0] }
         : { scaleX: 1, scaleY: 1, rotate: 0 };
 
   return (
-    <motion.div
-      className="pointer-events-none absolute"
-      style={{ ...boxStyle(face, part), x, zIndex: hovering ? 20 : 10 }}
-      initial={reduced ? false : { y: "-220%", opacity: 0 }}
-      animate={{ y: hovering ? "-34%" : "0%", opacity: 1 }}
-      transition={reduced ? { duration: 0 } : spring.bouncy}
-    >
-      <motion.img
-        src={kit.spriteUrls[part]}
-        alt={PART_LABEL[part]}
-        draggable={false}
-        className="size-full select-none"
-        animate={{
-          ...squash,
-          filter: hovering ? "drop-shadow(0px 10px 7px rgba(0,0,0,0.26))" : "drop-shadow(0px 0px 0px rgba(0,0,0,0))",
-        }}
-        transition={{
-          duration: state === "reveal" ? 0.9 : 0.5,
-          delay: state === "reveal" ? order * 0.12 : 0,
-          ease: "easeOut",
-          filter: { duration: 0.2 },
-        }}
-      />
-    </motion.div>
+    <div ref={slider} className="pointer-events-none absolute" style={{ ...boxStyle(face, part), zIndex: hovering ? 20 : 10 }}>
+      <motion.div
+        className="size-full"
+        initial={reduced ? false : { y: "-220%", opacity: 0 }}
+        animate={{ y: "0%", opacity: 1 }}
+        transition={reduced ? { duration: 0 } : spring.bouncy}
+      >
+        <motion.img
+          src={kit.spriteUrls[part]}
+          alt={PART_LABEL[part]}
+          draggable={false}
+          className="size-full select-none"
+          animate={{
+            ...squash,
+            filter: hovering ? "drop-shadow(0px 3px 4px rgba(0,0,0,0.22))" : "drop-shadow(0px 0px 0px rgba(0,0,0,0))",
+          }}
+          transition={{
+            duration: state === "reveal" ? 0.9 : 0.5,
+            delay: state === "reveal" ? order * 0.12 : 0,
+            ease: "easeOut",
+            filter: { duration: 0.2 },
+          }}
+        />
+      </motion.div>
+    </div>
   );
 }
 

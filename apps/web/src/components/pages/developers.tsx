@@ -159,7 +159,27 @@ async function add(ticker) {
   xapps.ui.setStatus(\`\${watchlist.length} tickers\`);      // shown in the host's top bar
 }`;
 
-type SnippetTab = "react" | "vanilla" | "contest" | "turns" | "media" | "app";
+const soloSnippet = (origin: string) => `// manifest: kind "app", stats: best (aggregate "max", format "percent") and runs (aggregate "sum")
+// The Perfect Circle / Greg's Face pattern: play as often as you like, climb a worldwide board.
+import { connect } from "${origin}/sdk/v1.js";
+
+const xapps = await connect({ mock: { purpose: "app" } });
+
+async function finished(score) {                        // e.g. 97.3
+  await xapps.stats.report({ best: score, runs: 1 });    // max keeps your best
+  const board = await xapps.stats.leaderboard("best", { limit: 5 });
+  // board.me → { rank: 14, value: 97.3 } · board.total → 2380 · board.top → [{ rank, player, value }]
+  showStanding(\`#\${board.me.rank} of \${board.total}\`, board.top);
+}
+
+async function share(canvas, score) {
+  const blob = await new Promise((done) => canvas.toBlob(done, "image/png"));
+  const image = await xapps.media.upload(blob, { alt: \`My \${score}% run\` });
+  // X shows the uploaded image as a big card: the host posts it via a page with card tags.
+  await xapps.social.share(\`I scored \${score}% on XApps\`, image.url);
+}`;
+
+type SnippetTab = "react" | "vanilla" | "contest" | "turns" | "media" | "app" | "solo";
 
 const LIFECYCLE = [
   { title: "Load", body: "Host opens your URL in a sandboxed iframe." },
@@ -228,14 +248,14 @@ const API: { group: string; rows: [string, string][] }[] = [
     rows: [
       ["xapps.ui.setStatus(text) · setScores(map) · setTurn(id)", "Drive the host HUD above your app."],
       ["xapps.ui.toast(msg) · celebrate() · haptic(style)", "Host-rendered toasts, confetti and vibration."],
-      ["xapps.social.share(text, url?)", "Opens the X composer, pre-filled. The user always confirms."],
+      ["xapps.social.share(text, url?)", "Opens the X composer, pre-filled. The user always confirms. Pass a media.upload image URL and X shows the picture as a large card."],
     ],
   },
   {
     group: "Media & entries",
     rows: [
       ["xapps.media.upload(blob, { alt? })", `→ MediaRef { url, kind, mime, bytes, width?, height?, duration? }. Images (JPEG/PNG/WebP/GIF) ≤ ${LIMITS.media.image.maxBytes / 1048576} MB, audio (MP3/M4A/Ogg/WebM/WAV) ≤ ${LIMITS.media.audio.maxBytes / 1048576} MB, video (MP4/WebM/MOV) ≤ ${LIMITS.media.video.maxBytes / 1048576} MB.`],
-      ["Quota", `${LIMITS.media.uploadsPerDay} uploads and ${LIMITS.media.bytesPerDay / 1048576} MB per player per app per rolling 24 h (error code rate_limited). Match and setup purposes; spectators can't upload.`],
+      ["Quota", `${LIMITS.media.uploadsPerDay} uploads and ${LIMITS.media.bytesPerDay / 1048576} MB per player per app per rolling 24 h (error code rate_limited). Match, setup and standalone apps; spectators can't upload.`],
       ["display: { kind: \"video\", url, alt, poster? }", "Plays muted when in view and loops; tap for sound."],
       ["display: { kind: \"audio\", url, alt, cover? }", "A compact waveform player with play/pause and seeking."],
       ["display: { kind: \"gallery\", items: [{ url, alt }] }", `${LIMITS.galleryItems.min}–${LIMITS.galleryItems.max} images, swipeable with dots and arrow keys.`],
@@ -519,6 +539,7 @@ export function Developers() {
     turns: { filename: "game.ts", code: TURNS_SNIPPET },
     media: { filename: "clip.ts", code: MEDIA_SNIPPET },
     app: { filename: "app.js", code: standaloneSnippet(origin) },
+    solo: { filename: "solo.js", code: soloSnippet(origin) },
   };
   return (
     <div>
@@ -581,12 +602,26 @@ export function Developers() {
             { id: "turns", label: "Turn-based" },
             { id: "media", label: "Media & stats" },
             { id: "app", label: "Standalone app" },
+            { id: "solo", label: "Solo + leaderboard" },
           ]}
         />
         <motion.div key={tab} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={spring.snappy} className="mt-4">
           <CodeBlock filename={snippets[tab].filename} code={snippets[tab].code} />
         </motion.div>
-        {tab === "app" ? (
+        {tab === "solo" ? (
+          <p className="mt-3 text-sm text-ink-400">
+            Register it as an <span className="font-mono text-ink-200">app</span>, declare the stat, and add an icon and
+            cover in the form. Your listing shows the stat&apos;s leaderboard, and{" "}
+            <Link href="/apps/perfect-circle" className="text-nova-300 hover:underline">
+              Perfect Circle
+            </Link>{" "}
+            and{" "}
+            <Link href="/apps/gregs-face" className="text-nova-300 hover:underline">
+              Greg&apos;s Face
+            </Link>{" "}
+            are built exactly this way on the public SDK.
+          </p>
+        ) : tab === "app" ? (
           <p className="mt-3 text-sm text-ink-400">
             Standalone apps (register with kind <span className="font-mono text-ink-200">app</span>) open full screen with
             the viewer signed in: storage, stats, achievements, media, logs and toasts work; matches, rooms and shared state

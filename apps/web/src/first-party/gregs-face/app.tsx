@@ -389,7 +389,8 @@ function Run({
   const [sharing, setSharing] = useState<"idle" | "busy" | "done">("idle");
   const [stageScope, animateStage] = useAnimate<HTMLDivElement>();
   // What event handlers read synchronously (state lags a render behind).
-  const live = useRef({ phase: "intro" as Phase, part: 0, startAt: 0, drops: [] as Drop[] });
+  // `shownMs`: slide time of the last painted frame, so a tap scores the position on screen.
+  const live = useRef({ phase: "intro" as Phase, part: 0, startAt: 0, shownMs: -1, drops: [] as Drop[] });
 
   const partId = PART_ORDER[part]!;
   const shown = phase === "reveal" && revealStep >= 4;
@@ -400,6 +401,7 @@ function Run({
     const now = performance.now();
     live.current.phase = "moving";
     live.current.startAt = now;
+    live.current.shownMs = -1;
     setStartAt(now);
     setPhase("moving");
   });
@@ -540,10 +542,16 @@ function Run({
 
   /* Input ----------------------------------------------------------------- */
 
+  /** The slide time of what the player was looking at (the last painted frame), else the event's time. */
+  const shownTime = (stamp: number) => {
+    const s = live.current;
+    return s.shownMs >= 0 ? s.shownMs : eventTime(stamp) - s.startAt;
+  };
+
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
     if (!e.isPrimary || (e.pointerType === "mouse" && e.button !== 0)) return;
     if (live.current.phase !== "moving") return;
-    dropNow(eventTime(e.timeStamp) - live.current.startAt, false);
+    dropNow(shownTime(e.timeStamp), false);
   };
 
   const onKey = useEffectEvent((e: KeyboardEvent) => {
@@ -551,7 +559,7 @@ function Run({
     const s = live.current;
     if (s.phase === "moving") {
       e.preventDefault();
-      dropNow(eventTime(e.timeStamp) - s.startAt, false);
+      dropNow(shownTime(e.timeStamp), false);
     } else if (s.phase === "intro" || s.phase === "dropped") {
       e.preventDefault();
     } else if (shown && !onControl(e.target)) {
@@ -636,6 +644,9 @@ function Run({
                       reduced={reduced}
                       order={i}
                       onBounce={() => play("tick")}
+                      onFrame={(t) => {
+                        live.current.shownMs = t;
+                      }}
                     />
                   ),
                 )}
