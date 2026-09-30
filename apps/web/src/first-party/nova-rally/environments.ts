@@ -237,7 +237,7 @@ float hash13(vec3 p3) {
 float vnoise(vec3 p) {
   vec3 i = floor(p);
   vec3 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
+  f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
   return mix(
     mix(mix(hash13(i), hash13(i + vec3(1, 0, 0)), f.x), mix(hash13(i + vec3(0, 1, 0)), hash13(i + vec3(1, 1, 0)), f.x), f.y),
     mix(mix(hash13(i + vec3(0, 0, 1)), hash13(i + vec3(1, 0, 1)), f.x), mix(hash13(i + vec3(0, 1, 1)), hash13(i + vec3(1, 1, 1)), f.x), f.y),
@@ -825,7 +825,7 @@ void main() {
   float cs = texture2D(uClouds, cu + vec2(0.003, -0.002)).r;
   alb *= 1.0 - cs * 0.45 * (1.0 - cl.r);
   alb = mix(alb, vec3(0.95), cl.r);
-  night = vec3(1.0, 0.72, 0.38) * cl.g * (1.0 - cl.r) * (1.0 - smoothstep(-0.15, 0.05, ndl)) * 1.4;
+  night = vec3(1.0, 0.72, 0.38) * cl.g * (1.0 - cl.r) * (1.0 - smoothstep(-0.15, 0.05, ndl)) * smoothstep(0.2, 0.5, dot(n, v)) * 0.55;
 #endif
 #ifdef RINGS
   vec3 rn = normalize(vAxis);
@@ -1507,10 +1507,10 @@ ${ROCK_NOISE}`,
       )
       .replace(
         "#include <map_fragment>",
-        `float rockH = fbm(vRockP * uRockFreq);
-float rockPit = smoothstep(0.7, 0.85, vnoise(vRockP * uRockFreq * 3.3 + 7.0));
-diffuseColor.rgb *= mix(1.0, (0.62 + 0.7 * rockH) * (1.0 - 0.2 * rockPit), uRockC);
-rockH -= rockPit * 0.15;`,
+        `float rockD = length(vViewPosition);
+float rockH = vnoise(vRockP * uRockFreq) * 0.62 + vnoise(vRockP * uRockFreq * 2.1 + 3.0) * 0.28;
+rockH += (vnoise(vRockP * uRockFreq * 4.7 + 9.0) - 0.5) * 0.2 * (1.0 - smoothstep(20.0, 90.0, rockD));
+diffuseColor.rgb *= mix(1.0, 0.66 + 0.68 * rockH, uRockC);`,
       )
       .replace(
         "#include <normal_fragment_maps>",
@@ -1518,8 +1518,9 @@ rockH -= rockPit * 0.15;`,
 {
   vec3 dpx = dFdx(-vViewPosition);
   vec3 dpy = dFdy(-vViewPosition);
-  float dhx = dFdx(rockH) * uRockBump;
-  float dhy = dFdy(rockH) * uRockBump;
+  float rbk = uRockBump * 0.7 * (1.0 - 0.8 * smoothstep(30.0, 220.0, rockD));
+  float dhx = dFdx(rockH) * rbk;
+  float dhy = dFdy(rockH) * rbk;
   vec3 r1 = cross(dpy, normal);
   vec3 r2 = cross(normal, dpx);
   float det = dot(dpx, r1) * faceDirection;
@@ -2710,8 +2711,8 @@ function buildBelt(ctx: Ctx): ThemeLook {
     thick: 110,
     nearFrac: 0.35,
     shapes: [
-      { seed: 11, detail: 1, lumpy: 0.45, shade: [rockLo, rockHi] },
-      { seed: 12, detail: 1, lumpy: 0.55, stretch: [1.4, 0.8, 1], shade: [rockLo, rockHi] },
+      { seed: 11, detail: ctx.hi ? 2 : 1, lumpy: 0.45, shade: [rockLo, rockHi] },
+      { seed: 12, detail: ctx.hi ? 2 : 1, lumpy: 0.55, stretch: [1.4, 0.8, 1], shade: [rockLo, rockHi] },
       { seed: 13, detail: ctx.hi ? 2 : 1, lumpy: 0.4, craters: 4, shade: [new Color(0x3a2e26), new Color(0x9a8470)] },
       { seed: 14, detail: ctx.hi ? 2 : 1, lumpy: 0.45, veins: true, shade: [new Color(0x1c1a1c), new Color(0x5a5560)] },
       { seed: 15, detail: ctx.hi ? 3 : 2, lumpy: 0.4, craters: 8, shade: [rockLo, rockHi] },
@@ -3262,7 +3263,7 @@ function buildLuna(ctx: Ctx): ThemeLook {
     false,
   );
   const eDir = azEl(95, 13);
-  addPlanet(ctx, eDir, SKY_R, { radius: 72, map: earth, clouds, atmo: new Color(0.35, 0.6, 1.2), atmoK: 1.3, ambient: 0.0, spin: 0.001, segments: ctx.hi ? 128 : 64 }, -980, dir(0.2, 1, 0.1));
+  addPlanet(ctx, eDir, SKY_R, { radius: 72, map: earth, clouds, atmo: new Color(0.35, 0.6, 1.2), atmoK: 1.3, ambient: 0.035, spin: 0.001, segments: ctx.hi ? 128 : 64 }, -980, dir(0.2, 1, 0.1));
 
   const seed = 777;
   const r = rng(seed);
