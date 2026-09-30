@@ -322,7 +322,7 @@ void main() {
   float lit = 0.5 + 0.5 * dot(hz, normalize(uSun.xz + 1e-5));
   vec3 hazeFar = mix(hor * 0.92, vec3(0.78, 0.40, 0.21), 0.35 + 0.15 * lit);
   vec3 hazeNear = mix(hor * 0.85, vec3(0.55, 0.25, 0.12), 0.45 + 0.1 * lit);
-  float fz = fwidth(el) * 1.5;
+  float fz = max(fwidth(el) * 1.5, 1e-4);
   col = mix(col, hazeFar, rstep(max(ridgeFar, volc) + fz, max(ridgeFar, volc) - fz, el) * 0.85);
   col = mix(col, hazeNear, rstep(ridgeNear + fz, ridgeNear - fz, el) * 0.85);
   if (el < 0.0) col = mix(hazeNear, vec3(0.3, 0.13, 0.06), rstep(0.0, -0.4, el));
@@ -2713,8 +2713,8 @@ function buildSaturn(ctx: Ctx): ThemeLook {
   addPlanet(ctx, azEl(-95, 42), SKY_R, { radius: 6, map: ice, atmo: new Color(0), atmoK: 0, ambient: 0.02, spin: 0.001, segments: 32 }, -965);
 
   // Ice shards: we race through a thin layer of the rings.
-  const iceMat = new MeshStandardMaterial({ vertexColors: true, roughness: 0.06, metalness: 0.35, flatShading: true, envMapIntensity: 2.2, emissive: new Color(0x061a2a) });
-  const shade: [Color, Color] = [new Color(0x3f6f94), new Color(0xcdeaff)];
+  const iceMat = new MeshStandardMaterial({ vertexColors: true, roughness: 0.1, metalness: 0.15, flatShading: true, envMapIntensity: 2.4, emissive: new Color(0x10324a) });
+  const shade: [Color, Color] = [new Color(0x6f9dc0), new Color(0xe6f6ff)];
   const shapes: RockShape[] = [
     { seed: 31, detail: 0, lumpy: 0.25, stretch: [0.6, 1.8, 0.7], facets: true, shade },
     { seed: 32, detail: 0, lumpy: 0.3, stretch: [1, 1, 1], facets: true, shade },
