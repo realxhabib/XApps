@@ -19,6 +19,7 @@ import { haptic } from "@/lib/haptics";
 import { play } from "@/lib/sfx";
 import { spring } from "@/lib/motion";
 import { copyText, openXIntent } from "@/lib/share";
+import { shareLinkFor } from "@/lib/media";
 import type { RoomPeer, RoomTransport } from "@/platform/backend";
 import { BackendError } from "@/platform/backend";
 import { useBackend, useViewer } from "@/platform/client";
@@ -508,7 +509,7 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
       return null;
     },
     "social.share": ({ text, url }) => {
-      openXIntent(text, url);
+      openXIntent(text, shareLinkFor(url, window.location.origin));
       return null;
     },
     "storage.get": async ({ key, scope }) => {

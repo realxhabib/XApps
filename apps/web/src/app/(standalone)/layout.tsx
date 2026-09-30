@@ -10,7 +10,9 @@ import { PlatformProvider } from "@/platform/client";
 export default function StandaloneLayout({ children }: LayoutProps<"/">) {
   return (
     <PlatformProvider>
-      {children}
+      <div data-app-host className="contents">
+        {children}
+      </div>
       <Toaster />
       <ConfettiLayer />
       <AchievementLayer />

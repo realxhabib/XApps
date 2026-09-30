@@ -476,6 +476,8 @@ export const OFFICIAL_APPS: AppManifest[] = [
       "Greg has lost his face. His eyes, then his nose, then his mouth whizz back and forth across it, faster and faster, and you tap to drop each one into place. It's pure timing, and every face is fresh. Build him as many times as you like: your best face goes on the global leaderboard, so you always know exactly where you stand.",
     category: "games",
     icon: "🤪",
+    iconImage: "/showcase/gregs-face-icon.webp",
+    coverImage: "/showcase/gregs-face-cover.webp",
     accent: ["#ff8a3d", "#6f9bd1"],
     url: "/embed/gregs-face",
     // A standalone app: no matches. These are the harmless defaults the manifest still carries.

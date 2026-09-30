@@ -162,6 +162,23 @@ export function Board({ enabled, ink, overlay, hint, onStart, onStroke, classNam
     return () => ro.disconnect();
   }, []);
 
+  // Mobile browsers (iOS Safari above all) still pan the page or pull-to-refresh
+  // mid-stroke despite `touch-action: none`, and then cancel the pointer. Only a
+  // non-passive touch listener can stop that; React's touch handlers are passive.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const block = (e: TouchEvent) => {
+      if (e.cancelable) e.preventDefault();
+    };
+    canvas.addEventListener("touchstart", block, { passive: false });
+    canvas.addEventListener("touchmove", block, { passive: false });
+    return () => {
+      canvas.removeEventListener("touchstart", block);
+      canvas.removeEventListener("touchmove", block);
+    };
+  }, []);
+
   useEffect(() => {
     inkRef.current = ink;
     if (pointerId.current === null) schedule();

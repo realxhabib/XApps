@@ -150,6 +150,13 @@
     overflow-x: clip;
   }
 
+  /* Full-screen app hosts (/play, /apps/<slug>/open): a drag inside the app must
+     never become pull-to-refresh or a rubber-band bounce of the host page. */
+  html:has([data-app-host]),
+  html:has([data-app-host]) body {
+    overscroll-behavior: none;
+  }
+
   ::selection {
     background: color-mix(in oklab, var(--color-nova-500) 55%, transparent);
     color: white;

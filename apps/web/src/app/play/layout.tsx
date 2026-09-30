@@ -6,7 +6,9 @@ import { PlatformProvider } from "@/platform/client";
 export default function PlayLayout({ children }: LayoutProps<"/play">) {
   return (
     <PlatformProvider>
-      {children}
+      <div data-app-host className="contents">
+        {children}
+      </div>
       <Toaster />
       <ConfettiLayer />
       <AchievementLayer />

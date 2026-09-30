@@ -136,6 +136,36 @@ export function isAppMediaUrl(src: string, supabaseUrl = env.supabaseUrl): boole
   return APP_MEDIA_OBJECT.test(url.pathname.slice(APP_MEDIA_PREFIX.length));
 }
 
+/** An uploaded image's object key (`<app_slug>/<user_id>/<file>`) that X can show as a card. */
+const SHAREABLE_IMAGE = /\.(png|jpe?g|webp|gif)$/i;
+
+export function isShareableImageKey(key: string): boolean {
+  return typeof key === "string" && APP_MEDIA_OBJECT.test(key) && SHAREABLE_IMAGE.test(key);
+}
+
+/** The object key of an `app-media` image URL, or null (other URLs, audio and video). */
+export function shareableImageKey(src: string, supabaseUrl = env.supabaseUrl): string | null {
+  if (!isAppMediaUrl(src, supabaseUrl)) return null;
+  const key = new URL(src).pathname.slice(APP_MEDIA_PREFIX.length);
+  return isShareableImageKey(key) ? key : null;
+}
+
+/** Public URL of an `app-media` object key (null without Supabase). */
+export function appMediaPublicUrl(key: string, supabaseUrl = env.supabaseUrl): string | null {
+  return supabaseUrl ? `${supabaseUrl}${APP_MEDIA_PREFIX}${key}` : null;
+}
+
+/**
+ * The URL to post to X for `social.share`: an uploaded image becomes our
+ * `/s/<key>` page, whose card metadata shows the image (X only renders a card
+ * for pages with og/twitter tags, never for a bare image URL).
+ */
+export function shareLinkFor(url: string | undefined, origin: string, supabaseUrl = env.supabaseUrl): string | undefined {
+  if (!url) return url;
+  const key = shareableImageKey(url, supabaseUrl);
+  return key ? `${origin}/s/${key}` : url;
+}
+
 /**
  * The single check for media URLs the platform accepts (entries, meme drops,
  * state): our `app-media` public URLs, and `/api/demo-media/<id>` in demo mode.

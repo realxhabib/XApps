@@ -10,6 +10,8 @@ import {
   mediaKindOf,
   mediaProblem,
   mediaQuotaProblem,
+  shareLinkFor,
+  shareableImageKey,
 } from "./media";
 
 const SB = "https://proj.supabase.co";
@@ -63,6 +65,20 @@ describe("isAllowedMediaUrl", () => {
     expect(isAllowedMediaUrl(`${ORIGIN}/api/demo-media/${DEMO_ID}?a=1`, demo)).toBe(false);
     expect(isAllowedMediaUrl(`/api/demo-media/${DEMO_ID}`, sb)).toBe(false);
     expect(isAllowedMediaUrl(`/api/demo-media/${DEMO_ID}`, { ...sb, demo: true })).toBe(true);
+  });
+});
+
+describe("shareLinkFor", () => {
+  it("turns an uploaded image into our card page, so X shows the picture", () => {
+    expect(shareableImageKey(APP_MEDIA, SB)).toBe(`meme-duel/${USER}/${FILE}.png`);
+    expect(shareLinkFor(APP_MEDIA, ORIGIN, SB)).toBe(`${ORIGIN}/s/meme-duel/${USER}/${FILE}.png`);
+  });
+  it("leaves every other link alone", () => {
+    expect(shareLinkFor(undefined, ORIGIN, SB)).toBeUndefined();
+    expect(shareLinkFor(`${ORIGIN}/apps/meme-duel`, ORIGIN, SB)).toBe(`${ORIGIN}/apps/meme-duel`);
+    expect(shareLinkFor(APP_MEDIA.replace(".png", ".mp4"), ORIGIN, SB)).toBe(APP_MEDIA.replace(".png", ".mp4"));
+    expect(shareLinkFor(`https://evil.example/storage/v1/object/public/app-media/meme-duel/${USER}/${FILE}.png`, ORIGIN, SB)).toContain("evil.example");
+    expect(shareLinkFor(APP_MEDIA, ORIGIN, "")).toBe(APP_MEDIA);
   });
 });
 

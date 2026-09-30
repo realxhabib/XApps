@@ -18,6 +18,7 @@ import { XLogo } from "@/components/ui/x-logo";
 import { haptic } from "@/lib/haptics";
 import { spring } from "@/lib/motion";
 import { openXIntent } from "@/lib/share";
+import { shareLinkFor } from "@/lib/media";
 import { BackendError } from "@/platform/backend";
 import { useBackend, useViewer } from "@/platform/client";
 import { launchApp } from "@/platform/match-utils";
@@ -270,7 +271,7 @@ function AppStage({ app, versionId, viewer }: { app: AppManifest; versionId: str
     // The frame always fills the screen below the top bar.
     "ui.resize": () => null,
     "social.share": ({ text, url }) => {
-      openXIntent(text, url);
+      openXIntent(text, shareLinkFor(url, window.location.origin));
       return null;
     },
     "storage.get": async ({ key, scope }) => {
