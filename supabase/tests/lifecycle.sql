@@ -3343,6 +3343,42 @@ select pg_temp.expect(format('select public.review_app_version(%L, %L, null)', p
 select pg_temp.login('bob');
 select public.withdraw_app_version(pg_temp.mid('rv4'));
 
+-- ---------------------------------------------------------------- Dead lobbies expire
+reset role;
+update public.matches set status = 'cancelled' where app_slug = 'ref-duel' and status = 'open' and is_quick;
+set role authenticated;
+select pg_temp.login('carol');
+insert into ctx values ('dead_q', public.quick_match('ref-duel')::text);
+reset role;
+update public.matches set created_at = now() - interval '11 minutes' where id = pg_temp.mid('dead_q');
+set role authenticated;
+select pg_temp.login('carol');
+-- Listing my matches expires my lobby nobody joined in 10 minutes.
+do $$
+declare l jsonb := public.list_my_matches();
+begin
+  assert (select x->>'status' from jsonb_array_elements(l) x where x->>'id' = pg_temp.cv('dead_q')) = 'expired', l::text;
+end $$;
+-- A new press makes a fresh lobby (no second dead one), and pressing again returns it.
+insert into ctx values ('fresh_q', public.quick_match('ref-duel')::text);
+do $$
+begin
+  assert pg_temp.cv('fresh_q') <> pg_temp.cv('dead_q'), 'fresh lobby';
+  assert public.quick_match('ref-duel') = pg_temp.mid('fresh_q'), 'same lobby while it is fresh';
+end $$;
+select pg_temp.expect('select public.expire_idle_lobbies()', '42501');
+-- A live table that hasn't started in 2 hours expires for everyone (the cron job); a busy lobby stays.
+reset role;
+update public.matches set created_at = now() - interval '3 hours' where id = pg_temp.mid('fresh_q');
+do $$
+begin
+  assert public.expire_idle_lobbies() >= 1, 'expired some';
+  assert (select status from public.matches where id = pg_temp.mid('fresh_q')) = 'expired', 'stale live table';
+  assert not exists (select 1 from public.matches where status in ('open', 'pending') and mode = 'live'
+                       and created_at < now() - interval '2 hours'), 'none left';
+end $$;
+set role authenticated;
+
 -- ---------------------------------------------------------------- Listing images: uploads, keys in manifests, publishing
 set role authenticated;
 select pg_temp.login('bob');

@@ -18,6 +18,7 @@ from (values
   (11, '20261003000000_shipping',             to_regclass('public.app_versions') is not null),
   (12, '20261004000000_wedge_wars',           exists (select 1 from public.apps where slug = 'wedge-wars' and jsonb_array_length(achievements) > 0)),
   (13, '20261005000000_version_revisions',    exists (select 1 from pg_proc where proname = 'revise_app_version')),
-  (14, '20261005000100_app_images',           exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'apps' and column_name = 'cover_image'))
+  (14, '20261005000100_app_images',           exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'apps' and column_name = 'cover_image')),
+  (15, '20261006000000_lobby_expiry',         exists (select 1 from pg_proc where proname = 'expire_idle_lobbies'))
 ) as m(n, file, applied)
 order by n;

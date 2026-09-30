@@ -13,10 +13,16 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { spring } from "@/lib/motion";
 import { useViewer } from "@/platform/client";
 import { useApps, useMatchAction, useMyMatches } from "@/platform/queries";
+import type { Match } from "@/platform/types";
 import { DeveloperNotices } from "./developer-notices";
 import { SignInPrompt } from "./sign-in-prompt";
 
 type Tab = "move" | "waiting" | "history";
+
+/** A lobby that expired or was cancelled before anyone else sat down: not history worth keeping. */
+function isDeadLobby(m: Match): boolean {
+  return (m.status === "expired" || m.status === "cancelled") && m.players.filter((p) => p.role === "player" && p.state !== "declined").length < 2;
+}
 
 export function Challenges() {
   const router = useRouter();
@@ -33,6 +39,7 @@ export function Challenges() {
     for (const m of data ?? []) {
       if (viewer && needsMyMove(m, viewer.id)) move.push(m);
       else if (["open", "pending", "active", "voting"].includes(m.status) && m.mode !== "practice") waiting.push(m);
+      else if (isDeadLobby(m)) continue;
       else if (m.status !== "active") history.push(m);
     }
     return { move, waiting, history };

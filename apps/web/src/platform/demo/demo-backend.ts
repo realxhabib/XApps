@@ -223,6 +223,30 @@ function afterLeave(db: DemoDb, row: MatchRow, userId: string): void {
   maybeSettle(db, row);
 }
 
+/** A quick-match lobby nobody else joined in this long is dead. Mirrors expire_idle_lobbies. */
+export const QUICK_LOBBY_TTL_MS = 10 * 60_000;
+/** A live table or invite that hasn't started in this long is dead too. */
+export const LIVE_TABLE_TTL_MS = 2 * 3_600_000;
+
+/** Mirrors expire_idle_lobbies: expires dead lobbies (only `userId`'s, when given). Returns whether any changed. */
+export function expireIdleLobbies(db: DemoDb, now = Date.now(), userId?: string): boolean {
+  let changed = false;
+  for (const m of Object.values(db.matches)) {
+    if (m.status !== "open" && m.status !== "pending") continue;
+    if (userId && !m.players.some((p) => p.userId === userId)) continue;
+    const age = now - Date.parse(m.createdAt);
+    const joined = m.players.filter((p) => p.role === "player" && p.state === "joined").length;
+    const quickAlone = m.settings.quick === true && m.status === "open" && age > QUICK_LOBBY_TTL_MS && joined < 2;
+    const staleLive = m.mode === "live" && age > LIVE_TABLE_TTL_MS;
+    if (quickAlone || staleLive) {
+      m.status = "expired";
+      m.updatedAt = nowIso();
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 /** Mirrors expire_turn: the holder of an overdue async turn forfeits and the turn moves on. */
 function expireTurn(db: DemoDb, row: MatchRow, now = Date.now()): boolean {
   if (row.status !== "active" || !row.turnUserId || !row.turnDeadline || Date.parse(row.turnDeadline) >= now) return false;
@@ -1412,6 +1436,8 @@ export class DemoBackend implements Backend {
     return mutate((db) => {
       const listed = appFor(db, appSlug);
       if (!listed) throw new BackendError("App not found", "not_found");
+      // My dead lobbies go first, so a new press doesn't stack another one on top.
+      expireIdleLobbies(db, Date.now(), viewer.id);
       const version = testVersionFor(db, appSlug, versionId, viewer.id);
       const app = version ? applyVersionToApp(listed, version) : listed;
       const cutoff = Date.now() - 10 * 60_000;
@@ -1850,6 +1876,7 @@ export class DemoBackend implements Backend {
   async listMyMatches(): Promise<Match[]> {
     const id = getViewerId();
     if (!id) return [];
+    mutateIfChanged((draft) => expireIdleLobbies(draft, Date.now(), id));
     const db = load();
     return Object.values(db.matches)
       .filter((m) => isSeatedIn(m, id))

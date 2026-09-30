@@ -557,6 +557,33 @@ describe("demo backend: leaving N-player matches", () => {
   });
 });
 
+describe("demo backend: dead lobbies", () => {
+  it("expires a quick lobby nobody joined in 10 minutes and stale live tables after 2 hours", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await as("alice");
+      const first = await backend.quickMatch("emoji-decode");
+      expect(first.status).toBe("open");
+      vi.setSystemTime(Date.now() + 11 * 60_000);
+      const listed = await backend.listMyMatches();
+      expect(listed.find((m) => m.id === first.id)?.status).toBe("expired");
+      // A new press makes one fresh lobby, not another dead one next to it.
+      const fresh = await backend.quickMatch("emoji-decode");
+      expect(fresh.id).not.toBe(first.id);
+      expect((await backend.quickMatch("emoji-decode")).id).toBe(fresh.id);
+      await signUp("bob");
+      await as("alice");
+      const table = await backend.createChallenge({ appSlug: "emoji-decode", mode: "live", opponentHandle: "bob" });
+      vi.setSystemTime(Date.now() + 3 * 3_600_000);
+      const later = await backend.listMyMatches();
+      expect(later.find((m) => m.id === table.id)?.status).toBe("expired");
+      expect(later.find((m) => m.id === fresh.id)?.status).toBe("expired");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("demo store", () => {
   it("upgrades a v3 database instead of wiping it", () => {
     const v3 = {
