@@ -601,6 +601,7 @@ export const OFFICIAL_APPS: AppManifest[] = [
       "A real-time first-person shooter for 2–8 players. Pick a primary (assault rifle, SMG, sniper or shotgun), a sidearm and a perk, then fight through Saltyard: a covered warehouse, a stack of containers with perches up the stairs, and three tight container lanes. Aim down sights, learn each gun's recoil, land headshots, and chain three kills for a radar sweep. First to 20 kills or the most when the clock runs out wins. Team up when the table plays in teams, or practice against bots.",
     category: "games",
     icon: "🪖",
+    coverImage: "/showcase/frontline-cover.webp",
     accent: ["#f2b544", "#e2553a"],
     url: "/embed/frontline",
     modes: ["live", "practice"],

@@ -190,11 +190,11 @@ export class Engine {
       pmrem.dispose();
       this.scene.background = sky;
       this.scene.environment = this.envTarget.texture;
-      this.scene.environmentIntensity = 0.6;
-      this.scene.backgroundIntensity = 0.95;
+      this.scene.environmentIntensity = 0.85;
+      this.scene.backgroundIntensity = 0.85;
       this.scene.fog = new FogExp2(0xc4c2bb, 0.0085);
-      this.hemi = new HemisphereLight(0xd6e2f2, 0x5a5146, 0.25);
-      this.sun = new DirectionalLight(0xffd3a0, 4.3);
+      this.hemi = new HemisphereLight(0xd6e2f2, 0x6a5f52, 0.45);
+      this.sun = new DirectionalLight(0xffd3a0, 3.3);
     } else {
       this.scene.background = new Color(map.sky.horizon);
       this.scene.fog = new Fog(map.sky.fog, 35, t.far);

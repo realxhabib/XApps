@@ -121,7 +121,7 @@ export class PostFx {
     cfg.gammaCorrection = false;
     this.composer.addPass(this.ao);
     this.composer.addPass(new OverlayPass(overlay.scene, overlay.camera, overlay.visible));
-    this.bloom = new BloomEffect({ intensity: 0.85, luminanceThreshold: 1.05, luminanceSmoothing: 0.3, mipmapBlur: true, radius: 0.72 });
+    this.bloom = new BloomEffect({ intensity: 0.5, luminanceThreshold: 1.35, luminanceSmoothing: 0.25, mipmapBlur: true, radius: 0.6 });
     const tone = new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC });
     this.composer.addPass(new EffectPass(camera, this.bloom, tone, this.grade));
     this.composer.addPass(new EffectPass(camera, new SMAAEffect({ preset: SMAAPreset.HIGH })));

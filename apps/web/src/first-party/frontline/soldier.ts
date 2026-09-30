@@ -59,6 +59,8 @@ import type { WeaponId } from "./weapons";
 /* Kit (shared per engine)                                                */
 /* ---------------------------------------------------------------------- */
 
+/** Most the hips turn toward a diagonal step, radians (~25°). */
+const HIP_MAX = 0.45;
 const P = {
   jacket: 0,
   pants: 1,
@@ -685,7 +687,7 @@ export class SkinnedSoldier {
     // Movement angle relative to facing (forward = −z rotated by yaw).
     const fwd = -Math.sin(s.yaw) * this.vx - Math.cos(s.yaw) * this.vz;
     const right = Math.cos(s.yaw) * this.vx - Math.sin(s.yaw) * this.vz;
-    let moveAng = speed > 0.3 ? Math.atan2(right, fwd) : 0;
+    let moveAng = speed > 0.6 ? Math.atan2(right, fwd) : 0;
     let dir = 1;
     if (moveAng > Math.PI / 2 + 0.2) {
       moveAng -= Math.PI;
@@ -694,7 +696,12 @@ export class SkinnedSoldier {
       moveAng += Math.PI;
       dir = -1;
     }
-    this.hipYaw += (Math.max(-1.1, Math.min(1.1, moveAng)) - this.hipYaw) * Math.min(1, dt * 8);
+    // A hint of hip turn toward a strafe, never a twist: only diagonal movement
+    // turns the hips (pure sideways steps keep them square, so a bot jinking
+    // left-right doesn't whip its legs around), capped at ~25° and eased in.
+    const side = Math.abs(moveAng);
+    const hipTarget = side > 1.2 ? 0 : Math.max(-HIP_MAX, Math.min(HIP_MAX, moveAng * 0.5));
+    this.hipYaw += (hipTarget - this.hipYaw) * Math.min(1, dt * 4);
     this.dist += speed * dt * dir;
 
     if (dead && !this.dead) {
@@ -755,11 +762,14 @@ export class SkinnedSoldier {
       if (now - s.lastThrowFx < 400) this.throwNow(now);
     }
     const throwing = now < this.throwUntil;
-    const upT: Record<UpperClip, number> = { aim: 1, low_ready: 0, reload: 0, throw: 0, idle: 0 };
+    // Rifle stance: a relaxed upper body (the CC0 "aim" clip is a two-handed
+    // pistol pose that hunches the shoulders and leans the torso back), with
+    // the hands put on the rifle by IK in placeGun and a light aim-pitch bend.
+    const upT: Record<UpperClip, number> = { aim: 0, low_ready: 0, reload: 0, throw: 0, idle: 1 };
     if (sprint) upT.low_ready = 1;
     if (reloading) upT.reload = 1;
     if (throwing) upT.throw = 1;
-    if (sprint || reloading || throwing) upT.aim = 0;
+    if (sprint || reloading || throwing) upT.idle = 0;
     const rel = this.upper.get("reload");
     if (rel) {
       if (reloading && (this.w.up_reload ?? 0) < 0.05 && !rel.isRunning()) {
@@ -790,13 +800,13 @@ export class SkinnedSoldier {
         rotateWorld(spine1, _q.setFromAxisAngle(up, this.hipYaw));
       }
       // Aim pitch through the spine and neck (world right axis of the soldier).
-      const pitch = Math.max(-1, Math.min(1, s.pitch)) * (sprint ? 0.2 : 1);
+      const pitch = Math.max(-0.8, Math.min(0.8, s.pitch)) * (sprint ? 0.2 : 1);
       const rightAxis = _v2.set(Math.cos(s.yaw), 0, -Math.sin(s.yaw));
       for (const [name, share] of [
-        ["spine_01", 0.2],
-        ["spine_02", 0.25],
-        ["spine_03", 0.3],
-        ["neck_01", 0.15],
+        ["spine_01", 0.1],
+        ["spine_02", 0.15],
+        ["spine_03", 0.2],
+        ["neck_01", 0.2],
       ] as const) {
         const b = this.bones.get(name);
         if (b) rotateWorld(b, _q.setFromAxisAngle(rightAxis, pitch * share - (name === "spine_03" ? this.recoil * 0.06 + this.hurt * 0.2 : 0)));
@@ -836,7 +846,7 @@ export class SkinnedSoldier {
     let yawOff = 0;
     let pitchOff = 0;
     let roll = 0;
-    const pos = this.gunP.set(_v.x + 0.11, _v.y + 0.15, _v.z + 0.02);
+    const pos = this.gunP.set(_v.x + 0.1, _v.y + 0.1, _v.z + 0.02);
     if (sprint) {
       yawOff = 0.75;
       pitchOff = -0.75;

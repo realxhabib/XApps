@@ -13,7 +13,7 @@
  * (three re-uploads a disposed texture the next time it's drawn).
  */
 
-import { HalfFloatType, LinearFilter, LinearMipmapLinearFilter, RepeatWrapping, SRGBColorSpace, TextureLoader, type AnimationClip, type DataTexture, type Group, type Texture } from "three";
+import { DataUtils, HalfFloatType, LinearFilter, LinearMipmapLinearFilter, RepeatWrapping, SRGBColorSpace, TextureLoader, type AnimationClip, type DataTexture, type Group, type Texture } from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { HDRLoader } from "three/examples/jsm/loaders/HDRLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
@@ -131,6 +131,7 @@ async function load(level: AssetLevel): Promise<AssetPack> {
       run: async () => {
         const hdr = new HDRLoader().setDataType(HalfFloatType);
         sky = await hdr.loadAsync(`${BASE}/sky_1k.hdr`);
+        capSky(sky, SKY_MAX);
       },
     });
     jobs.push({
@@ -163,4 +164,21 @@ async function load(level: AssetLevel): Promise<AssetPack> {
   progressOf.set(level, 1);
   listeners.forEach((l) => l());
   return { level, mats, grime: grime ? grime() : null, fabric: fabric ? fabric() : null, sky, soldier };
+}
+
+/**
+ * Brightest the sky may be (linear). The HDRI's sun disc is thousands of times
+ * brighter than the sky around it: the directional light already is the sun,
+ * so capping the disc keeps it bright without blowing out bloom and the
+ * image-based light on high.
+ */
+const SKY_MAX = 5;
+
+function capSky(tex: DataTexture, max: number): void {
+  const data = tex.image.data as Uint16Array;
+  const cap = DataUtils.toHalfFloat(max);
+  for (let i = 0; i < data.length; i += 4) {
+    for (let c = 0; c < 3; c++) if (DataUtils.fromHalfFloat(data[i + c]!) > max) data[i + c] = cap;
+  }
+  tex.needsUpdate = true;
 }
