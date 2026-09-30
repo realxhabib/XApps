@@ -136,10 +136,10 @@ float hex(vec2 p) {
 void main() {
   float near = 1.0 - smoothstep(6.0, 28.0, distance(vWorld, uFocus));
   vec2 p = vec2(vUv.y * 0.9, vUv.x * 2.2);
-  float h = smoothstep(0.08, 0.0, hex(p * 1.0));
+  float h = 1.0 - smoothstep(0.0, 0.08, hex(p));
   float scan = 0.5 + 0.5 * sin(vUv.y * 1.3 - uTime * 6.0);
   float fade = (1.0 - vUv.x);
-  float base = smoothstep(0.0, 0.08, vUv.x) * smoothstep(0.35, 0.0, vUv.x);
+  float base = smoothstep(0.0, 0.08, vUv.x) * (1.0 - smoothstep(0.0, 0.35, vUv.x));
   float a = fade * (0.03 + near * 0.12) + h * fade * (0.05 + near * 0.3) + base * 0.22 + scan * 0.02 * fade;
   gl_FragColor = vec4(uColor * (0.7 + near * 0.5), a);
 }`;
@@ -151,7 +151,7 @@ uniform sampler2D uMap;
 varying vec2 vUv;
 void main() {
   vec4 t = texture2D(uMap, vec2(vUv.x, fract(vUv.y * 1.5 - uTime * 1.8)));
-  float edge = smoothstep(0.0, 0.1, vUv.x) * smoothstep(1.0, 0.9, vUv.x);
+  float edge = smoothstep(0.0, 0.1, vUv.x) * (1.0 - smoothstep(0.9, 1.0, vUv.x));
   float glow = 0.25 + 0.75 * t.r;
   gl_FragColor = vec4(uColor * glow * 1.3, (0.25 + t.r * 0.6) * edge);
 }`;

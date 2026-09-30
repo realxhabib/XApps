@@ -223,6 +223,9 @@ function terrace(t: number, steps: number): number {
 /* ------------------------------------------------------------------ */
 
 const GLSL_NOISE = /* glsl */ `
+float rstep(float a, float b, float x) {
+  return 1.0 - smoothstep(b, a, x);
+}
 float hash13(vec3 p3) {
   p3 = fract(p3 * 0.1031);
   p3 += dot(p3, p3.zyx + 31.32);
@@ -274,7 +277,7 @@ float starLayer(vec3 d, float k, float thresh) {
   vec3 sp = c + 0.5 + (vec3(hash13(c + 1.7), hash13(c + 4.1), hash13(c + 8.3)) - 0.5) * 0.6;
   float dist = length(q - sp);
   float b = (h - thresh) / (1.0 - thresh);
-  return smoothstep(0.42, 0.0, dist) * (0.25 + 1.6 * b * b);
+  return rstep(0.42, 0.0, dist) * (0.25 + 1.6 * b * b);
 }
 vec3 starTint(vec3 d) {
   float t = hash13(floor(d * 260.0) + 5.0);
@@ -315,15 +318,15 @@ void main() {
   float ridgeFar = 0.018 + 0.05 * pow(fbm(ring * 2.2 + 5.0), 1.6);
   float ridgeNear = 0.008 + 0.032 * pow(fbm(ring * 4.5 + 11.0), 1.8);
   float ao = acos(clamp(dot(hz, normalize(uA.xz)), -1.0, 1.0));
-  float volc = 0.105 * smoothstep(0.75, 0.1, ao) * (0.94 + 0.06 * smoothstep(0.02, 0.07, ao));
+  float volc = 0.105 * rstep(0.75, 0.1, ao) * (0.94 + 0.06 * smoothstep(0.02, 0.07, ao));
   float lit = 0.5 + 0.5 * dot(hz, normalize(uSun.xz + 1e-5));
   vec3 hazeFar = mix(hor * 0.92, vec3(0.78, 0.40, 0.21), 0.35 + 0.15 * lit);
   vec3 hazeNear = mix(hor * 0.85, vec3(0.55, 0.25, 0.12), 0.45 + 0.1 * lit);
   float fz = fwidth(el) * 1.5;
-  col = mix(col, hazeFar, smoothstep(max(ridgeFar, volc) + fz, max(ridgeFar, volc) - fz, el) * 0.85);
-  col = mix(col, hazeNear, smoothstep(ridgeNear + fz, ridgeNear - fz, el) * 0.85);
-  if (el < 0.0) col = mix(hazeNear, vec3(0.3, 0.13, 0.06), smoothstep(0.0, -0.4, el));
-  gl_FragColor = vec4(col, 1.0);
+  col = mix(col, hazeFar, rstep(max(ridgeFar, volc) + fz, max(ridgeFar, volc) - fz, el) * 0.85);
+  col = mix(col, hazeNear, rstep(ridgeNear + fz, ridgeNear - fz, el) * 0.85);
+  if (el < 0.0) col = mix(hazeNear, vec3(0.3, 0.13, 0.06), rstep(0.0, -0.4, el));
+  gl_FragColor = vec4(clamp(col, 0.0, 200.0), 1.0);
 }
 `,
   belt: /* glsl */ `
@@ -346,7 +349,7 @@ void main() {
   float s = starLayer(d, 240.0, 0.978) * 1.4 + starLayer(d, 520.0, 0.965 - band * 0.05) * 0.7;
   col += starTint(d) * s;
   col += sunGlow(sd, 70.0, 5.0, 0.35);
-  gl_FragColor = vec4(col, 1.0);
+  gl_FragColor = vec4(clamp(col, 0.0, 200.0), 1.0);
 }
 `,
   saturn: /* glsl */ `
@@ -365,7 +368,7 @@ void main() {
   float s = starLayer(d, 240.0, 0.975) * 1.5 + starLayer(d, 560.0, 0.955 - band * 0.08) * 0.8;
   col += starTint(d) * s;
   col += sunGlow(sd, 120.0, 12.0, 0.55);
-  gl_FragColor = vec4(col, 1.0);
+  gl_FragColor = vec4(clamp(col, 0.0, 200.0), 1.0);
 }
 `,
   nebula: /* glsl */ `
@@ -397,7 +400,7 @@ void main() {
   float s = starLayer(d, 230.0, 0.975 - cluster * 0.2) * 1.5 + starLayer(d, 540.0, 0.955 - neb * 0.03 - cluster * 0.15) * 0.8;
   col += mix(starTint(d), vec3(1.0, 0.85, 1.0), neb * 0.5) * s;
   col += sunGlow(sd, 40.0, 3.0, 0.12);
-  gl_FragColor = vec4(col, 1.0);
+  gl_FragColor = vec4(clamp(col, 0.0, 200.0), 1.0);
 }
 `,
   luna: /* glsl */ `
@@ -413,7 +416,7 @@ void main() {
   float s = starLayer(d, 250.0, 0.972) * 1.6 + starLayer(d, 560.0, 0.955 - band * 0.06) * 0.8;
   col += starTint(d) * s;
   col += uSunCol * (smoothstep(0.99962, 0.99975, sd) * 150.0 + pow(sd, 3000.0) * 12.0 + pow(sd, 300.0) * 0.25);
-  gl_FragColor = vec4(col, 1.0);
+  gl_FragColor = vec4(clamp(col, 0.0, 200.0), 1.0);
 }
 `,
 };
@@ -792,7 +795,7 @@ void main() {
   float cs = texture2D(uClouds, cu + vec2(0.003, -0.002)).r;
   alb *= 1.0 - cs * 0.45 * (1.0 - cl.r);
   alb = mix(alb, vec3(0.95), cl.r);
-  night = vec3(1.0, 0.72, 0.38) * cl.g * (1.0 - cl.r) * smoothstep(0.05, -0.15, ndl) * 1.4;
+  night = vec3(1.0, 0.72, 0.38) * cl.g * (1.0 - cl.r) * (1.0 - smoothstep(-0.15, 0.05, ndl)) * 1.4;
 #endif
 #ifdef RINGS
   vec3 rn = normalize(vAxis);
@@ -813,10 +816,10 @@ void main() {
   col *= 0.55 + 0.45 * pow(mu, 0.35);
   float fres = pow(1.0 - mu, 3.0);
   col += uAtmo * fres * uAtmoK * smoothstep(-0.3, 0.45, ndl);
-  col += uAtmo * 0.18 * uAtmoK * smoothstep(-0.25, 0.0, ndl) * smoothstep(0.35, 0.0, ndl);
+  col += uAtmo * 0.18 * uAtmoK * smoothstep(-0.25, 0.0, ndl) * (1.0 - smoothstep(0.0, 0.35, ndl));
   col += night;
   col = mix(col, uHaze.rgb, uHaze.a);
-  gl_FragColor = vec4(col, 1.0);
+  gl_FragColor = vec4(clamp(col, 0.0, 64.0), 1.0);
   ${FRAG_TAIL}
 }
 `;
@@ -1485,7 +1488,8 @@ rockH -= rockPit * 0.15;`,
   vec3 r2 = cross(normal, dpx);
   float det = dot(dpx, r1) * faceDirection;
   vec3 grad = sign(det) * (dhx * r1 + dhy * r2);
-  normal = normalize(abs(det) * normal - grad);
+  vec3 nn = abs(det) * normal - grad;
+  if (dot(nn, nn) > 1e-12) normal = normalize(nn);
 }`,
       )
       .replace(
@@ -1929,7 +1933,8 @@ diffuseColor.rgb *= (0.62 + 0.75 * detailH) * (0.82 + 0.36 * dB);`,
   vec3 r2 = cross(normal, dpx);
   float det = dot(dpx, r1) * faceDirection;
   vec3 grad = sign(det) * (dhx * r1 + dhy * r2);
-  normal = normalize(abs(det) * normal - grad);
+  vec3 nn = abs(det) * normal - grad;
+  if (dot(nn, nn) > 1e-12) normal = normalize(nn);
 }`,
       );
   };

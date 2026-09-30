@@ -93,7 +93,7 @@ void main() {
   vAlpha = aAlpha;
   vColor = aColor;
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
-  gl_PointSize = aSize * uScale / max(0.5, -mv.z);
+  gl_PointSize = min(90.0, aSize * uScale / max(1.5, -mv.z));
   gl_Position = projectionMatrix * mv;
 }`;
 
@@ -103,7 +103,7 @@ varying float vAlpha;
 varying vec3 vColor;
 void main() {
   vec4 t = texture2D(uMap, gl_PointCoord);
-  gl_FragColor = vec4(vColor * t.a * vAlpha, t.a * vAlpha);
+  gl_FragColor = vec4(vColor * t.a * vAlpha * 0.8, t.a * vAlpha);
 }`;
 
 class Particles {
