@@ -38,7 +38,7 @@ export function ShipPreview({ design, livery, pilot, reduced }: { design: ShipDe
     } catch {
       return;
     }
-    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    renderer.setPixelRatio(Math.min(window.matchMedia?.("(pointer: coarse)").matches ? 1.25 : 2, window.devicePixelRatio || 1));
     renderer.toneMapping = ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.1;
     renderer.outputColorSpace = SRGBColorSpace;

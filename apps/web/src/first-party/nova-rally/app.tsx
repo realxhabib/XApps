@@ -17,6 +17,7 @@ import { ITEMS, type ItemId } from "./items";
 import { SPEED_CLASSES, formatTime, parseSettings, type SpeedClass } from "./logic";
 import { MatchView } from "./match";
 import { ShipPreview } from "./preview";
+import { autoQuality, loadQualityChoice, saveQualityChoice, type QualityChoice } from "./scene";
 import { bestTrialTime, liveryFor, type ShipChoice } from "./race";
 import { LIVERY_SWATCHES, PILOTS, SHIPS, pilotPortraitSvg, shipIconSvg } from "./ships";
 import { ARENAS, CUPS, TRACKS, trackById } from "./tracks";
@@ -313,6 +314,7 @@ function Garage({
         </div>
       </div>
 
+      <QualityPicker />
       <TimeTrials onTrial={onTrial} />
 
       <div className="relative grid gap-3 md:grid-cols-2">
@@ -333,6 +335,45 @@ function Garage({
             ))}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+const QUALITY_OPTIONS: readonly { id: QualityChoice; label: string; blurb: string }[] = [
+  { id: "auto", label: "Auto", blurb: "Picks for this device" },
+  { id: "high", label: "High", blurb: "Full effects, sharpest" },
+  { id: "medium", label: "Medium", blurb: "Lighter world, 1× res" },
+  { id: "low", label: "Low", blurb: "Phones & older laptops" },
+];
+
+function QualityPicker() {
+  const [choice, setChoice] = useState<QualityChoice>(() => (typeof window === "undefined" ? "auto" : loadQualityChoice()));
+  const auto = typeof window === "undefined" ? "medium" : autoQuality();
+  return (
+    <div className="relative rounded-2xl border border-white/10 bg-white/5 p-3">
+      <div className="mb-2 flex items-baseline justify-between">
+        <span className="text-[12px] font-bold text-white">🎛 Graphics</span>
+        <span className="text-[11px] text-white/55">{choice === "auto" ? `Auto is using ${auto[0]!.toUpperCase()}${auto.slice(1)} here` : "Applies from the next race"}</span>
+      </div>
+      <div className="grid grid-cols-4 gap-1.5">
+        {QUALITY_OPTIONS.map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            aria-pressed={choice === o.id}
+            onClick={() => {
+              play("tick");
+              setChoice(o.id);
+              saveQualityChoice(o.id);
+            }}
+            className="flex flex-col items-center rounded-xl border-2 px-1 py-1.5 text-center"
+            style={{ borderColor: choice === o.id ? "#ffd166" : "rgba(255,255,255,0.14)", background: choice === o.id ? "rgba(255,209,102,0.16)" : "transparent" }}
+          >
+            <span className="text-[12px] font-black italic text-white">{o.label}</span>
+            <span className="text-[9.5px] leading-tight text-white/60">{o.blurb}</span>
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -373,14 +414,13 @@ function Starfield() {
   );
   return (
     <div className="pointer-events-none fixed inset-0 -z-0 overflow-hidden">
+      <style>{`@keyframes nr-twinkle{0%,100%{opacity:.2}50%{opacity:1}}.nr-twinkle{animation:nr-twinkle 3s ease-in-out infinite}@media (prefers-reduced-motion: reduce){.nr-twinkle{animation:none;opacity:.6}}`}</style>
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(140,70,255,0.35),transparent_60%),radial-gradient(ellipse_at_bottom_right,rgba(255,90,209,0.25),transparent_55%)]" />
       {stars.map((s, i) => (
-        <motion.span
+        <span
           key={i}
-          className="absolute rounded-full bg-white"
-          style={{ left: `${s.x}%`, top: `${s.y}%`, width: s.s, height: s.s }}
-          animate={{ opacity: [0.2, 1, 0.2] }}
-          transition={{ duration: s.d, repeat: Infinity, delay: i * 0.05 }}
+          className="nr-twinkle absolute rounded-full bg-white"
+          style={{ left: `${s.x}%`, top: `${s.y}%`, width: s.s, height: s.s, animationDuration: `${s.d}s`, animationDelay: `${i * 0.05}s` }}
         />
       ))}
     </div>

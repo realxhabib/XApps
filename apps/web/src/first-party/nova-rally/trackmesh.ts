@@ -182,7 +182,7 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
   const lowQ = quality === "low";
 
   /* Road */
-  const road = paintRoad(theme);
+  const road = paintRoad(theme, lowQ ? 512 : 1024);
   own(road.map);
   own(road.emissive);
   own(road.rough);

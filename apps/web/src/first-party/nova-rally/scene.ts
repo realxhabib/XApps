@@ -70,19 +70,70 @@ import { paintDot, paintItemFace, paintSign, rng } from "./textures";
 import { frameAt, locate, newFrame, trackPoint, wrapS, type CompiledTrack } from "./track";
 import { buildTrackView, type TrackView } from "./trackmesh";
 
+export type QualityLevel = "high" | "medium" | "low";
+export type QualityChoice = QualityLevel | "auto";
+
 export interface Quality {
-  level: "high" | "low";
+  level: QualityLevel;
+  /** Geometry/texture detail tier for the world, ships and track ("medium" uses the light world). */
+  detail: "high" | "low";
   dpr: number;
   shadows: number;
+  /** SMAA edge smoothing + chromatic aberration pass. */
+  smaa: boolean;
+  particles: number;
+  trail: number;
+}
+
+export const QUALITY_KEY = "nova-rally:quality";
+
+export function loadQualityChoice(): QualityChoice {
+  try {
+    const v = window.localStorage.getItem(QUALITY_KEY);
+    if (v === "high" || v === "medium" || v === "low") return v;
+  } catch {
+    // Private mode.
+  }
+  return "auto";
+}
+
+export function saveQualityChoice(choice: QualityChoice): void {
+  try {
+    window.localStorage.setItem(QUALITY_KEY, choice);
+  } catch {
+    // Private mode.
+  }
+}
+
+/** What "auto" picks: phones and tablets get Low, small/low-memory machines Medium, the rest High. */
+export function autoQuality(): QualityLevel {
+  if (typeof window === "undefined") return "medium";
+  const coarse = window.matchMedia?.("(pointer: coarse)").matches;
+  if (coarse) return "low";
+  const mem = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+  const cores = navigator.hardwareConcurrency ?? 8;
+  if ((mem !== undefined && mem <= 4) || cores <= 4) return "medium";
+  return "high";
+}
+
+export function qualityFor(level: QualityLevel): Quality {
+  const device = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+  switch (level) {
+    case "high":
+      return { level, detail: "high", dpr: Math.min(device, 1.5), shadows: 2048, smaa: true, particles: 4000, trail: 24 };
+    case "medium":
+      return { level, detail: "low", dpr: Math.min(device, 1), shadows: 1024, smaa: true, particles: 2500, trail: 18 };
+    case "low":
+      return { level, detail: "low", dpr: Math.min(device, 0.75), shadows: 0, smaa: false, particles: 1200, trail: 12 };
+  }
 }
 
 export function detectQuality(): Quality {
-  const coarse = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
-  const dpr = typeof window !== "undefined" ? Math.min(window.devicePixelRatio || 1, coarse ? 1.5 : 1.5) : 1;
   const params = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
   const forced = params?.get("quality");
-  const level = forced === "low" ? "low" : forced === "high" ? "high" : coarse ? "low" : "high";
-  return { level, dpr: level === "low" ? Math.min(dpr, 1.25) : dpr, shadows: level === "low" ? 0 : 2048 };
+  if (forced === "high" || forced === "medium" || forced === "low") return qualityFor(forced);
+  const choice = typeof window !== "undefined" ? loadQualityChoice() : "auto";
+  return qualityFor(choice === "auto" ? autoQuality() : choice);
 }
 
 /* ------------------------------------------------------------------ */
@@ -463,7 +514,7 @@ export class RaceScene {
     this.shared.push(this.warpGeo, this.warpMat, this.blobGeo, this.blobMat, this.reticleGeo, this.reticleMat);
     this.shared.push(this.dot, this.itemFace, this.boxGeo, this.boxInnerGeo, this.boxMat, this.boxInnerMat, this.coinGeo, this.coinMat, this.rockGeo, this.rockMat);
 
-    this.particles = new Particles(quality.level === "low" ? 1600 : 4000, this.dot);
+    this.particles = new Particles(quality.particles, this.dot);
     this.scene.add(this.particles.points);
     this.scene.add(this.pickupGroup);
 
@@ -496,7 +547,8 @@ export class RaceScene {
     this.shared.push(ringGeo, ringMat);
 
     // Post-processing.
-    this.composer = new EffectComposer(this.renderer, { frameBufferType: HalfFloatType, multisampling: quality.level === "low" ? 0 : 4 });
+    // No MSAA: at high DPR a 4x multisampled HDR buffer costs hundreds of MB. SMAA smooths edges instead.
+    this.composer = new EffectComposer(this.renderer, { frameBufferType: HalfFloatType, multisampling: 0 });
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     // Additive stacks can overflow half floats (Inf/NaN), which bloom would smear over the whole frame.
     this.composer.addPass(
@@ -516,7 +568,7 @@ export class RaceScene {
     this.chroma = new ChromaticAberrationEffect({ offset: new Vector2(0, 0), radialModulation: true, modulationOffset: 0.25 });
     const vignette = new VignetteEffect({ offset: 0.28, darkness: 0.55 });
     const tone = new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC });
-    if (quality.level === "low") {
+    if (!quality.smaa) {
       this.composer.addPass(new EffectPass(this.camera, this.bloom, vignette, tone));
     } else {
       // Convolution effects (chromatic aberration, SMAA) each need their own pass.
@@ -544,7 +596,7 @@ export class RaceScene {
     this.disposeTrack();
     const track = rt.track;
     this.track = track;
-    this.env = buildEnvironment(track.def.theme, track.outline, this.renderer, this.quality.level);
+    this.env = buildEnvironment(track.def.theme, track.outline, this.renderer, this.quality.detail);
     this.scene.add(this.env.group);
     this.scene.background = this.env.background;
     this.scene.environment = this.env.environment;
@@ -560,7 +612,7 @@ export class RaceScene {
     this.bloom.mipmapBlurPass.radius = this.env.bloom.radius;
     this.exposure = this.env.exposure;
 
-    this.trackView = buildTrackView(track, this.quality.level);
+    this.trackView = buildTrackView(track, this.quality.detail);
     this.scene.add(this.trackView.group);
 
     // Item capsules.
@@ -661,12 +713,12 @@ export class RaceScene {
   }
 
   private addShip(r: Racer): void {
-    const model = buildShip(r.design, r.livery, this.quality.level, r.pilot);
+    const model = buildShip(r.design, r.livery, this.quality.detail, r.pilot);
     model.root.traverse((o) => {
       if ((o as Mesh).isMesh) (o as Mesh).castShadow = this.quality.shadows > 0;
     });
     this.scene.add(model.root);
-    const trail = new Trail(this.quality.level === "low" ? 14 : 24, new Color(r.livery.glow));
+    const trail = new Trail(this.quality.trail, new Color(r.livery.glow));
     this.scene.add(trail.mesh);
     const drone = this.buildDrone();
     drone.visible = false;

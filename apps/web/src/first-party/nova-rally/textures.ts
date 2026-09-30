@@ -67,7 +67,7 @@ export const ROAD_LOOKS: Record<ThemeId, RoadLook> = {
  * glowing edge bands. u runs across the road (0..1), v along it (one tile ≈
  * 16 units). Returns colour, emissive and roughness maps.
  */
-export function paintRoad(theme: ThemeId): { map: Texture; emissive: Texture; rough: Texture } {
+export function paintRoad(theme: ThemeId, size = 1024): { map: Texture; emissive: Texture; rough: Texture } {
   const look = ROAD_LOOKS[theme];
   const W = 1024;
   const H = 1024;
@@ -254,9 +254,16 @@ export function paintRoad(theme: ThemeId): { map: Texture; emissive: Texture; ro
     ge.fillStyle = look.line;
     ge.fillRect(dir > 0 ? x0 + 14 : x0 - 28, 0, 14, H);
   }
-  const map = tex(c);
-  const emissive = tex(e);
-  const rough = tex(r, false);
+  // Lighter quality tiers keep a downscaled copy (a quarter of the memory); the 1024 canvases are dropped.
+  const fit = (src: HTMLCanvasElement) => {
+    if (size >= W) return src;
+    const [small, sg] = canvas(size, size);
+    sg.drawImage(src, 0, 0, size, size);
+    return small;
+  };
+  const map = tex(fit(c));
+  const emissive = tex(fit(e));
+  const rough = tex(fit(r), false);
   return { map, emissive, rough };
 }
 
