@@ -1,0 +1,382 @@
+"use client";
+
+/**
+ * Nova Rally root. Setup purpose: the challenger picks the cup, speed class
+ * and laps. Match purpose: the garage (pick a ship and paint, see the cup)
+ * which calls `ready()` when you hit Start engines, then the Grand Prix once
+ * the host fires `match.start`.
+ */
+
+import { useMatchStarted, usePlayers, useSetup, useXApps } from "@xapps/sdk/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { useEffect, useRef, useState } from "react";
+import { Avatar } from "@/components/ui/avatar";
+import { play } from "@/lib/sfx";
+import { ItemIcon } from "./icons";
+import { ITEMS, type ItemId } from "./items";
+import { SPEED_CLASSES, parseSettings, type SpeedClass } from "./logic";
+import { MatchView } from "./match";
+import { ShipPreview } from "./preview";
+import { liveryFor, type ShipChoice } from "./race";
+import { LIVERY_SWATCHES, SHIPS, shipIconSvg } from "./ships";
+import { CUPS, TRACKS, trackById } from "./tracks";
+
+const CHOICE_KEY = "nova-rally:ship";
+
+function loadChoice(): ShipChoice {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(CHOICE_KEY) ?? "null") as ShipChoice | null;
+    if (raw && typeof raw.design === "number" && typeof raw.livery === "number") {
+      return { design: Math.abs(raw.design) % SHIPS.length, livery: Math.max(-1, Math.min(LIVERY_SWATCHES.length - 1, raw.livery)) };
+    }
+  } catch {
+    // First visit.
+  }
+  return { design: 0, livery: -1 };
+}
+
+export function NovaRallyApp() {
+  const xapps = useXApps();
+  return (
+    <div className="relative h-dvh w-full overflow-hidden bg-[#07051a]">
+      {xapps.purpose === "setup" ? <Setup /> : <Race />}
+    </div>
+  );
+}
+
+function Race() {
+  const started = useMatchStarted();
+  const [choice, setChoice] = useState<ShipChoice | null>(null);
+  const [locked, setLocked] = useState<ShipChoice | null>(null);
+  const xapps = useXApps();
+  const readyRef = useRef(false);
+
+  useEffect(() => {
+    xapps.ui.setStatus("In the garage").catch(() => {});
+  }, [xapps]);
+
+  const ready = (c: ShipChoice) => {
+    setLocked(c);
+    try {
+      window.localStorage.setItem(CHOICE_KEY, JSON.stringify(c));
+    } catch {
+      // Private mode.
+    }
+    if (readyRef.current) return;
+    readyRef.current = true;
+    xapps.ready().catch((error: unknown) => console.warn("[nova-rally] ready failed", error));
+    xapps.ui.setStatus("Engines hot").catch(() => {});
+  };
+
+  // Spectators never pick a ship.
+  useEffect(() => {
+    if (!xapps.isSpectator || readyRef.current) return;
+    readyRef.current = true;
+    xapps.ready().catch(() => {});
+  }, [xapps]);
+
+  const active = locked ?? choice;
+  return (
+    <AnimatePresence mode="wait">
+      {started ? (
+        <motion.div key="race" className="absolute inset-0" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }}>
+          <MatchView choice={active ?? loadChoice()} />
+        </motion.div>
+      ) : (
+        <motion.div key="garage" className="absolute inset-0 overflow-y-auto" exit={{ opacity: 0, scale: 1.04, filter: "blur(10px)" }} transition={{ duration: 0.35 }}>
+          <Garage onChange={setChoice} onReady={ready} locked={!!locked} />
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function StatBar({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-white/75">
+      <span className="w-16">{label}</span>
+      <div className="flex flex-1 gap-1">
+        {[1, 2, 3, 4, 5].map((k) => (
+          <motion.span
+            key={k}
+            className="h-2 flex-1 rounded-full"
+            animate={{ backgroundColor: k <= value ? "#ffd166" : "rgba(255,255,255,0.14)" }}
+            transition={{ duration: 0.2, delay: k * 0.03 }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Garage({ onChange, onReady, locked }: { onChange: (c: ShipChoice) => void; onReady: (c: ShipChoice) => void; locked: boolean }) {
+  const xapps = useXApps();
+  const reduced = useReducedMotion() ?? false;
+  const { players, me } = usePlayers();
+  const [choice, setChoice] = useState<ShipChoice>(() => (typeof window === "undefined" ? { design: 0, livery: -1 } : loadChoice()));
+  const settings = parseSettings(xapps.match.settings);
+  const design = SHIPS[choice.design]!;
+  const livery = liveryFor(design, choice.livery);
+  const [autoLeft, setAutoLeft] = useState(40);
+
+  useEffect(() => {
+    onChange(choice);
+  }, [choice, onChange]);
+
+  // Don't hold the table forever: start engines by yourself after 40 s.
+  useEffect(() => {
+    if (locked) return;
+    const id = setInterval(() => setAutoLeft((s) => s - 1), 1000);
+    return () => clearInterval(id);
+  }, [locked]);
+  useEffect(() => {
+    if (autoLeft <= 0 && !locked) onReady(choice);
+  }, [autoLeft, locked, onReady, choice]);
+
+  const pick = (c: ShipChoice) => {
+    if (locked) return;
+    play("tick");
+    setChoice(c);
+  };
+
+  const seated = [...players].sort((a, b) => a.seat - b.seat);
+  const showcase: ItemId[] = ["seeker", "singularity", "warp", "emp", "shield", "mine", "cloak", "nitro3"];
+
+  return (
+    <div className="relative mx-auto flex min-h-full w-full max-w-3xl flex-col gap-4 px-4 py-5 text-white">
+      <Starfield />
+      <div className="relative flex flex-col items-center gap-1 text-center">
+        <div className="text-[11px] font-bold uppercase tracking-[0.3em] text-white/70">
+          {settings.cup.name} · {settings.cc}cc · {settings.laps} laps
+        </div>
+        <h1
+          className="font-display text-[clamp(48px,13vw,84px)] font-black italic leading-[0.9] tracking-tight"
+          style={{
+            backgroundImage: "linear-gradient(180deg, #ffffff 15%, #ffd166 55%, #ff5ad1 95%)",
+            WebkitBackgroundClip: "text",
+            backgroundClip: "text",
+            color: "transparent",
+            WebkitTextStroke: "2px rgba(20,8,50,0.9)",
+            filter: "drop-shadow(0 5px 0 rgba(0,0,0,0.5))",
+          }}
+        >
+          NOVA RALLY
+        </h1>
+        <div className="mt-1 flex flex-wrap justify-center gap-1.5">
+          {settings.cup.tracks.map((id, i) => {
+            const t = trackById(id);
+            return (
+              <span key={`${id}${i}`} className="rounded-full px-2.5 py-1 text-[11px] font-bold" style={{ background: `linear-gradient(90deg, ${t.accent[0]}55, ${t.accent[1]}33)`, border: `1px solid ${t.accent[0]}` }}>
+                {i + 1}. {t.name}
+              </span>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="relative grid gap-4 md:grid-cols-[1.1fr_1fr]">
+        <div className="relative flex flex-col overflow-hidden rounded-3xl border border-white/15 bg-[radial-gradient(circle_at_50%_60%,rgba(120,80,255,0.35),rgba(10,6,30,0.6))]">
+          <div className="relative h-[clamp(170px,42vw,250px)]">
+            <ShipPreview design={design} livery={livery} reduced={reduced} />
+          </div>
+          <div className="flex flex-col gap-1.5 px-4 pb-4">
+            <div className="flex items-baseline justify-between">
+              <span className="text-2xl font-black italic">{design.name}</span>
+              <span className="text-xs text-white/60">{design.tagline}</span>
+            </div>
+            <StatBar label="Speed" value={design.stats.speed} />
+            <StatBar label="Accel" value={design.stats.accel} />
+            <StatBar label="Handling" value={design.stats.handling} />
+            <StatBar label="Weight" value={design.stats.weight} />
+          </div>
+        </div>
+
+        <div className="relative flex flex-col gap-3">
+          <div className="grid grid-cols-4 gap-2">
+            {SHIPS.map((s, i) => {
+              const selected = i === choice.design;
+              return (
+                <motion.button
+                  key={s.id}
+                  type="button"
+                  onClick={() => pick({ design: i, livery: choice.livery })}
+                  whileTap={{ scale: 0.94 }}
+                  className="flex flex-col items-center gap-0.5 rounded-2xl border-2 px-1 py-1.5 text-[10px] font-bold"
+                  style={{
+                    borderColor: selected ? "#ffd166" : "rgba(255,255,255,0.14)",
+                    background: selected ? "rgba(255,209,102,0.16)" : "rgba(255,255,255,0.05)",
+                    opacity: locked && !selected ? 0.4 : 1,
+                  }}
+                >
+                  <span className="block h-8 w-14" dangerouslySetInnerHTML={{ __html: shipIconSvg(s, liveryFor(s, selected ? choice.livery : -1)) }} />
+                  <span className="truncate">{s.name}</span>
+                </motion.button>
+              );
+            })}
+          </div>
+          <div>
+            <div className="mb-1 text-[11px] font-bold uppercase tracking-wider text-white/60">Paint</div>
+            <div className="flex flex-wrap gap-2">
+              {[-1, ...LIVERY_SWATCHES.map((_, i) => i)].map((li) => {
+                const l = liveryFor(design, li);
+                const selected = li === choice.livery;
+                return (
+                  <button
+                    key={li}
+                    type="button"
+                    aria-label={li < 0 ? "Factory paint" : `Paint ${li + 1}`}
+                    onClick={() => pick({ design: choice.design, livery: li })}
+                    className="size-8 rounded-full border-2"
+                    style={{
+                      background: `conic-gradient(${l.primary} 0 50%, ${l.secondary} 50% 80%, ${l.glow} 80%)`,
+                      borderColor: selected ? "#fff" : "rgba(255,255,255,0.2)",
+                      boxShadow: selected ? `0 0 12px ${l.glow}` : "none",
+                    }}
+                  />
+                );
+              })}
+            </div>
+          </div>
+          <ul className="flex flex-wrap gap-1.5">
+            {seated.map((p) => (
+              <li key={p.id} className="flex items-center gap-1.5 rounded-full bg-white/10 py-1 pl-1 pr-3 text-xs">
+                <Avatar person={p} size={22} />
+                <span className="max-w-24 truncate font-semibold">{p.id === me.id ? "You" : p.isBot ? p.name : `@${p.handle}`}</span>
+              </li>
+            ))}
+            {seated.length < 8 ? <li className="rounded-full bg-white/5 px-3 py-1 text-xs text-white/60">+{8 - seated.length} CPU pilots</li> : null}
+          </ul>
+          <motion.button
+            type="button"
+            disabled={locked}
+            onClick={() => {
+              play("go");
+              onReady(choice);
+            }}
+            whileTap={{ scale: 0.97 }}
+            className="mt-auto rounded-2xl px-5 py-3.5 text-lg font-black italic text-[#2a1400] disabled:opacity-80"
+            style={{ background: "linear-gradient(180deg, #ffe27a, #ff9a1f)", boxShadow: "0 5px 0 #9a4b00, 0 0 30px rgba(255,160,40,0.4)" }}
+          >
+            {locked ? "Engines hot — waiting for the grid…" : `Start engines (${Math.max(0, autoLeft)})`}
+          </motion.button>
+        </div>
+      </div>
+
+      <div className="relative grid gap-3 md:grid-cols-2">
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-3 text-[12px] leading-relaxed text-white/80">
+          <div className="mb-1 font-bold text-white">How to race</div>
+          <b>Drift</b> (hold Space / DRIFT while turning) to charge blue → orange → purple mini-turbos. Hold throttle as the
+          last red light goes out for a <b>rocket start</b>. Press drift in the air off a ramp for a <b>trick boost</b>. Tuck in behind a rival to
+          <b> slipstream</b>. Grab stardust (up to 10) for top speed. 3 races, points 15-12-10-8-6-4-2-1.
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+          <div className="mb-1 text-[12px] font-bold text-white">Items</div>
+          <div className="grid grid-cols-4 gap-1.5">
+            {showcase.map((id) => (
+              <div key={id} className="flex flex-col items-center text-center text-[9px] font-semibold text-white/75">
+                <ItemIcon id={id} className="size-9" />
+                {ITEMS[id].name}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Starfield() {
+  const [stars] = useState(() =>
+    Array.from({ length: 70 }, (_, i) => ({ x: (i * 37.7) % 100, y: (i * 61.3) % 100, s: 1 + ((i * 7) % 3), d: 2 + (i % 5) })),
+  );
+  return (
+    <div className="pointer-events-none fixed inset-0 -z-0 overflow-hidden">
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(140,70,255,0.35),transparent_60%),radial-gradient(ellipse_at_bottom_right,rgba(255,90,209,0.25),transparent_55%)]" />
+      {stars.map((s, i) => (
+        <motion.span
+          key={i}
+          className="absolute rounded-full bg-white"
+          style={{ left: `${s.x}%`, top: `${s.y}%`, width: s.s, height: s.s }}
+          animate={{ opacity: [0.2, 1, 0.2] }}
+          transition={{ duration: s.d, repeat: Infinity, delay: i * 0.05 }}
+        />
+      ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Challenge setup                                                    */
+/* ------------------------------------------------------------------ */
+
+function Setup() {
+  const { submit, cancel, settings: initial } = useSetup();
+  const start = parseSettings(initial);
+  const [cup, setCup] = useState<string>(start.cup.id.startsWith("single:") ? start.cup.id.slice(7) : start.cup.id);
+  const [cc, setCc] = useState<SpeedClass>(start.cc);
+  const [laps, setLaps] = useState(start.laps);
+  const [busy, setBusy] = useState(false);
+  const single = TRACKS.some((t) => t.id === cup);
+  const name = single ? trackById(cup).name : (CUPS.find((c) => c.id === cup)?.name ?? "Solar Cup");
+
+  const send = () => {
+    setBusy(true);
+    const settings: { [key: string]: string | number } = single ? { track: cup, cc, laps } : { cup, cc, laps };
+    submit(settings, `${name} · ${cc}cc · ${laps} laps`).catch(() => setBusy(false));
+  };
+
+  const option = (selected: boolean) =>
+    `rounded-2xl border-2 px-3 py-2 text-left text-sm font-bold transition ${selected ? "border-[#ffd166] bg-[#ffd166]/15" : "border-white/15 bg-white/5"}`;
+
+  return (
+    <div className="mx-auto flex h-full max-w-lg flex-col gap-4 overflow-y-auto px-5 py-6 text-white">
+      <h1 className="text-3xl font-black italic">Set up the race</h1>
+      <section className="flex flex-col gap-2">
+        <div className="text-xs font-bold uppercase tracking-wider text-white/60">Grand Prix</div>
+        {CUPS.map((c) => (
+          <button key={c.id} type="button" className={option(cup === c.id)} onClick={() => setCup(c.id)}>
+            {c.icon} {c.name}
+            <span className="block text-xs font-medium text-white/60">{c.tracks.map((t) => trackById(t).name).join(" → ")}</span>
+          </button>
+        ))}
+        <div className="mt-1 text-xs font-bold uppercase tracking-wider text-white/60">Single race</div>
+        <div className="grid grid-cols-2 gap-2">
+          {TRACKS.map((t) => (
+            <button key={t.id} type="button" className={option(cup === t.id)} onClick={() => setCup(t.id)}>
+              {t.name}
+            </button>
+          ))}
+        </div>
+      </section>
+      <section className="flex flex-col gap-2">
+        <div className="text-xs font-bold uppercase tracking-wider text-white/60">Speed class</div>
+        <div className="grid grid-cols-3 gap-2">
+          {SPEED_CLASSES.map((s) => (
+            <button key={s.cc} type="button" className={option(cc === s.cc)} onClick={() => setCc(s.cc)}>
+              {s.label}
+              <span className="block text-xs font-medium text-white/60">{s.blurb}</span>
+            </button>
+          ))}
+        </div>
+      </section>
+      <section className="flex flex-col gap-2">
+        <div className="text-xs font-bold uppercase tracking-wider text-white/60">Laps per race</div>
+        <div className="grid grid-cols-5 gap-2">
+          {[1, 2, 3, 4, 5].map((n) => (
+            <button key={n} type="button" className={option(laps === n)} onClick={() => setLaps(n)}>
+              {n}
+            </button>
+          ))}
+        </div>
+      </section>
+      <div className="mt-auto flex gap-2">
+        <button type="button" className="rounded-2xl border border-white/20 px-4 py-3 font-bold" onClick={() => cancel().catch(() => {})}>
+          Cancel
+        </button>
+        <button type="button" disabled={busy} className="flex-1 rounded-2xl bg-gradient-to-b from-[#ffe27a] to-[#ff9a1f] px-4 py-3 font-black italic text-[#2a1400]" onClick={send}>
+          Challenge · {name}
+        </button>
+      </div>
+    </div>
+  );
+}

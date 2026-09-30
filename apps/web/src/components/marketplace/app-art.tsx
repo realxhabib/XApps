@@ -371,6 +371,43 @@ function DrawnArt({ app, className }: { app: AppManifest; className?: string }) 
         </div>
       );
     }
+    case "nova-rally":
+      // A rocket racer banking round a ringed planet, leaving a light trail.
+      return (
+        <div className={className} aria-hidden>
+          <div className="relative flex size-full items-center justify-center py-2">
+            <svg viewBox="0 0 160 110" className="h-full overflow-visible">
+              <defs>
+                <radialGradient id="nr-art-planet" cx="0.35" cy="0.3">
+                  <stop offset="0" stopColor="#ffc59a" />
+                  <stop offset="1" stopColor="#c2461f" />
+                </radialGradient>
+                <linearGradient id="nr-art-trail" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0" stopColor={b} stopOpacity="0" />
+                  <stop offset="1" stopColor={b} />
+                </linearGradient>
+              </defs>
+              {[[18, 16], [140, 22], [30, 92], [128, 96], [70, 8], [150, 64]].map(([x, y], i) => (
+                <circle key={i} cx={x} cy={y} r={1.4} fill="#fff" opacity={0.8} />
+              ))}
+              <circle cx="80" cy="56" r="28" fill="url(#nr-art-planet)" />
+              <ellipse cx="80" cy="58" rx="62" ry="15" fill="none" stroke={a} strokeWidth="3" opacity="0.8" />
+              <motion.g
+                animate={reduced ? { x: 0 } : { x: [-50, 40, -50] }}
+                transition={reduced ? { duration: 0 } : { duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
+              >
+                <path d="M30 78 Q55 70 76 72" fill="none" stroke="url(#nr-art-trail)" strokeWidth="5" strokeLinecap="round" />
+                <g transform="translate(84 71) rotate(-8)">
+                  <path d="M-12 -5 L8 -4 Q16 0 8 4 L-12 5 Z" fill="#fff" stroke="#1b0b3a" strokeWidth="1.6" />
+                  <path d="M-10 -5 L-15 -10 L-5 -5 Z M-10 5 L-15 10 L-5 5 Z" fill={a} />
+                  <ellipse cx="1" cy="-1" rx="4" ry="2.4" fill="#46e6ff" />
+                  <path d="M-12 -3 L-19 0 L-12 3 Z" fill="#ffb347" />
+                </g>
+              </motion.g>
+            </svg>
+          </div>
+        </div>
+      );
     case "mini-golf":
       return (
         <div className={className} aria-hidden>
