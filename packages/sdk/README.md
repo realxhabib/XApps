@@ -166,6 +166,8 @@ xapps.ui.lockGestures(board);
 board.addEventListener("pointermove", draw);           // no page drag while drawing
 ```
 
+Mouse look: the frame's sandbox includes `allow-pointer-lock`, so a first-person game can call `canvas.requestPointerLock()` from a click (browsers only grant it on a user gesture) and read `movementX`/`movementY`; Esc releases it (`pointerlockchange`).
+
 ## Matches for 2–8 players
 
 Everything in this section is additive: 1v1 apps written for v1 keep working unchanged (`opponent`, `submit`, `onEnd` behave as before).

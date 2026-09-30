@@ -408,6 +408,67 @@ function DrawnArt({ app, className }: { app: AppManifest; className?: string }) 
           </div>
         </div>
       );
+    case "frontline":
+      // First-person down a container lane: tracers fly, the crosshair blooms, a hit marker pops.
+      return (
+        <div className={className} aria-hidden>
+          <div className="relative flex size-full items-center justify-center overflow-hidden">
+            <svg viewBox="0 0 200 110" preserveAspectRatio="xMidYMid slice" className="absolute inset-0 size-full">
+              <defs>
+                <linearGradient id="fl-art-sky" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stopColor="#3d6f9c" />
+                  <stop offset="0.7" stopColor="#e6d6b8" />
+                </linearGradient>
+                <linearGradient id="fl-art-ground" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stopColor="#bba98b" />
+                  <stop offset="1" stopColor="#6f624f" />
+                </linearGradient>
+              </defs>
+              <rect width="200" height="64" fill="url(#fl-art-sky)" />
+              <rect y="62" width="200" height="48" fill="url(#fl-art-ground)" />
+              {/* Container lanes converging on the horizon. */}
+              <path d="M0 18 L78 50 L78 66 L0 110 Z" fill="#9c4a33" />
+              <path d="M0 18 L78 50 L78 66 L0 110 Z" fill="none" stroke="#000" strokeOpacity="0.25" />
+              <path d="M200 26 L122 52 L122 66 L200 110 Z" fill="#3f6f95" />
+              <path d="M78 50 L92 55 L92 64 L78 66 Z" fill="#c99a46" />
+              <path d="M122 52 L108 56 L108 64 L122 66 Z" fill="#3b7d74" />
+              {Array.from({ length: 7 }).map((_, i) => (
+                <path key={i} d={`M${6 + i * 10} ${21 + i * 4.2} L${6 + i * 10} ${106 - i * 5.6}`} stroke="#000" strokeOpacity="0.14" strokeWidth="1.2" />
+              ))}
+              {/* Rifle, bottom right. */}
+              <path d="M150 110 L162 84 L196 70 L200 74 L200 110 Z" fill="#2a2d31" />
+              <path d="M160 86 L188 74 L190 78 L163 90 Z" fill="#3c4046" />
+            </svg>
+            {[0, 1, 2].map((i) => (
+              <motion.span
+                key={i}
+                className="absolute h-[2px] w-10 origin-right rounded-full"
+                style={{ right: "22%", bottom: "30%", background: `linear-gradient(90deg, transparent, ${a})`, rotate: "-24deg" }}
+                animate={{ x: [0, -70], y: [0, -32], opacity: [0, 1, 0] }}
+                transition={loop(0.5, 0.9 + i * 0.12)}
+              />
+            ))}
+            <motion.div
+              className="absolute left-1/2 top-[52%] size-0"
+              animate={{ scale: [1, 1.7, 1] }}
+              transition={loop(1.6, 0.9)}
+            >
+              {[0, 90, 180, 270].map((r) => (
+                <span key={r} className="absolute h-[2px] w-2.5 bg-white shadow-[0_0_3px_#000]" style={{ transform: `rotate(${r}deg) translateX(6px)`, transformOrigin: "0 50%" }} />
+              ))}
+            </motion.div>
+            <motion.div
+              className="absolute left-1/2 top-[52%] size-0"
+              animate={{ opacity: [0, 0, 1, 0], scale: [0.8, 0.8, 1.15, 1.3] }}
+              transition={loop(1.6, 0.9)}
+            >
+              {[45, 135, 225, 315].map((r) => (
+                <span key={r} className="absolute h-[2.5px] w-2 rounded-full" style={{ background: b, transform: `rotate(${r}deg) translateX(7px)`, transformOrigin: "0 50%" }} />
+              ))}
+            </motion.div>
+          </div>
+        </div>
+      );
     case "cup-pong": {
       // A triangle of red cups seen from the thrower; a ball lobs in and the front cup splashes.
       const cups = [
