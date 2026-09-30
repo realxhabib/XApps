@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Game, idleIntent, type GameTransport, type Intent, type SeatInfo } from "./game";
 import { MAPS } from "./map";
-import type { Packet } from "./net";
+import { RELAY_HZ, RELAY_INTERP_MS, type Packet } from "./net";
 import { parseDoc, type MatchDoc } from "./rules";
 
 /** A deterministic stand-in for `xapps.random.fork(label)`. */
@@ -48,20 +48,56 @@ interface Wire {
   at: number;
 }
 
-function table(seats: SeatInfo[], opts: { teams?: number; lim?: number; dur?: number; drop?: (w: Wire) => boolean } = {}) {
+type Via = "direct" | "relay";
+
+interface TableOptions {
+  teams?: number;
+  lim?: number;
+  dur?: number;
+  drop?: (w: Wire) => boolean;
+  /**
+   * How packets travel between two players, like `xapps.room.direct`: direct (40 ms), or over the
+   * room (120 ms, fast packets at most RELAY_HZ a second per sender, urgent ones always).
+   * Without it the transport reports no links (the old room-only path).
+   */
+  via?: (a: string, b: string) => Via;
+}
+
+function table(seats: SeatInfo[], opts: TableOptions = {}) {
   const shared = new SharedState();
   const inFlight: Wire[] = [];
   const games = new Map<string, Game>();
   const humans = seats.filter((s) => !s.isBot);
-  for (const me of humans) {
+  const lastRelay = new Map<string, number>();
+  const sent = { direct: 0, relay: 0 };
+
+  /** (Re)joins a player. `clockBase`: their page loaded then, so their clock reads `now - clockBase`. */
+  const join = (me: SeatInfo, clockBase = 0) => {
+    // A reloaded page's clock starts over: shift everything stamped with it.
+    const restamp = (p: Packet): Packet => {
+      if (!clockBase) return p;
+      p.t -= clockBase;
+      for (const row of p.e ?? []) if (row[1] === 0 && row.length === 16) row[15]! -= clockBase;
+      return p;
+    };
     const transport: GameTransport = {
       canWrite: true,
-      send: (payload) => {
+      send: (payload, urgent) => {
+        let relayed = false;
         for (const other of humans) {
           if (other.id === me.id) continue;
-          inFlight.push({ to: games.get(other.id)!, from: me.id, payload: structuredClone(payload), at: clock + 40 });
+          const via = opts.via?.(me.id, other.id) ?? "direct";
+          if (via === "relay" && !urgent && clock - (lastRelay.get(me.id) ?? -1e9) < 1000 / RELAY_HZ) continue;
+          if (via === "relay") relayed = true;
+          else sent.direct++;
+          inFlight.push({ to: games.get(other.id)!, from: me.id, payload: restamp(structuredClone(payload)), at: clock + (via === "relay" ? 120 : 40) });
+        }
+        if (relayed) {
+          sent.relay++;
+          if (!urgent) lastRelay.set(me.id, clock);
         }
       },
+      link: opts.via ? (id) => ({ via: opts.via!(me.id, id), rtt: null }) : undefined,
       update: (fn) => shared.update(fn),
     };
     const g = new Game({
@@ -80,7 +116,9 @@ function table(seats: SeatInfo[], opts: { teams?: number; lim?: number; dur?: nu
     });
     games.set(me.id, g);
     shared.games.push(g);
-  }
+    return g;
+  };
+  for (const me of humans) join(me);
   const intents = new Map<string, Intent>();
   const gone = new Set<string>();
   const step = async (ms: number) => {
@@ -97,7 +135,7 @@ function table(seats: SeatInfo[], opts: { teams?: number; lim?: number; dur?: nu
       await Promise.resolve();
     }
   };
-  return { games, shared, step, intents, gone };
+  return { games, shared, step, intents, gone, join, sent };
 }
 
 const seat = (id: string, s: number, isBot = false): SeatInfo => ({ id, seat: s, name: id, handle: id, isBot, avatarUrl: null });
@@ -275,5 +313,134 @@ describe("two clients over the room", () => {
     await step(1200);
     expect(cara.me!.hp).toBe(100);
     expect(cara.me!.alive).toBe(true);
+  });
+});
+
+describe("direct connections and the relay fallback", () => {
+  it("a player whose packets come over the relay (8 Hz, slower) is drawn further back and stays visible", async () => {
+    const { games, step, sent } = table([seat("alice", 0), seat("bob", 1)], { via: () => "relay" });
+    const alice = games.get("alice")!;
+    const bob = games.get("bob")!;
+    await step(200);
+    faceOff(alice, bob);
+    await step(2000);
+    const bobOnAlice = alice.bySeat.get(1)!;
+    expect(bobOnAlice.alive).toBe(true);
+    expect(Math.hypot(bobOnAlice.body.x - 20, bobOnAlice.body.z + 15)).toBeLessThan(0.05);
+    expect(bobOnAlice.interp).toBeGreaterThan(RELAY_INTERP_MS - 20);
+    // At most RELAY_HZ packets a second per player over the room.
+    expect(sent.relay / 2.2 / 2).toBeLessThanOrEqual(RELAY_HZ + 0.5);
+    expect(alice.hud().scores.find((r) => r.id === "bob")!.link).toEqual({ via: "relay", rtt: null });
+  });
+
+  it("the kill still lands exactly once when every packet goes over the relay", async () => {
+    const { games, shared, step, intents } = table([seat("alice", 0), seat("bob", 1)], { via: () => "relay" });
+    const alice = games.get("alice")!;
+    const bob = games.get("bob")!;
+    await step(200);
+    faceOff(alice, bob);
+    await step(800);
+    intents.set("alice", AIM_FIRE);
+    await step(1500);
+    intents.set("alice", idleIntent());
+    await step(1500);
+    expect(parseDoc(shared.state)!.k).toHaveLength(1);
+    expect(alice.kills.has("1:0")).toBe(true);
+    expect(bob.kills.has("1:0")).toBe(true);
+    expect(alice.log.kills).toBe(1);
+  });
+
+  it("switching from direct to relay mid-match never hides the other player", async () => {
+    let via: Via = "direct";
+    const { games, step } = table([seat("alice", 0), seat("bob", 1)], { via: () => via });
+    const alice = games.get("alice")!;
+    const bob = games.get("bob")!;
+    await step(200);
+    faceOff(alice, bob);
+    await step(600);
+    const bobOnAlice = alice.bySeat.get(1)!;
+    expect(bobOnAlice.interp).toBeLessThan(110);
+    via = "relay";
+    for (let i = 0; i < 40; i++) {
+      await step(50);
+      expect(bobOnAlice.alive).toBe(true);
+      expect(Math.hypot(bobOnAlice.body.x - 20, bobOnAlice.body.z + 15)).toBeLessThan(0.05);
+    }
+    expect(bobOnAlice.interp).toBeGreaterThan(180);
+    via = "direct";
+    await step(2000);
+    expect(bobOnAlice.interp).toBeLessThan(115);
+  });
+
+  it("an online player whose packets stop is held where we last saw them; one who left is hidden", async () => {
+    let cut = false;
+    const { games, step } = table([seat("alice", 0), seat("bob", 1)], { drop: (w) => cut && w.from === "bob" });
+    const alice = games.get("alice")!;
+    const bob = games.get("bob")!;
+    alice.setOnline(["alice", "bob"]);
+    await step(200);
+    faceOff(alice, bob);
+    await step(600);
+    cut = true;
+    await step(6000);
+    const bobOnAlice = alice.bySeat.get(1)!;
+    expect(bobOnAlice.alive).toBe(true);
+    expect(Math.hypot(bobOnAlice.body.x - 20, bobOnAlice.body.z + 15)).toBeLessThan(0.05);
+    alice.setOnline(["alice"]);
+    await step(50);
+    expect(bobOnAlice.alive).toBe(false);
+  });
+
+  it("a player who reloads (their clock and event ids restart) shows up where they are, and their hits count", async () => {
+    const { games, step, intents, join } = table([seat("alice", 0), seat("bob", 1)]);
+    const alice = games.get("alice")!;
+    let bob = games.get("bob")!;
+    await step(200);
+    // Bob lands a shot first, so Alice has seen (and acked) his old event ids and hit times.
+    faceOff(bob, alice);
+    await step(600);
+    intents.set("bob", AIM_FIRE);
+    await step(16);
+    intents.set("bob", idleIntent());
+    await step(600);
+    expect(alice.me!.alive).toBe(true);
+    expect(alice.me!.hp).toBeLessThan(100);
+    await step(8000); // regenerated; the old events have expired
+    expect(alice.me!.alive).toBe(true);
+    expect(alice.me!.hp).toBe(100);
+
+    // Bob reloads: a new page, whose clock starts at 0.
+    bob = join(seat("bob", 1), clock);
+    await step(300);
+    faceOff(bob, alice);
+    Object.assign(bob.me!.body, { x: 22, z: -27 });
+    await step(600);
+    const bobOnAlice = alice.bySeat.get(1)!;
+    expect(bobOnAlice.alive).toBe(true);
+    expect(Math.hypot(bobOnAlice.body.x - 22, bobOnAlice.body.z + 27)).toBeLessThan(0.05);
+    // Aim again from the new spot.
+    bob.me!.yaw = Math.atan2(-(20 - 22), -(-15 + 27));
+    intents.set("bob", AIM_FIRE);
+    await step(250);
+    intents.set("bob", idleIntent());
+    await step(600);
+    expect(alice.me!.hp).toBeLessThan(100);
+  });
+
+  it("a local soldier whose death reaches us from the ledger only (we reloaded first) moves on to its next life", async () => {
+    const { games, shared, step } = table([seat("alice", 0), seat("bob", 1)]);
+    const alice = games.get("alice")!;
+    const bob = games.get("bob")!;
+    await step(200);
+    expect(bob.me!.life).toBe(0);
+    // Bob's previous page load died in life 0, but the kill reached the ledger after he rejoined.
+    await shared.update((raw) => {
+      const doc = parseDoc(raw)!;
+      return { ...doc, k: [...doc.k, [1, 0, 0, 0, 0, 100]] };
+    });
+    await step(600);
+    expect(bob.me!.life).toBe(1);
+    expect(bob.me!.alive).toBe(true);
+    expect(alice.bySeat.get(1)!.alive).toBe(true);
   });
 });

@@ -1,9 +1,13 @@
 /**
  * Wire format and the pieces of netcode that don't need a renderer.
  *
- * One room event type, "s", sent by every seated client at ~15 Hz (and a
- * little sooner when there's a reliable event to deliver), never more than
- * 20 per second (the SDK allows 30). Each packet carries:
+ * One packet, sent by every seated client at ~15 Hz (and a little sooner
+ * when there's a reliable event to deliver), never more than 20 per second.
+ * Packets travel over direct WebRTC data channels (`xapps.room.direct`):
+ * the fast channel normally, the reliable one for a packet with new events.
+ * A peer without a direct path gets them over the XApps room instead, at
+ * most RELAY_HZ a second (the room has a message quota), and spectators get
+ * that relayed copy too. Each packet carries:
  *
  *   t  the sender's clock (ms)
  *   p  one row per soldier the sender owns (itself, plus bots it drives)
@@ -17,11 +21,18 @@
  * interpolated between snapshots, extrapolated briefly when packets drop.
  */
 
+import type { Json } from "@xapps/sdk";
 import type { KillRec } from "./rules";
 
 export const NET_HZ = 15;
 export const MAX_PER_SECOND = 20;
+/** Fast packets per second over the room, when a peer has no direct path. */
+export const RELAY_HZ = 8;
+/** Packets with new events may go ahead of that (ordered/reliable) this often. */
+export const URGENT_PER_SECOND = 4;
 export const INTERP_MS = 100;
+/** Relayed packets come slower and jitter more: draw those players further in the past. */
+export const RELAY_INTERP_MS = 220;
 export const EXTRAPOLATE_MS = 220;
 export const EVENT_TTL_MS = 8000;
 export const MAX_EVENTS_PER_PACKET = 12;
@@ -153,6 +164,8 @@ export class ReliableOut {
 
   /** A peer (by seat) has everything up to `id`. */
   ack(peerSeat: number, id: number): void {
+    // An ack past anything we sent is for an earlier page load of ours (we reloaded): ignore it.
+    if (id > this.lastId) return;
     if (id > (this.acked.get(peerSeat) ?? 0)) this.acked.set(peerSeat, id);
   }
 
@@ -191,6 +204,14 @@ export class ReliableOut {
 export class ReliableIn {
   private contiguous = 0;
   private readonly seen = new Set<number>();
+
+  /**
+   * A receiver that joins mid-stream (we, or they, reloaded) starts at the lowest id of the first
+   * events it gets: senders resend everything still pending, so nothing earlier is coming.
+   */
+  startAt(id: number): void {
+    if (this.contiguous === 0 && this.seen.size === 0 && id > 1) this.contiguous = id - 1;
+  }
 
   /** True the first time `id` arrives. */
   accept(id: number): boolean {
@@ -250,6 +271,51 @@ export class SendBudget {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Transport                                                              */
+/* ---------------------------------------------------------------------- */
+
+/** How a peer's packets travel: a direct data channel, the room (relay), or not decided yet. */
+export interface PeerLink {
+  via: "direct" | "relay" | "connecting";
+  /** Round trip over the direct path (ms). */
+  rtt: number | null;
+}
+
+/** The part of `xapps.room.direct()` packets need. */
+export interface PacketMesh {
+  send(data: Json, options?: { reliable?: boolean }): void;
+  status(peerId: string): "connecting" | "direct" | "relay" | "closed";
+  rtt(peerId: string): number | null;
+}
+
+/**
+ * Carries packets over the direct mesh (which falls back to the room per
+ * peer). A packet with new events goes on the reliable channel, a few times
+ * a second at most, so a firefight on the relay can't flood the room; the
+ * events are resent until acked anyway.
+ */
+export class PacketLink {
+  private mesh: PacketMesh | null = null;
+  private readonly urgent = new SendBudget(URGENT_PER_SECOND);
+
+  attach(mesh: PacketMesh | null): void {
+    this.mesh = mesh;
+  }
+
+  send(packet: Packet, urgent: boolean, now: number): void {
+    if (!this.mesh) return;
+    const reliable = urgent && this.urgent.take(now);
+    this.mesh.send(packet as unknown as Json, reliable ? { reliable: true } : undefined);
+  }
+
+  link(peerId: string): PeerLink | null {
+    const status = this.mesh?.status(peerId);
+    if (!status || status === "closed") return null;
+    return { via: status, rtt: status === "direct" ? (this.mesh?.rtt(peerId) ?? null) : null };
+  }
+}
+
+/* ---------------------------------------------------------------------- */
 /* Interpolation                                                          */
 /* ---------------------------------------------------------------------- */
 
@@ -258,15 +324,27 @@ export interface Snapshot extends SoldierState {
   t: number;
 }
 
+/** Their clock went back this far: a new page load (it restarts at 0), not a late packet. */
+export const CLOCK_RESET_MS = 5000;
+
 /** Maps one sender's clock to ours: offset = our receive time − their send time, tracking the minimum. */
 export class ClockSync {
   private offset: number | null = null;
+  private lastT = -Infinity;
 
-  sample(senderT: number, localNow: number): void {
+  /** Returns true when the sender's clock restarted (they reloaded): anything keyed to their old clock is stale. */
+  sample(senderT: number, localNow: number): boolean {
     const o = localNow - senderT;
+    if (senderT < this.lastT - CLOCK_RESET_MS) {
+      this.offset = o;
+      this.lastT = senderT;
+      return true;
+    }
+    this.lastT = Math.max(this.lastT, senderT);
     if (this.offset === null || o < this.offset) this.offset = o;
     // Drift up slowly (their clock or the route can get slower).
     else this.offset += (o - this.offset) * 0.02;
+    return false;
   }
 
   /** Our time → their clock. */

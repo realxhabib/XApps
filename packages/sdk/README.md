@@ -1,6 +1,6 @@
 # @xapps/sdk
 
-Build multiplayer apps for **XApps**, the social app marketplace on X: 1v1 duels, 2–8 player tables, team games, turn-based games that last days, and games with their own challenge setup. The SDK is a small bridge (~44 KB minified / ~15 KB gzipped including the standalone mock host, zero dependencies) between your app, running in a sandboxed iframe, and the XApps host. The host gives your app:
+Build multiplayer apps for **XApps**, the social app marketplace on X: 1v1 duels, 2–8 player tables, team games, turn-based games that last days, and games with their own challenge setup. The SDK is a small bridge (~66 KB minified / ~22 KB gzipped including the standalone mock host and WebRTC mesh, zero dependencies) between your app, running in a sandboxed iframe, and the XApps host. The host gives your app:
 
 - **Identity**: every player is signed in with X (`handle`, `name`, `avatarUrl`).
 - **Realtime rooms**: `room.send` / `room.on`, plus presence.
@@ -94,6 +94,7 @@ More hooks: `useUser()`, `useStandalone()`, `useMatch()`, `usePresence()`, `useR
 | `ready()` · `onStart(fn)` · `onUpdate(fn)` · `onEnd(fn)` · `forfeit()` | Lifecycle |
 | `submit({ score?, data?, display? })` · `submitFor(botId, …)` | `display` is `{kind:"text",title?,body}`, `{kind:"svg",svg,alt}`, `{kind:"image",url,alt}`, `{kind:"video",url,alt,poster?}`, `{kind:"audio",url,alt,cover?}` or `{kind:"gallery",items:[{url,alt}]}` (2–6 items). See [Media uploads](#media-uploads) |
 | `room.send(type, payload)` · `room.on(type, fn)` · `room.onAny(fn)` · `room.onPresence(fn)` | ≤ 8 KB payloads, ≤ 30 messages/s |
+| `room.direct(options?)` | Direct WebRTC connections to the other players for high-rate traffic, falling back to the room per player. See [Direct connections](#direct-connections-webrtc) |
 | `ui.setStatus` · `ui.setScores` · `ui.setTurn` · `ui.toast` · `ui.celebrate` · `ui.haptic` | Host UI (`setScores`/`setTurn` are match HUD only) |
 | `ui.resize(height)` · `ui.autoResize({ element?, intervalMs? })` | Tell the host your content height (CSS px, clamped to 120–2000) so it can size the frame it shows you in, e.g. the challenge setup sheet. `autoResize` watches `document.documentElement` (don't pin `html`/`body` to `height: 100%`) with a `ResizeObserver`, sends at most one update per 100 ms and returns a stop function. React: `useAutoResize()` |
 | `social.share(text, url?)` | Opens the X composer. The player always confirms the post. |
@@ -332,6 +333,47 @@ The core validates params and refuses by purpose and role (read from `context()`
 
 The `file` of a `media.upload` comes from the app's window, so it is a `Blob` of *another realm*: `instanceof Blob` is false on the host. Use `isBlobLike()` (duck-typed), `mediaKindOf(mime)` and `mediaProblem(file)` from `@xapps/sdk/host`; `displayProblem(display)`, `statsProblem(values, defs?)`, `statLeaderboardProblem(key, limit?, defs?)`, `achievementProblem(id, defs?)` and `aggregateStat(aggregate, previous, value)` are there too. When `context().app.stats` / `.achievements` are set, the core also refuses undeclared stat keys and achievement ids.
 
+
+## Direct connections (WebRTC)
+
+The room is fine for moves, chat and the occasional update, but it is a shared, rate-limited broadcast: every message counts against the platform's realtime quota once per receiver. A shooter or racer sending its state 15 times a second from 8 players is ~840 deliveries a second, and past the quota messages get dropped. `xapps.room.direct()` connects the players' browsers directly with WebRTC data channels instead. The room only carries the connection setup (an offer, an answer and a few batches of ICE candidates per pair of players), then the traffic goes browser to browser: faster, and free.
+
+```ts
+const xapps = await connect();
+const net = xapps.room.direct({ relayHz: 8 });   // one per page; match purpose only
+
+net.onMessage((data, from, via) => applyState(from, data)); // via: "direct" | "relay"
+xapps.onStart(() => {
+  setInterval(() => net.send(myState()), 1000 / 15);        // fast: unordered, never retransmitted
+});
+net.send({ hit: target }, { reliable: true });              // ordered and retransmitted
+net.send({ ping: 1 }, { to: someone.id });                  // one player
+net.onStatus((id, status) => showBadge(id, status));        // "connecting" | "direct" | "relay" | "closed"
+net.rtt(someone.id);                                        // round trip in ms while direct
+// when the match view goes away:
+net.close();
+```
+
+- **Who**: a full mesh between the seated human players who are online (presence); bots and absent players are skipped, and a player who shows up later (or reloads) is connected when they do. The lower player id makes the offer, so both sides never offer at once.
+- **Two channels per player**: `fast` (unordered, `maxRetransmits: 0`: for state that the next update replaces) and `reliable` (ordered). A fast message is dropped rather than queued while the channel has more than `maxBufferedBytes` (64 KB) waiting.
+- **Fallback**: while a player isn't reachable directly (still connecting, or ICE failed: some networks need a TURN server), `send` relays that message through the room for them, transparently: `onMessage` gets it either way, deduplicated. Players without a direct path share one room message per send, addressed to them. Fast messages over the room are throttled to `relayHz` per second (default 10, `0` never relays them); reliable ones always go.
+- **Recovery**: a connection that fails (or stays `disconnected` for 4 s, or stops answering pings) falls back to the room at once and is rebuilt in the background, with backoff; a player who reloads is reconnected as soon as their new page says hello.
+- **ICE servers**: public STUN (Google, Cloudflare) by default. Pass your own with `iceServers`, including TURN (`{ urls: "turn:turn.example.com:3478", username, credential }`) for players behind strict NATs such as some mobile carriers.
+- **Spectators** can't send, so they get no connections; with `spectators: true` every send is also relayed (throttled the same way) to the spectators who are watching.
+- **Mock host / sandbox**: nothing special to do. With only bots at the table there is nobody to connect to. The iframe sandbox doesn't restrict WebRTC.
+- **Wire**: room event type `xapps.direct` is reserved for the signaling and relayed messages; don't use it yourself. Messages are JSON like everything else in the room (≤ 8 KB when they have to be relayed).
+
+| Option | Default | |
+| --- | --- | --- |
+| `iceServers` | public STUN | `RTCIceServer[]` for every connection |
+| `relayHz` | `10` | Max fast messages a second over the room fallback (all relayed players at once) |
+| `spectators` | `false` | Also relay every send to online spectators |
+| `connectTimeoutMs` | `12000` | Give up on an attempt (and relay) after this long |
+| `pingMs` | `2000` | Ping interval over the reliable channel (round trip + liveness) |
+| `maxBufferedBytes` | `65536` | Drop fast messages while more than this is queued |
+| `rtc` | `RTCPeerConnection` | A stand-in constructor (tests, polyfills); `null` relays everything |
+
+`createDirectMesh(client, options)` is the same thing as a plain export.
 
 ## Media & data
 

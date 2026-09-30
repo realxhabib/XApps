@@ -27,6 +27,7 @@ import {
   INTERP_MS,
   MAX_PER_SECOND,
   NET_HZ,
+  RELAY_INTERP_MS,
   ClockSync,
   ReliableIn,
   ReliableOut,
@@ -39,6 +40,7 @@ import {
   type HitEvent,
   type NetEvent,
   type Packet,
+  type PeerLink,
   type ShotRow,
   type SoldierState,
 } from "./net";
@@ -188,6 +190,8 @@ export interface Soldier {
   eyeOffset: number;
   // Remote.
   buf: SnapshotBuffer;
+  /** How far in the past we draw them (ms): longer while their packets come over the relay. */
+  interp: number;
   view: SoldierState;
   lastPacketAt: number;
   hasNet: boolean;
@@ -238,8 +242,10 @@ export interface GameFx {
 }
 
 export interface GameTransport {
-  /** Room send (rate limits are respected by the caller). */
-  send(payload: Packet): void;
+  /** To the other players (rate limits are respected by the caller). `urgent`: it carries new events. */
+  send(payload: Packet, urgent: boolean): void;
+  /** How a player's packets reach us, when known (direct data channel or the room). */
+  link?(playerId: string): PeerLink | null;
   /** Shared state read-modify-write. */
   update(fn: (raw: unknown) => MatchDoc | undefined): Promise<unknown>;
   canWrite: boolean;
@@ -432,6 +438,7 @@ export class Game {
       lastStepFx: 0,
       eyeOffset: 0,
       buf: new SnapshotBuffer(),
+      interp: INTERP_MS,
       view: { seat: p.seat, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, flags: F_DEAD, weapon: 0, life: 0, hp: MAX_HP, loadout: 0 },
       lastPacketAt: 0,
       hasNet: false,
@@ -971,6 +978,9 @@ export class Game {
     const victim = this.bySeat.get(victimSeat);
     const killer = this.bySeat.get(killerSeat);
     if (victim && !victim.local) victim.deadLife = Math.max(victim.deadLife, life);
+    // Our soldier died in this life on an earlier page load (we reloaded before the ledger had it):
+    // move on to the next life, or everyone else keeps it hidden as dead.
+    else if (victim?.local && life >= victim.life) victim.life = life + 1;
     const entry: FeedEntry = { key: killKey(victimSeat, life), killer: killerSeat, victim: victimSeat, weapon, headshot: !!(flags & KILL_HEADSHOT), at: now };
     this.feed.push(entry);
     if (this.feed.length > 8) this.feed.shift();
@@ -1159,6 +1169,7 @@ export class Game {
     const urgent = this.out.hasNewerThan(this.lastSentEventId) && now - this.lastSendAt > 45;
     if (now - this.lastSendAt < period && !urgent) return;
     if (!this.budget.take(now)) return;
+    const fresh = this.out.hasNewerThan(this.lastSentEventId);
     this.lastSendAt = now;
     this.lastSentEventId = this.out.lastId;
     const p = this.soldiers.filter((s) => s.local).map((s) => packSoldier(this.stateOf(s)));
@@ -1172,7 +1183,7 @@ export class Game {
     const acks: number[] = [];
     for (const [seat, inbox] of this.inboxes) if (inbox.ack > 0) acks.push(seat, inbox.ack);
     if (acks.length) packet.a = acks;
-    this.transport.send(packet);
+    this.transport.send(packet, fresh);
   }
 
   private stateOf(s: Soldier): SoldierState {
@@ -1217,7 +1228,7 @@ export class Game {
       sync = new ClockSync();
       this.clocks.set(fromId, sync);
     }
-    sync.sample(pkt.t, now);
+    if (sync.sample(pkt.t, now)) this.senderRestarted(from);
     from.lastPacketAt = now;
 
     // Soldiers.
@@ -1261,11 +1272,30 @@ export class Game {
       inbox = new ReliableIn();
       this.inboxes.set(from.seat, inbox);
     }
+    const ids = (pkt.e ?? []).map((row) => (Array.isArray(row) ? row[0] : undefined)).filter((id): id is number => Number.isInteger(id));
+    if (ids.length) inbox.startAt(Math.min(...ids));
     for (const row of pkt.e ?? []) {
       const d = decodeEvent(row);
       if (!d || !inbox.accept(d.id)) continue;
       this.onEvent(d.ev, from, now);
     }
+  }
+
+  /**
+   * `from` reloaded: their clock and event ids start over. Drop what we keyed to the old ones,
+   * or their new snapshots would look older than the last one (and be ignored: a frozen,
+   * then invisible player), their new events would look like duplicates, and their hits
+   * would fail the fire-rate check.
+   */
+  private senderRestarted(from: Soldier): void {
+    const theirs = this.soldiers.filter((s) => !s.local && (s === from || (s.isBot && this.driver === from.id)));
+    for (const s of theirs) {
+      s.buf = new SnapshotBuffer();
+      s.shotQueue.length = 0;
+    }
+    // Hit timing (fire-rate check) is on their clock too.
+    for (const victim of this.soldiers) if (victim.local) for (const s of theirs) victim.hitsFrom.delete(s.seat);
+    this.inboxes.delete(from.seat);
   }
 
   private onEvent(ev: NetEvent, from: Soldier, now: number): void {
@@ -1313,7 +1343,10 @@ export class Game {
       s.alive = false;
       return;
     }
-    const renderT = remoteNow - INTERP_MS;
+    // Relayed packets come slower (RELAY_HZ) and jitter more: draw those players further back.
+    const via = this.transport.link ? (owner ? this.transport.link(owner)?.via : undefined) : "direct";
+    s.interp += ((via === "direct" ? INTERP_MS : RELAY_INTERP_MS) - s.interp) * Math.min(1, dt * 2);
+    const renderT = remoteNow - s.interp;
     const prevLife = s.view.life;
     const wasAlive = s.alive;
     const px = s.body.x;
@@ -1410,6 +1443,23 @@ export class Game {
   /* HUD                                                                    */
   /* ---------------------------------------------------------------------- */
 
+  private linkKey = "";
+
+  /** Re-reads how every player is connected (direct / relay, ping) and refreshes the HUD if it changed. */
+  refreshLinks(): void {
+    if (!this.transport.link) return;
+    const key = this.soldiers
+      .filter((s) => !s.isBot && !s.isMe)
+      .map((s) => {
+        const l = this.transport.link?.(s.id);
+        return l ? `${l.via}${l.rtt === null ? "" : Math.round(l.rtt / 5)}` : "-";
+      })
+      .join(",");
+    if (key === this.linkKey) return;
+    this.linkKey = key;
+    this.bump();
+  }
+
   bump(): void {
     this.hudVersion++;
     this.listeners.forEach((l) => l());
@@ -1432,7 +1482,7 @@ export class Game {
       remainingMs: this.remainingMs(),
       limit: this.doc.lim,
       teams: this.teams,
-      scores: this.soldiers.map((s) => ({ seat: s.seat, id: s.id, name: s.name, avatarUrl: s.avatarUrl, handle: s.handle, isBot: s.isBot, isMe: s.isMe, team: s.team, kills: t.kills.get(s.seat) ?? 0, deaths: t.deaths.get(s.seat) ?? 0, alive: s.alive, online: s.isBot || s.isMe || !this.online || this.online.has(s.id) })),
+      scores: this.soldiers.map((s) => ({ seat: s.seat, id: s.id, name: s.name, avatarUrl: s.avatarUrl, handle: s.handle, isBot: s.isBot, isMe: s.isMe, team: s.team, kills: t.kills.get(s.seat) ?? 0, deaths: t.deaths.get(s.seat) ?? 0, alive: s.alive, online: s.isBot || s.isMe || !this.online || this.online.has(s.id), link: s.isBot || s.isMe ? null : (this.transport.link?.(s.id) ?? null) })),
       teamScores: t.team,
       me: me
         ? {
@@ -1503,7 +1553,7 @@ export interface HudState {
   remainingMs: number;
   limit: number;
   teams: number;
-  scores: { seat: number; id: string; name: string; handle: string; avatarUrl: string | null; isBot: boolean; isMe: boolean; team: number | null; kills: number; deaths: number; alive: boolean; online: boolean }[];
+  scores: { seat: number; id: string; name: string; handle: string; avatarUrl: string | null; isBot: boolean; isMe: boolean; team: number | null; kills: number; deaths: number; alive: boolean; online: boolean; link: PeerLink | null }[];
   teamScores: number[];
   me: {
     alive: boolean;

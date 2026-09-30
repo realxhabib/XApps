@@ -25,6 +25,18 @@ export {
   type TurnInfo,
 } from "./client";
 export { createRandom, randomId, type Random } from "./random";
+export {
+  createDirectMesh,
+  DEFAULT_ICE_SERVERS,
+  DIRECT_EVENT,
+  type DirectClient,
+  type DirectMesh,
+  type DirectOptions,
+  type DirectPeerInfo,
+  type DirectSendOptions,
+  type DirectStatus,
+  type DirectVia,
+} from "./direct";
 export { calmPage, lockGestures } from "./gestures";
 export {
   createMockHost,

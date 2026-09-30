@@ -22,6 +22,7 @@ import type { Callout, Engine } from "./engine";
 import type { Game, HudState } from "./game";
 import { GunGlyph, LoadoutPicker } from "./loadout";
 import { TouchControls } from "./touch";
+import type { PeerLink } from "./net";
 import type { Tier } from "./quality";
 import { RADAR_STREAK, formatClock } from "./rules";
 import type { Settings } from "./settings";
@@ -294,6 +295,7 @@ export function Hud({
               </button>
               {!touch && <p className="mt-2 text-center text-[11px] text-ink-400">WASD move · Shift sprint · C crouch · Space jump · Right mouse aim · R reload · 1/2 swap · Tab scores · Esc menu</p>}
               {game.solo && <p className="mt-1 text-center text-[11px] font-semibold text-ink-300">Practice is paused</p>}
+              <Connections hud={hud} />
               <SettingsPanel settings={settings} onSettings={onSettings} touch={touch} tier={tier} />
             </div>
           </motion.div>
@@ -582,6 +584,7 @@ function Scoreboard({ hud, game }: { hud: HudState; game: Game }) {
                   <span className="flex items-center gap-2">
                     <span className="size-2 rounded-full" style={{ background: hud.teams ? (r.team === (me?.team ?? 0) ? TEAM_COLORS[0] : TEAM_COLORS[1]) : SEAT_COLORS[r.seat % SEAT_COLORS.length] }} />
                     <span className={cn("max-w-40 truncate font-semibold", !r.online && "text-ink-400 line-through")}>{r.isBot ? r.name : `@${r.handle}`}</span>
+                    {r.link && r.online && <LinkBadge link={r.link} />}
                   </span>
                 </td>
                 <td className="py-1.5 text-right font-mono font-bold tabular">{r.kills}</td>
@@ -593,6 +596,40 @@ function Scoreboard({ hud, game }: { hud: HudState; game: Game }) {
         {over && <p className="mt-3 text-center text-xs text-ink-400">{game.docShared ? "Final scores are locked in" : "Waiting for the final scores"}…</p>}
       </div>
     </motion.div>
+  );
+}
+
+/** Pause menu: how each other player is connected (only in matches with other people). */
+function Connections({ hud }: { hud: HudState }) {
+  const rows = hud.scores.filter((r) => r.link && r.online);
+  if (!rows.length) return null;
+  return (
+    <ul className="mt-3 flex flex-wrap justify-center gap-x-3 gap-y-1 text-[11px] text-ink-300" aria-label="Connections">
+      {rows.map((r) => (
+        <li key={r.id} className="flex items-center gap-1">
+          <span className="max-w-28 truncate">@{r.handle}</span>
+          <LinkBadge link={r.link!} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** How that player's packets reach us: a direct connection (with ping) or the XApps room. */
+function LinkBadge({ link }: { link: PeerLink }) {
+  const label = link.via === "direct" ? (link.rtt !== null ? `direct ${Math.round(link.rtt)} ms` : "direct") : link.via === "relay" ? "relay" : "connecting";
+  const title = link.via === "direct" ? "Direct connection" : link.via === "relay" ? "No direct connection: relayed through XApps (slower updates)" : "Connecting directly…";
+  return (
+    <span
+      title={title}
+      data-link={link.via}
+      className={cn(
+        "shrink-0 rounded-full px-1.5 py-px font-mono text-[10px] font-semibold",
+        link.via === "direct" ? "bg-success/15 text-success" : link.via === "relay" ? "bg-gold/15 text-gold" : "bg-white/10 text-ink-300",
+      )}
+    >
+      {label}
+    </span>
   );
 }
 

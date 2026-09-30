@@ -2,7 +2,9 @@
 
 /**
  * A live match: builds the simulation from the table, mounts the engine on a
- * fresh canvas, forwards room traffic / presence / shared-state changes,
+ * fresh canvas, opens direct connections to the other players (packets go
+ * browser to browser, the room only relays for peers without a direct path),
+ * forwards their packets / presence / shared-state changes,
  * keeps the host HUD (scores, status) in step, unlocks achievements as they
  * happen, and submits once when the match ends (for you, and for the bots
  * this client drives).
@@ -23,6 +25,7 @@ import { detectTier, lower, type Tier } from "./quality";
 import { lineOfSight } from "./physics";
 import { formatClock, isWinner, parseDoc } from "./rules";
 import type { Settings } from "./settings";
+import { PacketLink, RELAY_HZ } from "./net";
 import { WEAPONS } from "./weapons";
 
 const TAG = "frontline";
@@ -68,13 +71,9 @@ function debugAim(game: Game, seat?: number): { seat: number; dist: number } | n
   return { seat: best.seat, dist: best.dist };
 }
 
-function createGame(xapps: XAppsClient, players: PlayerInfo[], me: PlayerInfo, spectator: boolean, settings: Settings): Game {
+function createGame(xapps: XAppsClient, players: PlayerInfo[], me: PlayerInfo, spectator: boolean, settings: Settings, link: PacketLink): Game {
   const humans = players.filter((p) => !p.isBot);
   const simAll = spectator && humans.length === 0;
-  const warn = (what: string) => (error: unknown) => {
-    if (error && typeof error === "object" && "code" in error && (error as { code: string }).code === "rate_limited") return;
-    console.warn(`[${TAG}] ${what} failed`, error);
-  };
   return new Game({
     map: MAPS[DEFAULT_MAP],
     seats: seatsOf(players),
@@ -90,9 +89,8 @@ function createGame(xapps: XAppsClient, players: PlayerInfo[], me: PlayerInfo, s
     },
     transport: {
       canWrite: !spectator,
-      send: (payload) => {
-        xapps.room.send("s", payload as never).catch(warn("room.send"));
-      },
+      send: (payload, urgent) => link.send(payload, urgent, performance.now()),
+      link: (id) => link.link(id),
       update: (fn) => xapps.state.update((raw) => fn(raw) as unknown as Json | undefined, { retries: 12 }),
     },
     initialState: xapps.state.current,
@@ -136,7 +134,8 @@ export function MatchView({ settings, onSettings }: { settings: Settings; onSett
   const xapps = useXApps();
   const { players, me, isSpectator } = usePlayers();
   const reduce = useReducedMotion() ?? false;
-  const [game] = useState(() => createGame(xapps, players, me, isSpectator, settings));
+  const [link] = useState(() => new PacketLink());
+  const [game] = useState(() => createGame(xapps, players, me, isSpectator, settings, link));
   const [touch] = useState(() => isTouchDevice());
   const [engine, setEngine] = useState<Engine | null>(null);
   const [failed, setFailed] = useState(false);
@@ -204,7 +203,21 @@ export function MatchView({ settings, onSettings }: { settings: Settings; onSett
     engine?.setTier(tier);
   }, [engine, tier]);
 
-  // Room traffic, presence and the shared state.
+  // Packets: direct to each player where WebRTC connects, over the room (RELAY_HZ) where it doesn't;
+  // spectators get the relayed copy. The room also carries the connection setup.
+  useEffect(() => {
+    const mesh = xapps.room.direct({ relayHz: RELAY_HZ, spectators: true });
+    link.attach(mesh);
+    const offMessage = mesh.onMessage((data, from) => game.onPacket(data, from, performance.now()));
+    const offStatus = mesh.onStatus(() => game.refreshLinks());
+    return () => {
+      offMessage();
+      offStatus();
+      link.attach(null);
+      mesh.close();
+    };
+  }, [game, link, xapps]);
+  // Clients from before direct connections sent every packet to the room as "s".
   useRoomEvent("s", (p, from) => game.onPacket(p, from, performance.now()));
   const online = usePresence();
   useEffect(() => game.setOnline(online), [game, online]);
@@ -242,6 +255,7 @@ export function MatchView({ settings, onSettings }: { settings: Settings; onSett
         xapps.ui.setStatus(isSpectator ? `Watching · ${status}` : status).catch(ignore);
       }
       if (game.me && game.phase === "live") unlockAchievements(xapps, earnedAchievements({ ...game.log, won: null }), TAG);
+      game.refreshLinks();
     }, 1000);
     return () => clearInterval(id);
   }, [game, xapps, isSpectator]);

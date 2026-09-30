@@ -222,6 +222,7 @@ const API: { group: string; rows: [string, string][] }[] = [
       ["xapps.room.send(type, payload)", `Broadcast JSON to the other players (≤ ${LIMITS.roomPayloadBytes / 1024} KB, ≤ ${LIMITS.roomMessagesPerSecond}/s).`],
       ["xapps.room.on(type, (payload, from) => …)", "Listen for one event type. Returns an unsubscribe function."],
       ["xapps.room.onPresence(fn) · room.online()", "Who's connected right now."],
+      ["xapps.room.direct(options?)", "Direct WebRTC connections to the other players, signaled over the room: send(data, { reliable?, to? }), onMessage, status. Falls back to the room per player when a direct path can't be made."],
       ["xapps.onReaction(fn)", "Emoji reactions players fire from the HUD."],
     ],
   },

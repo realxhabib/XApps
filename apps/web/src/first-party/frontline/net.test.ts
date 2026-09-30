@@ -6,9 +6,13 @@ import {
   EVENT_TTL_MS,
   F_CROUCH,
   F_DEAD,
+  CLOCK_RESET_MS,
   MAX_PER_SECOND,
   NET_HZ,
+  RELAY_HZ,
+  URGENT_PER_SECOND,
   ClockSync,
+  PacketLink,
   ReliableIn,
   ReliableOut,
   SendBudget,
@@ -20,6 +24,7 @@ import {
   unpackSoldier,
   type HitEvent,
   type Packet,
+  type PacketMesh,
   type SoldierState,
 } from "./net";
 
@@ -61,6 +66,7 @@ describe("wire format", () => {
     const bytes = new TextEncoder().encode(JSON.stringify(pkt)).length;
     expect(bytes).toBeLessThan(LIMITS.roomPayloadBytes / 3);
     expect(MAX_PER_SECOND).toBeLessThan(LIMITS.roomMessagesPerSecond);
+    expect(RELAY_HZ + URGENT_PER_SECOND).toBeLessThan(NET_HZ);
     expect(NET_HZ).toBeLessThanOrEqual(MAX_PER_SECOND);
     expect(parsePacket(JSON.parse(JSON.stringify(pkt)))).toEqual(pkt);
     expect(parsePacket({ t: "x", p: [] })).toBeNull();
@@ -115,6 +121,31 @@ describe("reliable events", () => {
     expect(inbox.ack).toBe(2);
     expect(inbox.accept(3)).toBe(true);
     expect(inbox.ack).toBe(4);
+  });
+
+  it("ignores acks past anything sent (an ack meant for our previous page load)", () => {
+    const out = new ReliableOut();
+    out.ack(1, 40);
+    out.push(kill(1), 0);
+    out.push(kill(2), 0);
+    expect(out.pending(10, [1]).map((r) => r[0])).toEqual([1, 2]);
+    out.ack(1, 1);
+    expect(out.pending(20, [1]).map((r) => r[0])).toEqual([2]);
+  });
+
+  it("a receiver joining mid-stream starts at the first id it gets, and acks from there", () => {
+    const inbox = new ReliableIn();
+    inbox.startAt(41);
+    expect(inbox.accept(41)).toBe(true);
+    expect(inbox.accept(42)).toBe(true);
+    expect(inbox.ack).toBe(42);
+    inbox.startAt(90); // only before anything arrived
+    expect(inbox.accept(43)).toBe(true);
+    expect(inbox.ack).toBe(43);
+    const fresh = new ReliableIn();
+    fresh.startAt(1);
+    expect(fresh.accept(1)).toBe(true);
+    expect(fresh.ack).toBe(1);
   });
 
   it("end to end over a lossy link: every event is applied exactly once", () => {
@@ -182,6 +213,20 @@ describe("interpolation", () => {
     expect(out.x).toBe(40);
   });
 
+  it("clock sync notices a sender whose clock restarted (they reloaded), not a late packet", () => {
+    const c = new ClockSync();
+    expect(c.sample(600_000, 5000)).toBe(false);
+    expect(c.sample(600_066, 5066)).toBe(false);
+    // A relayed packet overtaken by direct ones: a bit older, not a restart.
+    expect(c.sample(599_500, 5100)).toBe(false);
+    expect(c.toRemote(6000)).toBeGreaterThan(600_980);
+    // The page reloaded: its clock reads ~2 s now.
+    expect(c.sample(2000, 9000)).toBe(true);
+    expect(c.toRemote(9100)).toBe(2100);
+    expect(c.sample(2066, 9066)).toBe(false);
+    expect(c.sample(2066 - CLOCK_RESET_MS + 10, 9100)).toBe(false);
+  });
+
   it("clock sync tracks the fastest path and drifts slowly", () => {
     const c = new ClockSync();
     expect(c.toRemote(5)).toBeNull();
@@ -191,5 +236,50 @@ describe("interpolation", () => {
     c.sample(1133, 5300); // slower, a nudge only
     expect(c.toRemote(6000)).toBeGreaterThan(6000 - 4054 - 10);
     expect(c.toRemote(6000)).toBeLessThan(6000 - 4054);
+  });
+});
+
+describe("packet link (direct mesh)", () => {
+  function fakeMesh(status: Record<string, ReturnType<PacketMesh["status"]>>) {
+    const sent: { data: unknown; reliable: boolean }[] = [];
+    const mesh: PacketMesh = {
+      send: (data, options) => sent.push({ data, reliable: !!options?.reliable }),
+      status: (id) => status[id] ?? "closed",
+      rtt: (id) => (status[id] === "direct" ? 42 : null),
+    };
+    return { mesh, sent };
+  }
+  const pkt: Packet = { t: 1, p: [] };
+
+  it("sends nothing before a mesh is attached", () => {
+    const link = new PacketLink();
+    expect(() => link.send(pkt, true, 0)).not.toThrow();
+    expect(link.link("bob")).toBeNull();
+  });
+
+  it("puts packets with new events on the reliable channel, a few a second at most", () => {
+    const { mesh, sent } = fakeMesh({});
+    const link = new PacketLink();
+    link.attach(mesh);
+    link.send(pkt, false, 0);
+    // A burst of URGENT_PER_SECOND, then URGENT_PER_SECOND a second.
+    for (let t = 0; t < 3000; t += 50) link.send(pkt, true, t);
+    expect(sent[0]!.reliable).toBe(false);
+    const reliable = sent.filter((s) => s.reliable).length;
+    expect(reliable).toBeGreaterThanOrEqual(URGENT_PER_SECOND * 3);
+    expect(reliable).toBeLessThanOrEqual(URGENT_PER_SECOND * 4 + 1);
+    expect(sent).toHaveLength(61); // the rest still go, on the fast channel
+  });
+
+  it("reports each player's link for the HUD", () => {
+    const { mesh } = fakeMesh({ bob: "direct", cara: "relay", dan: "connecting" });
+    const link = new PacketLink();
+    link.attach(mesh);
+    expect(link.link("bob")).toEqual({ via: "direct", rtt: 42 });
+    expect(link.link("cara")).toEqual({ via: "relay", rtt: null });
+    expect(link.link("dan")).toEqual({ via: "connecting", rtt: null });
+    expect(link.link("gone")).toBeNull();
+    link.attach(null);
+    expect(link.link("bob")).toBeNull();
   });
 });

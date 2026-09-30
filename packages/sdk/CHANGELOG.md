@@ -4,6 +4,28 @@ All notable changes to `@xapps/sdk`. The wire protocol is still version 1:
 every release is additive, and apps built against an older SDK keep working on
 newer hosts (and the other way round, minus the new features).
 
+## 0.8.0
+
+Direct connections.
+
+- **`xapps.room.direct(options?)`** opens WebRTC data channels between the
+  match's players and uses the room only to relay the signaling (offer,
+  answer, trickled ICE candidates in batches, under the reserved event type
+  `xapps.direct`). `send(data, { reliable?, to? })` goes over the `fast`
+  channel (unordered, no retransmits) or the `reliable` one (ordered);
+  `onMessage((data, from, via) => …)`, `status(id)` / `onStatus` (`connecting`,
+  `direct`, `relay`, `closed`), `rtt(id)`, `peers()`, `close()`. Also exported
+  as `createDirectMesh(client, options)`.
+- **Falls back per player**: while a player has no direct path (connecting,
+  or ICE failed without TURN), sends to them go through the room, one message
+  for all of them, fast ones throttled to `relayHz` (default 10/s); receivers
+  get both paths through `onMessage`, deduplicated. Failed or silent
+  connections are rebuilt with backoff; a reloaded player is reconnected at
+  once. `spectators: true` also relays to watchers.
+- Public STUN by default; `iceServers` for your own STUN/TURN. Client-side
+  only: no new host method, works on any host and the mock host. Match
+  purpose only (`forbidden` otherwise).
+
 ## 0.7.0
 
 Touch & drag.
