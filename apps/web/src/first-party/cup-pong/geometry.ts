@@ -7,10 +7,10 @@
  * - **Thrower frame** (physics, trajectories): the thrower stands behind
  *   z = 0 looking down +z; the target rack sits at the far end (z ≈ TABLE_L).
  *   x is to the thrower's right, y is up, the table top is y = 0.
- * - **World** (rendering): seat 0 throws from the z = 0 end, seat 1 from the
- *   z = TABLE_L end. Seat 1's thrower frame is seat 0's rotated 180° about
- *   the table's centre, so `toWorld(seat, p)` is either identity or
- *   (x, z) → (−x, TABLE_L − z).
+ * - **World** (rendering, three.js right-handed): seat 0 throws from the
+ *   z = 0 end looking down +z, where the thrower's right is world −x; seat 1
+ *   throws from the z = TABLE_L end. So `toWorld(seat, p)` is
+ *   (x, z) → (−x, z) for seat 0 and (x, TABLE_L − z) for seat 1.
  * - **Rack coordinates** (the shared state): a cup is `(u, v)` with `v` its
  *   distance from its own table end (inwards) and `u` its lateral offset as
  *   the *shooter* sees it. In the shooter's frame that cup stands at
@@ -198,7 +198,7 @@ export function cupInShooterFrame(cup: { u: number; v: number }): { x: number; z
 
 /** Thrower frame → world for the given throwing seat. */
 export function toWorld(thrower: Seat, p: Vec3): Vec3 {
-  return thrower === 0 ? { x: p.x, y: p.y, z: p.z } : { x: -p.x, y: p.y, z: TABLE_L - p.z };
+  return thrower === 0 ? { x: -p.x, y: p.y, z: p.z } : { x: p.x, y: p.y, z: TABLE_L - p.z };
 }
 
 /**

@@ -111,7 +111,8 @@ describe("re-rack layouts", () => {
   });
 
   it("seat 1's frame is seat 0's turned around; each rack sits at its defender's end", () => {
-    expect(toWorld(1, { x: 0.1, y: 0.3, z: 0.5 })).toEqual({ x: -0.1, y: 0.3, z: 2.44 - 0.5 });
+    expect(toWorld(0, { x: 0.1, y: 0.3, z: 0.5 })).toEqual({ x: -0.1, y: 0.3, z: 0.5 });
+    expect(toWorld(1, { x: 0.1, y: 0.3, z: 0.5 })).toEqual({ x: 0.1, y: 0.3, z: 2.44 - 0.5 });
     const apex = openingRack()[9]!;
     expect(cupWorld(1, apex).z).toBeGreaterThan(2); // bob's cups: far from alice
     expect(cupWorld(0, apex).z).toBeLessThan(0.5); // alice's cups: at her end
