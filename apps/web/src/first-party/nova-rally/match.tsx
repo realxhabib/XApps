@@ -355,6 +355,7 @@ export function MatchView({ choice, trial, onExit, onRetry }: { choice: ShipChoi
           onDrift={(on) => (touch.current.drift = on)}
           onBrake={(on) => (touch.current.brake = on)}
           onFire={() => rt.fire()}
+          onWake={() => rt.audio.resume()}
         />
       ) : null}
       {!isTouch && hud.phase === "intro" && hud.raceIndex === 0 ? (
@@ -374,6 +375,7 @@ function TouchControls(props: {
   onDrift: (on: boolean) => void;
   onBrake: (on: boolean) => void;
   onFire: () => void;
+  onWake: () => void;
 }) {
   const btn = "grid select-none place-items-center rounded-full border-[3px] border-white/85 font-black italic text-white shadow-[0_4px_0_rgba(0,0,0,0.45)] active:scale-95";
   return (
@@ -402,6 +404,7 @@ function TouchControls(props: {
           className={`${btn} size-14 bg-[rgba(255,70,70,0.55)] text-xs`}
           onPointerDown={(e) => {
             e.stopPropagation();
+            props.onWake();
             props.onBrake(true);
           }}
           onPointerUp={() => props.onBrake(false)}
@@ -415,6 +418,7 @@ function TouchControls(props: {
             className={`${btn} size-16 bg-[rgba(120,80,255,0.6)] text-sm`}
             onPointerDown={(e) => {
               e.stopPropagation();
+              props.onWake();
               props.onFire();
             }}
           >
@@ -424,6 +428,7 @@ function TouchControls(props: {
             className={`${btn} size-20 bg-[rgba(255,150,40,0.6)] text-base`}
             onPointerDown={(e) => {
               e.stopPropagation();
+              props.onWake();
               props.onDrift(true);
             }}
             onPointerUp={() => props.onDrift(false)}

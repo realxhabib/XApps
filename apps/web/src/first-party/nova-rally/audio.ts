@@ -614,7 +614,8 @@ function theme(name: MusicTheme): Theme {
 
 const mtof = (m: number): number => 440 * Math.pow(2, (m - 69) / 12);
 const fold = (n: number): number => ((n % 12) + 12) % 12;
-const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
+/** NaN-safe: a NaN reaching an AudioParam silences the whole graph for good, so it becomes `lo`. */
+const clamp = (v: number, lo: number, hi: number): number => (!Number.isFinite(v) ? lo : v < lo ? lo : v > hi ? hi : v);
 /** 808-style metallic hat partials (Hz). */
 const HAT_PARTIALS = [205.3, 304.4, 369.6, 522.7, 540, 800];
 
@@ -758,6 +759,7 @@ export class RaceAudio {
     this.noise = null;
     this.impulse = null;
     this.pulse = null;
+    this.probe = null;
     if (ctx) void ctx.close().catch(() => {});
   }
 
@@ -804,6 +806,11 @@ export class RaceAudio {
       const trim = ctx.createGain();
       trim.gain.value = 0.9;
       master.connect(comp).connect(trim).connect(ctx.destination);
+      // Tap the output so the watchdog can spot a poisoned (NaN) graph.
+      const probe = ctx.createAnalyser();
+      probe.fftSize = 256;
+      trim.connect(probe);
+      this.probe = probe;
       this.master = master;
 
       const len = ctx.sampleRate * 2;
@@ -924,6 +931,10 @@ export class RaceAudio {
       u.rate = clamp(rate, 0.5, 2);
       u.pitch = clamp(pitch, 0, 2);
       u.volume = 0.8;
+      u.onend = () => {
+        this.lastKick = 0;
+        this.keepAlive();
+      };
       synth.speak(u);
     } catch {
       // Speech is a nicety.
@@ -956,8 +967,55 @@ export class RaceAudio {
   }
 
   /** Dip the music a little while the announcer talks. */
+  private probe: AnalyserNode | null = null;
+  private probeBuf = new Float32Array(256);
+  private lastKick = 0;
+  private lastProbe = 0;
+
+  /**
+   * Keeps sound alive mid-race. Speech synthesis (the announcer) can push the
+   * audio context into "interrupted" (iOS Safari) or "suspended" while the
+   * voice keeps talking, and a NaN anywhere poisons the compressor into
+   * permanent silence. Called every frame (engine) and every scheduler tick.
+   */
+  private keepAlive(): void {
+    const ctx = this.ctx;
+    if (!ctx || typeof performance === "undefined") return;
+    const now = performance.now();
+    const state = ctx.state as string;
+    if (state !== "running" && state !== "closed" && now - this.lastKick > 800) {
+      this.lastKick = now;
+      void ctx.resume().catch(() => {});
+    }
+    if (this.probe && state === "running" && now - this.lastProbe > 2000) {
+      this.lastProbe = now;
+      this.probe.getFloatTimeDomainData(this.probeBuf);
+      for (let i = 0; i < this.probeBuf.length; i += 8) {
+        if (!Number.isFinite(this.probeBuf[i]!)) {
+          this.rebuild();
+          return;
+        }
+      }
+    }
+  }
+
+  /** Throws the graph away and starts a fresh one with the same music. */
+  private rebuild(): void {
+    const theme = this.curTheme ?? this.wantTheme;
+    const listening = !!this.off;
+    this.detach();
+    if (listening) this.attach();
+    this.wantTheme = theme;
+    this.ensure();
+  }
+
   private duckMusicForVoice(on: boolean): void {
     this.speaking = on;
+    // The voice may have interrupted the audio session: wake it back up.
+    if (!on) {
+      this.lastKick = 0;
+      this.keepAlive();
+    }
     if (this.musicBus && this.ctx) {
       const level = this.musicVol * MUSIC_BUS * (on ? 0.55 : 1);
       this.musicBus.gain.setTargetAtTime(level, this.ctx.currentTime, on ? 0.04 : 0.25);
@@ -1266,6 +1324,7 @@ export class RaceAudio {
     airborne: boolean;
     muted?: boolean;
   }): void {
+    this.keepAlive();
     const ctx = this.ctx;
     if (!ctx || !this.engBus) return;
     if (!this.eng) this.eng = this.buildEngine(ctx, this.engBus);
@@ -1806,6 +1865,7 @@ export class RaceAudio {
   }
 
   private tick(): void {
+    this.keepAlive();
     const ctx = this.ctx;
     const th = this.song;
     if (!ctx || !th) return;
