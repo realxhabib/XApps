@@ -679,7 +679,7 @@ const STYLED: Partial<Record<RoadStyle, (p: RoadPaint) => void>> = {
 };
 
 /** The original panel layout, used by the planet surfaces (Mars plates, lunar slabs, Europa ice). */
-function paintClassic({ g, ge, gr, look, rand, W, H }: RoadPaint): void {
+function paintClassic({ g, gr, look, rand, W, H }: RoadPaint): void {
   const cols = look.style === "slabs" ? 3 : 4;
   const rows = look.style === "slabs" ? 3 : 2;
   const pw = (W - 48) / cols;
