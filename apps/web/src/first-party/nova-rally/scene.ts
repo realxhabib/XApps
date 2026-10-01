@@ -66,6 +66,7 @@ import {
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { buildEnvironment, type EnvironmentHandle } from "./environments";
 import { BOX_LANES } from "./items";
+import { rampHeight } from "./physics";
 import type { RaceRuntime, Racer } from "./race";
 import { buildShip, type ShipModel } from "./ships";
 import { paintDot, paintItemFace, paintSign, rng } from "./textures";
@@ -380,6 +381,7 @@ interface ProjectileView {
 
 const DRIFT_SPARK = [new Color("#ffffff"), new Color("#48b4ff"), new Color("#ff9a2e"), new Color("#c35cff")];
 const UP = new Vector3(0, 1, 0);
+const CONFETTI = ["#ff5ad1", "#ffd166", "#5dffb0", "#48b4ff", "#ffffff", "#ff7a2f"].map((c) => new Color(c));
 
 export class RaceScene {
   readonly renderer: WebGLRenderer;
@@ -409,6 +411,7 @@ export class RaceScene {
   private readonly camUp = new Vector3(0, 1, 0);
   private readonly camFwd = new Vector3(0, 0, -1);
   private camInit = false;
+  private camFocusIdx = -1;
   private fov = 66;
   private width = 1;
   private height = 1;
@@ -1008,7 +1011,7 @@ export class RaceScene {
         const side = i === 0 ? -1 : 1;
         sp.position.copy(pos).addScaledVector(ship.fwd, -1.45).addScaledVector(this.v2.crossVectors(ship.fwd, f.up).normalize(), side * 0.9).addScaledVector(f.up, 0.2);
         const flick = 0.75 + Math.random() * 0.5;
-        sp.scale.setScalar((tier === 0 ? 0.35 : 0.45 + tier * 0.15) * flick);
+        sp.scale.setScalar((tier === 0 ? 0.4 : 0.75 + tier * 0.22) * flick);
         sp.material.color.copy(DRIFT_SPARK[tier]!).multiplyScalar(tier === 0 ? 0.6 : 2.4);
         sp.material.depthTest = false;
         sp.renderOrder = 8;
@@ -1076,12 +1079,12 @@ export class RaceScene {
         for (const side of [-1, 1]) {
           const wp = pos.clone().addScaledVector(ship.fwd, -1.3).addScaledVector(right, side * 1.0).addScaledVector(f.up, -0.2);
           wp.addScaledVector(f.up, 0.35);
-          for (let k = 0; k < (ship.driftTier > 0 ? 4 + ship.driftTier * 2 : 1); k++) {
+          for (let k = 0; k < (ship.driftTier > 0 ? 6 + ship.driftTier * 3 : 2); k++) {
             const vel = new Vector3((Math.random() - 0.5) * 5, 0, (Math.random() - 0.5) * 5)
               .addScaledVector(f.up, 3 + Math.random() * 6)
               .addScaledVector(ship.fwd, ship.speed * 0.75 - 10 - Math.random() * 6)
               .addScaledVector(right, side * (2 + Math.random() * 4));
-            this.particles.emit(wp, vel, col, ship.driftTier > 0 ? 0.22 + ship.driftTier * 0.05 : 0.2, 0.18 + Math.random() * 0.22, 1.2);
+            this.particles.emit(wp, vel, col, ship.driftTier > 0 ? 0.3 + ship.driftTier * 0.08 : 0.2, 0.22 + Math.random() * 0.3, 1.2);
           }
         }
       }
@@ -1228,8 +1231,7 @@ export class RaceScene {
         view.mesh.rotation.y += 0.05;
         view.mesh.scale.setScalar(1 + Math.sin(this.time * 8) * 0.08);
       } else if (p.kind === "singularity") {
-        const inner = view.mesh.children[1];
-        if (inner) inner.rotation.z = this.time * 4;
+        this.singTime.value = this.time;
         view.mesh.scale.setScalar(p.boom >= 0 ? 1 + p.boom * 9 : 1);
         view.mesh.lookAt(this.camera.position);
         if (!this.reduced) {
@@ -1298,14 +1300,68 @@ export class RaceScene {
       halo.position.y = -0.3;
       g.add(halo);
     } else {
-      const hole = new Mesh(new SphereGeometry(1.4, 24, 16), new MeshBasicMaterial({ color: "#000000" }));
-      g.add(hole);
-      const disk = new Mesh(new RingGeometry(1.6, 3.6, 48), new MeshBasicMaterial({ color: new Color("#a066ff").multiplyScalar(2.5), transparent: true, opacity: 0.8, side: DoubleSide, blending: AdditiveBlending, depthWrite: false, toneMapped: false }));
+      // Black hole: a dark core, a bright photon ring facing you, a rim glow and a
+      // tilted, swirling accretion disk seen almost edge-on.
+      const m = this.singularityMats();
+      g.add(new Mesh(new SphereGeometry(1.4, 24, 16), m.hole));
+      const rim = new Mesh(new SphereGeometry(1.75, 24, 16), m.rim);
+      g.add(rim);
+      const photon = new Mesh(new RingGeometry(1.42, 1.54, 64), m.photon);
+      g.add(photon);
+      const disk = new Mesh(new RingGeometry(1.7, 5.2, 96, 1), m.disk);
+      disk.rotation.x = -1.18;
+      disk.name = "disk";
       g.add(disk);
-      const halo = new Mesh(new SphereGeometry(1.8, 24, 16), new MeshBasicMaterial({ color: new Color("#5a2aff").multiplyScalar(1.5), transparent: true, opacity: 0.3, blending: AdditiveBlending, depthWrite: false, toneMapped: false }));
-      g.add(halo);
     }
     return g;
+  }
+
+  private singMats: { hole: MeshBasicMaterial; rim: ShaderMaterial; photon: MeshBasicMaterial; disk: ShaderMaterial } | null = null;
+  private readonly singTime = { value: 0 };
+
+  private singularityMats() {
+    if (this.singMats) return this.singMats;
+    const hole = new MeshBasicMaterial({ color: "#000000" });
+    const rim = new ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: AdditiveBlending,
+      toneMapped: false,
+      vertexShader: `varying vec3 vN; varying vec3 vV;
+        void main() { vec4 mv = modelViewMatrix * vec4(position, 1.0); vN = normalize(normalMatrix * normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }`,
+      fragmentShader: `varying vec3 vN; varying vec3 vV;
+        void main() { float f = pow(clamp(1.0 - abs(dot(vN, vV)), 0.0, 1.0), 2.5); gl_FragColor = vec4(vec3(0.75, 0.45, 1.6) * f * 2.2, f); }`,
+    });
+    const photon = new MeshBasicMaterial({ color: new Color("#ffd9b0").multiplyScalar(1.6), transparent: true, opacity: 0.85, side: DoubleSide, blending: AdditiveBlending, depthWrite: false, toneMapped: false });
+    const disk = new ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      side: DoubleSide,
+      blending: AdditiveBlending,
+      toneMapped: false,
+      uniforms: { uTime: this.singTime },
+      vertexShader: `varying vec2 vP; void main() { vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `uniform float uTime; varying vec2 vP;
+        void main() {
+          float r = length(vP);
+          float t = clamp((r - 1.7) / 3.5, 0.0, 1.0);
+          float a = atan(vP.y, vP.x);
+          float swirl = 0.55 + 0.45 * sin(a * 3.0 - log(r) * 9.0 + uTime * 5.0);
+          float fine = 0.75 + 0.25 * sin(a * 11.0 - r * 7.0 + uTime * 9.0);
+          vec3 hot = vec3(1.6, 1.35, 1.1);
+          vec3 mid = vec3(1.4, 0.55, 1.2);
+          vec3 cool = vec3(0.35, 0.18, 0.9);
+          vec3 col = mix(hot, mid, smoothstep(0.0, 0.35, t));
+          col = mix(col, cool, smoothstep(0.35, 1.0, t));
+          // Doppler beaming: the side swinging toward you is brighter.
+          float beam = 0.65 + 0.55 * sin(a);
+          float alpha = (1.0 - t) * (1.0 - t) * swirl * fine * smoothstep(0.0, 0.06, t);
+          gl_FragColor = vec4(col * alpha * beam * 4.5, alpha);
+        }`,
+    });
+    this.shared.push(hole, rim, photon, disk);
+    this.singMats = { hole, rim, photon, disk };
+    return this.singMats;
   }
 
   private readonly fireballs: { mesh: Mesh; life: number; max: number; size: number }[] = [];
@@ -1540,6 +1596,15 @@ export class RaceScene {
       view.model.setGhost(1);
       view.model.celebrate(this.time);
     }
+    // Confetti drifting down over the steps.
+    if (!this.reduced) {
+      const side = new Vector3(1, 0, 0).applyQuaternion(this.podium.quaternion);
+      for (let k = 0; k < 5; k++) {
+        const p = this.podiumAnchor.clone().addScaledVector(side, (Math.random() - 0.5) * 14).add(new Vector3(0, 9 + Math.random() * 3, (Math.random() - 0.5) * 6));
+        const v = new Vector3((Math.random() - 0.5) * 2, -2.5 - Math.random() * 2, (Math.random() - 0.5) * 2);
+        this.particles.emit(p, v, CONFETTI[Math.floor(Math.random() * CONFETTI.length)]!, 0.22, 3 + Math.random(), 0.3);
+      }
+    }
     if (!this.reduced && Math.random() < 0.25) {
       const p = this.podiumAnchor.clone().add(new Vector3((Math.random() - 0.5) * 16, 8 + Math.random() * 6, (Math.random() - 0.5) * 8));
       this.burst(p, new Color().setHSL(Math.random(), 1, 0.6), 24, 12, 0.9);
@@ -1567,6 +1632,11 @@ export class RaceScene {
     const rt = this.rt;
     const track = this.track!;
     const r = rt.focus;
+    // Switching who we watch (spectating after a knockout): cut to them.
+    if (r.idx !== this.camFocusIdx) {
+      this.camFocusIdx = r.idx;
+      this.camInit = false;
+    }
     const ship = r.ship;
     const f = ship.frame;
     const pos = this.v1.copy(r.prevPos).lerp(ship.pos, rt.alpha).addScaledVector(f.up, 0.35);
@@ -1594,7 +1664,9 @@ export class RaceScene {
       const loc = locate(track, chasePos, ship.s + (lookBack ? dist : -dist), 30);
       const fr = frameAt(track, loc.s, this.camFrame);
       const d = Math.max(-fr.wallOffset + 0.8, Math.min(fr.wallOffset - 0.8, loc.d));
-      const h = Math.max(2.2, Math.min(8, loc.h));
+      // Ramps rise out of the road: stay well above their deck too.
+      const ramp = Math.max(rampHeight(track, loc.s, d), rampHeight(track, loc.s + 4, d), rampHeight(track, loc.s + 8, d));
+      const h = Math.max(2.2 + ramp * 1.6, Math.min(8, loc.h));
       if (d !== loc.d || h !== loc.h) chasePos.copy(fr.pos).addScaledVector(fr.right, d).addScaledVector(fr.up, h);
     }
     const chaseLook = new Vector3().copy(pos).addScaledVector(this.camFwd, lookBack ? -10 : 9).addScaledVector(this.camUp, 1.2);
@@ -1713,8 +1785,9 @@ export class RaceScene {
       const p = view.model.root.position.clone().addScaledVector(r.ship.frame.up, 2.6);
       const dist = p.distanceTo(this.camera.position);
       const ndc = p.clone().project(this.camera);
+      const ahead = this.v1.copy(p).sub(this.camera.position).dot(this.camera.getWorldDirection(this.v2)) > 2;
       const nearPlayer = r.ship.pos.distanceTo(focus.ship.pos) < 9;
-      const visible = !nearPlayer && this.rt.phase !== "podium" && ndc.z < 1 && dist < 90 && Math.abs(ndc.x) < 1.1 && Math.abs(ndc.y) < 1.1 && r.ship.cloak <= 0 && this.rt.phase !== "intro";
+      const visible = !nearPlayer && this.rt.phase !== "podium" && ahead && ndc.z < 1 && dist < 90 && Math.abs(ndc.x) < 0.95 && ndc.y > -0.6 && ndc.y < 0.95 && r.ship.cloak <= 0 && this.rt.phase !== "intro";
       out.push({ idx: r.idx, x: ((ndc.x + 1) / 2) * this.width, y: ((1 - ndc.y) / 2) * this.height, visible, dist });
     }
     return out;

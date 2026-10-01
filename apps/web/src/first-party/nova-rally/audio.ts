@@ -1,6 +1,10 @@
 /**
- * Nova Rally sound. Effects and music are synthesized with WebAudio (no
- * asset files); the announcer uses the browser's speech synthesis.
+ * Nova Rally sound. Effects and music are designed here as WebAudio synths and
+ * baked to MP3 by scripts/render-nova-audio.mjs (public/audio/nova-rally/):
+ * at runtime the effects play from one sprite and each course plays a ~1 min
+ * recorded song (main, lift, breakdown, full) — the live synth is only the
+ * fallback while files load. The engine stays live (it tracks speed), and the
+ * announcer uses the browser's speech synthesis.
  *
  * - `engine()` drives a continuous rocket engine (saw + square sub through a
  *   speed-tracking filter, filtered-noise rumble, a boost hiss with bright
@@ -281,6 +285,10 @@ const V = (o: Partial<VoiceDef> & { wave: Wave }): VoiceDef => ({
 const A = (o: Partial<ArpDef> & { wave: Wave }): ArpDef => ({ ...V({ perc: 0.08, ...o }), rate: o.rate ?? 1, oct: o.oct ?? 1 });
 
 /** Final-lap counter-melody voices. */
+type Section = "main" | "lift" | "break" | "full";
+/** Song form of the recorded tracks: one pass of the chord progression per section. */
+const SONG_FORM: readonly Section[] = ["main", "lift", "break", "full"];
+
 const COUNTER = V({ wave: "triangle", gain: 0.045, perc: 0.12, cutoff: 6000 });
 const COUNTER_CHIP = V({ wave: "square", gain: 0.025, perc: 0.08, cutoff: 8000 });
 
@@ -739,6 +747,8 @@ export class RaceAudio {
   private nextTime = 0;
   private arpIdx = 0;
   private finalLap = false;
+  /** Arrangement section for the step being scheduled (recordings play the full song form). */
+  private section: Section = "main";
 
   /** Follow the platform's sound toggle (call when the view mounts). */
   attach(): void {
@@ -842,16 +852,24 @@ export class RaceAudio {
     const six = 60 / (th.bpm * (finalLap ? 1.08 : 1)) / 4;
     const loop = total * six;
     const lead = 0.05;
-    const ctx = new OfflineAudioContext(2, Math.ceil(sampleRate * (lead + loop * 2 + 0.5)), sampleRate);
+    // The recording plays the whole song form; one extra pass of the last
+    // section first so reverb and echo tails carry across the loop point.
+    const form = SONG_FORM.length;
+    const ctx = new OfflineAudioContext(2, Math.ceil(sampleRate * (lead + loop * (form + 1) + 0.5)), sampleRate);
     const a = RaceAudio.offlineVoice(ctx);
     a.finalLap = finalLap;
     a.musicBus = ctx.createGain();
     a.musicBus.connect(ctx.destination);
     a.startTheme(name);
     a.stopScheduler();
-    for (let step = 0; step < total * 2; step++) a.scheduleStep(th, step % total, lead + step * six);
+    for (let step = 0; step < total * (form + 1); step++) {
+      const pass = Math.floor(step / total);
+      a.section = SONG_FORM[(pass + form - 1) % form]!;
+      a.scheduleStep(th, step % total, lead + step * six);
+    }
+    a.section = "main";
     const buffer = await ctx.startRendering();
-    return { buffer, loopStart: lead + loop, loopEnd: lead + loop * 2 };
+    return { buffer, loopStart: lead + loop, loopEnd: lead + loop * (form + 1) };
   }
 
   dispose(): void {
@@ -2123,29 +2141,40 @@ export class RaceAudio {
     const bar = Math.floor(step / 16);
     const s = step % 16;
     const [rawRoot, quality] = th.chords[bar];
-    const intense = this.finalLap;
-    const key = th.key + (intense ? 1 : 0); // final lap: up a semitone
+    const sec = this.section;
+    const brk = sec === "break";
+    const intense = this.finalLap || sec === "full";
+    const key = th.key + (this.finalLap ? 1 : 0); // final lap: up a semitone
     const root = fold(rawRoot);
     const iv = QUALITY[quality];
     const six = this.sixteenth(th);
     const dv: Voice = { ctx, out: bus.drums, t: time, p: 1 };
 
     // Drums.
-    if (th.kick[s] === "x") {
+    // Breakdown: drums drop out, then a snare build over the last two bars.
+    const build = brk && bar >= th.bars - 2;
+    if (!brk && th.kick[s] === "x") {
       this.mKick(dv, 0.6, th.chip);
       this.pump(bus.duck, time, th.duck, six);
-    }
-    const fill = th.fill && bar === th.bars - 1 && s >= 12;
-    if (th.snare[s] === "x" || fill) this.mSnare(dv, fill ? 0.14 + (s - 12) * 0.05 : 0.26, th.chip, th.clap && !fill);
+    } else if (brk && s === 0 && bar % 2 === 0) this.mKick(dv, 0.4, th.chip);
+    const fill = (th.fill || sec !== "main") && !brk && bar === th.bars - 1 && s >= 12;
+    if (build) {
+      const every = bar === th.bars - 1 ? (s >= 8 ? 1 : 2) : 4;
+      if (s % every === 0) this.mSnare(dv, 0.08 + ((bar - (th.bars - 2)) * 16 + s) * 0.006, th.chip, false);
+    } else if (!brk && (th.snare[s] === "x" || fill)) this.mSnare(dv, fill ? 0.14 + (s - 12) * 0.05 : 0.26, th.chip, th.clap && !fill);
     const h = th.hat[s];
-    if (h === "x") this.mHat(dv, s % 4 === 0 ? 0.065 : 0.05, false, th.chip);
-    else if (h === "o") this.mHat(dv, 0.05, true, th.chip);
+    if (brk) {
+      if (s % 4 === 2) this.mHat(dv, 0.02, false, th.chip);
+    } else if (h === "x") this.mHat(dv, s % 4 === 0 ? 0.065 : 0.05, false, th.chip);
+    else if (h === "o" || (sec === "lift" && s % 4 === 2)) this.mHat(dv, 0.05, true, th.chip);
     else if (h === "-" || (intense && s % 2 === 1)) this.mHat(dv, 0.022, false, th.chip);
-    if (step === 0) this.cymbal(dv, 0, 1.4, 0.05);
+    if (step === 0 && !brk) this.cymbal(dv, 0, 1.4, 0.05);
 
     // Bass.
     const b = th.bassSteps[s];
-    if (b !== null && b !== undefined) this.mBass(bus.out, time, th, key + root + b, th.bassLen[s] * six * 0.9);
+    if (brk) {
+      if (s === 0) this.mBass(bus.out, time, th, key + root, 8 * six);
+    } else if (b !== null && b !== undefined) this.mBass(bus.out, time, th, key + root + b + (sec === "lift" && s >= 8 && b === 0 ? 12 : 0), th.bassLen[s] * six * 0.9);
 
     // Chords.
     if (th.pad) {
@@ -2157,7 +2186,7 @@ export class RaceAudio {
     }
 
     // Arpeggio (ping-pong over two octaves of the chord).
-    if (th.arp && s % th.arp.rate === 0) {
+    if (th.arp && s % (brk ? th.arp.rate * 2 : th.arp.rate) === 0) {
       const tones = [...iv.slice(0, 3), ...iv.slice(0, 3).map((x) => x + 12)];
       const idx = this.arpIdx++ % (tones.length * 2 - 2);
       const pick = idx < tones.length ? tones[idx] : tones[tones.length * 2 - 2 - idx];
@@ -2167,7 +2196,11 @@ export class RaceAudio {
     // Lead hook.
     if (s % 2 === 0) {
       const ev = th.mel[bar * 8 + s / 2];
-      if (ev) this.mNote(time, key + th.leadOct + ev.n, ev.len * 2 * six * th.lead.legato, th.lead, bus.lead, bus.fx);
+      // The breakdown keeps only the second half of the hook (sparser, it breathes); the lift doubles it an octave up.
+      if (ev && !(brk && bar < th.bars / 2)) {
+        this.mNote(time, key + th.leadOct + ev.n, ev.len * 2 * six * th.lead.legato, th.lead, bus.lead, bus.fx);
+        if (sec === "lift" && !th.chip) this.mNote(time, key + th.leadOct + 12 + ev.n, ev.len * 2 * six * 0.6, COUNTER, bus.duck, bus.fx);
+      }
     }
 
     // Final-lap counter-melody: off-beat chord-tone bells an octave above the lead.

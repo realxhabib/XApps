@@ -12,6 +12,7 @@ import {
   ACESFilmicToneMapping,
   AdditiveBlending,
   BackSide,
+  BoxGeometry,
   BufferAttribute,
   BufferGeometry,
   CanvasTexture,
@@ -62,28 +63,112 @@ function deckTexture(): CanvasTexture {
   c.width = 512;
   c.height = 512;
   const g = c.getContext("2d")!;
-  g.fillStyle = "#15131f";
-  g.fillRect(0, 0, 512, 512);
-  // Deck plates with seams and hazard chevrons near the centre.
-  g.strokeStyle = "#232033";
-  g.lineWidth = 6;
-  for (let i = 0; i <= 512; i += 128) {
-    g.beginPath();
-    g.moveTo(i, 0);
-    g.lineTo(i, 512);
-    g.stroke();
-    g.beginPath();
-    g.moveTo(0, i);
-    g.lineTo(512, i);
-    g.stroke();
+  // Four deck plates per tile: alternating tones, brushed streaks, bevelled seams and corner bolts.
+  const tones = ["#1d1a2b", "#221f33", "#1a1828", "#201d30"];
+  for (let py = 0; py < 2; py++) {
+    for (let px = 0; px < 2; px++) {
+      const x = px * 256;
+      const y = py * 256;
+      g.fillStyle = tones[py * 2 + px]!;
+      g.fillRect(x, y, 256, 256);
+      g.globalAlpha = 0.05;
+      for (let k = 0; k < 60; k++) {
+        g.fillStyle = k % 2 ? "#ffffff" : "#000000";
+        g.fillRect(x, y + Math.random() * 256, 256, 1 + Math.random() * 2);
+      }
+      g.globalAlpha = 1;
+      g.fillStyle = "#0b0a12";
+      g.fillRect(x, y, 256, 5);
+      g.fillRect(x, y, 5, 256);
+      g.fillStyle = "rgba(255,255,255,0.08)";
+      g.fillRect(x + 5, y + 5, 251, 2);
+      g.fillRect(x + 5, y + 5, 2, 251);
+      for (const [bx, by] of [[18, 18], [238, 18], [18, 238], [238, 238]] as const) {
+        g.fillStyle = "#3a3650";
+        g.beginPath();
+        g.arc(x + bx, y + by, 5, 0, Math.PI * 2);
+        g.fill();
+        g.fillStyle = "rgba(255,255,255,0.18)";
+        g.beginPath();
+        g.arc(x + bx - 1.5, y + by - 1.5, 2, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
   }
+  // Grip pattern on one plate.
   g.fillStyle = "rgba(255,255,255,0.05)";
-  for (let k = 0; k < 3000; k++) g.fillRect(Math.random() * 512, Math.random() * 512, 1.5, 1.5);
+  for (let yy = 30; yy < 230; yy += 14) for (let xx = 286; xx < 490; xx += 14) g.fillRect(xx + ((yy / 14) % 2) * 7, yy, 7, 2.5);
+  g.fillStyle = "rgba(255,255,255,0.04)";
+  for (let k = 0; k < 2500; k++) g.fillRect(Math.random() * 512, Math.random() * 512, 1.5, 1.5);
   const t = new CanvasTexture(c);
   t.colorSpace = SRGBColorSpace;
   t.wrapS = RepeatWrapping;
   t.wrapT = RepeatWrapping;
-  t.repeat.set(8, 8);
+  t.repeat.set(10, 10);
+  t.anisotropy = 8;
+  return t;
+}
+
+/** Turntable top: machined concentric grooves, radial seams and a centre badge. */
+function tableTexture(): CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = 512;
+  c.height = 512;
+  const g = c.getContext("2d")!;
+  const grad = g.createRadialGradient(256, 256, 20, 256, 256, 256);
+  grad.addColorStop(0, "#3a3654");
+  grad.addColorStop(1, "#24213a");
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 512, 512);
+  for (let r = 24; r < 256; r += 6) {
+    g.strokeStyle = r % 48 === 0 ? "rgba(0,0,0,0.45)" : "rgba(255,255,255,0.045)";
+    g.lineWidth = r % 48 === 0 ? 3 : 1;
+    g.beginPath();
+    g.arc(256, 256, r, 0, Math.PI * 2);
+    g.stroke();
+  }
+  g.strokeStyle = "rgba(0,0,0,0.4)";
+  g.lineWidth = 3;
+  for (let k = 0; k < 12; k++) {
+    const a = (k / 12) * Math.PI * 2;
+    g.beginPath();
+    g.moveTo(256 + Math.cos(a) * 96, 256 + Math.sin(a) * 96);
+    g.lineTo(256 + Math.cos(a) * 250, 256 + Math.sin(a) * 250);
+    g.stroke();
+  }
+  g.fillStyle = "#ffc93d";
+  g.font = "bold italic 34px sans-serif";
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.fillText("NOVA", 256, 240);
+  g.fillText("RALLY", 256, 276);
+  const t = new CanvasTexture(c);
+  t.colorSpace = SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+
+/** Yellow/black hazard chevrons around the turntable (u runs around the ring). */
+function hazardTexture(): CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = 1024;
+  c.height = 64;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#16141f";
+  g.fillRect(0, 0, 1024, 64);
+  g.fillStyle = "#ffc93d";
+  for (let x = -64; x < 1024 + 64; x += 48) {
+    g.beginPath();
+    g.moveTo(x, 8);
+    g.lineTo(x + 22, 8);
+    g.lineTo(x + 46, 56);
+    g.lineTo(x + 24, 56);
+    g.closePath();
+    g.fill();
+  }
+  const t = new CanvasTexture(c);
+  t.colorSpace = SRGBColorSpace;
+  t.wrapS = RepeatWrapping;
   t.anisotropy = 8;
   return t;
 }
@@ -165,7 +250,9 @@ export function HangarScene({ design, livery, pilot, parts, reduced, focusX, cla
 
     // Turntable with glowing rings.
     const tableMat = own(new MeshStandardMaterial({ color: "#2b2840", metalness: 0.85, roughness: 0.25 }));
-    const table = new Mesh(own(new CylinderGeometry(3.4, 3.6, 0.3, 64)), tableMat);
+    const tableTop = own(new MeshStandardMaterial({ map: own(tableTexture()), metalness: 0.8, roughness: 0.3 }));
+    // Cylinder groups: side, top, bottom.
+    const table = new Mesh(own(new CylinderGeometry(3.4, 3.6, 0.3, 64)), [tableMat, tableTop, tableMat]);
     table.position.y = 0.15;
     table.receiveShadow = true;
     scene.add(table);
@@ -179,6 +266,37 @@ export function HangarScene({ design, livery, pilot, parts, reduced, focusX, cla
     glow.rotation.x = -Math.PI / 2;
     glow.position.y = 0.02;
     scene.add(glow);
+    // Hazard band around the bay and guide lights running out across the deck.
+    const hazTex = own(hazardTexture());
+    hazTex.repeat.set(6, 1);
+    const haz = new Mesh(own(new RingGeometry(6.2, 6.9, 128, 1)), own(new MeshStandardMaterial({ map: hazTex, metalness: 0.3, roughness: 0.6 })));
+    // Map u around the ring instead of across it.
+    {
+      const uv = haz.geometry.getAttribute("uv");
+      const pos = haz.geometry.getAttribute("position");
+      for (let i = 0; i < uv.count; i++) {
+        const x = pos.getX(i);
+        const y = pos.getY(i);
+        uv.setXY(i, Math.atan2(y, x) / (Math.PI * 2) + 0.5, (Math.hypot(x, y) - 6.2) / 0.7);
+      }
+      uv.needsUpdate = true;
+    }
+    haz.rotation.x = -Math.PI / 2;
+    haz.position.y = 0.015;
+    haz.receiveShadow = true;
+    scene.add(haz);
+    const guideGeo = own(new CircleGeometry(0.09, 12));
+    const guideMats = ["#46e6ff", "#ff5ad1"].map((col) => own(new MeshBasicMaterial({ color: new Color(col).multiplyScalar(2.4), toneMapped: false })));
+    for (let ray = 0; ray < 8; ray++) {
+      const a = (ray / 8) * Math.PI * 2 + Math.PI / 8;
+      for (let k = 0; k < 7; k++) {
+        const dot = new Mesh(guideGeo, guideMats[ray % 2]!);
+        const r = 8 + k * 2.2;
+        dot.position.set(Math.cos(a) * r, 0.02, Math.sin(a) * r);
+        dot.rotation.x = -Math.PI / 2;
+        scene.add(dot);
+      }
+    }
 
     // Bay walls: a curved shell with neon strips, open at the back onto a window.
     const wallMat = own(new MeshStandardMaterial({ color: "#1b1830", metalness: 0.6, roughness: 0.5, side: BackSide }));
@@ -231,10 +349,15 @@ export function HangarScene({ design, livery, pilot, parts, reduced, focusX, cla
     sunLight.target = planet;
     space.add(sunLight);
     // Window frame struts.
+    const strutMat = own(new MeshStandardMaterial({ color: "#3b3754", metalness: 0.9, roughness: 0.3 }));
+    const strutGlow = own(new MeshBasicMaterial({ color: new Color("#46e6ff").multiplyScalar(1.8), toneMapped: false }));
     for (let k = -3; k <= 3; k++) {
-      const strut = new Mesh(own(new CylinderGeometry(0.25, 0.25, 18, 8)), wallMat);
+      const strut = new Mesh(own(new BoxGeometry(0.7, 18, 0.7)), strutMat);
       strut.position.set(k * 7, 9, -24);
       scene.add(strut);
+      const edge = new Mesh(own(new BoxGeometry(0.08, 16, 0.08)), strutGlow);
+      edge.position.set(k * 7, 9, -23.6);
+      scene.add(edge);
     }
 
     // Dust motes in the light cone.

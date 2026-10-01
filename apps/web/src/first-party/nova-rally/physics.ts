@@ -87,6 +87,12 @@ export function tuningFor(stats: ShipStats): Tuning {
 /** Drift charge needed for each mini-turbo tier (seconds of drifting, faster when steering into it). */
 export const DRIFT_TIERS = [0.75, 1.55, 2.5] as const;
 const TURBO_TIME = [0, 0.55, 1.0, 1.5] as const;
+/** Drift yaw (x turn rate) when steering fully out of, neutral in and fully into the drift. */
+const DRIFT_ARC = { wide: 0, neutral: 0.65, tight: 1.5 } as const;
+/** Largest angle (radians) between the travel direction and the nose while drifting. */
+const DRIFT_MAX_SLIP = 0.42;
+/** How far (radians) a drift may turn the nose across the road before its yaw fades out. */
+const DRIFT_MAX_ACROSS = 0.95;
 
 export class Ship {
   readonly track: CompiledTrack;
@@ -306,8 +312,13 @@ export class Ship {
       const err = Math.atan2(target - this.d, 26) - this.headingError;
       yawRate = Math.max(-3, Math.min(3, err * 5));
     } else if (this.driftDir !== 0) {
+      // Steering into the drift tightens the arc a lot; steering out opens it right up (full opposite lock holds the heading).
       const into = steer * this.driftDir;
-      yawRate = this.driftDir * this.tune.turn * (0.62 + 0.5 * into);
+      let arc = into >= 0 ? DRIFT_ARC.neutral + (DRIFT_ARC.tight - DRIFT_ARC.neutral) * into : DRIFT_ARC.neutral + (DRIFT_ARC.neutral - DRIFT_ARC.wide) * into;
+      // Never let a held drift swing the nose round past side-on to the road.
+      const across = this.headingError * this.driftDir;
+      if (across > DRIFT_MAX_ACROSS) arc *= Math.max(0, 1 - (across - DRIFT_MAX_ACROSS) / 0.5);
+      yawRate = this.driftDir * this.tune.turn * arc;
       if (grounded) {
         this.driftCharge += dt * (0.75 + 0.55 * Math.max(0, into));
         const tier = this.driftCharge >= DRIFT_TIERS[2] ? 3 : this.driftCharge >= DRIFT_TIERS[1] ? 2 : this.driftCharge >= DRIFT_TIERS[0] ? 1 : 0;
@@ -339,15 +350,21 @@ export class Ship {
     if (this.driftDir !== 0) this.speed -= this.speed * 0.035 * dt;
 
     /* Grip: travel direction follows heading */
-    const grip = this.state === "spin" ? 1.2 : this.driftDir !== 0 ? 3.2 : this.airborne ? 1.5 : 9;
+    const grip = this.state === "spin" ? 1.2 : this.driftDir !== 0 ? 4.2 : this.airborne ? 1.5 : 9;
     const g = 1 - Math.exp(-grip * dt);
     const dirSign = this.speed < 0 ? -1 : 1;
     this.tmp.copy(this.fwd).multiplyScalar(dirSign);
     this.vdir.lerp(this.tmp, g).normalize();
+    if (this.driftDir !== 0) {
+      // Bounded outward slip: the slide never runs more than DRIFT_MAX_SLIP off the nose.
+      const slip = this.vdir.angleTo(this.tmp);
+      if (slip > DRIFT_MAX_SLIP) this.vdir.lerp(this.tmp, 1 - DRIFT_MAX_SLIP / slip).normalize();
+    }
 
     /* Move along the surface */
     this.surf.copy(F.pos).addScaledVector(F.right, this.d).addScaledVector(this.vdir, Math.abs(this.speed) * dt);
     const prevS = this.s;
+    const prevD = this.d;
     const loc = locate(track, this.surf, this.s, 12);
     this.s = loc.s;
     this.d = loc.d;
@@ -391,26 +408,32 @@ export class Ship {
     }
 
     /* Walls and edges */
-    const wallOff = F2.wallOffset - SHIP_RADIUS * 0.6;
+    // A ship turned across the road reaches further sideways, so it stops further from the rail.
+    const sideways = Math.abs(this.fwd.dot(F2.right));
+    const wallOff = F2.wallOffset - SHIP_RADIUS * (0.6 + 0.5 * sideways);
     if (Math.abs(this.d) > wallOff) {
       const side: -1 | 1 = this.d > 0 ? 1 : -1;
-      if (hasWall(track, this.s, side) && this.h < 3) {
+      // Rails stop anything that was inside them: low ships always, high flyers too unless they were already out.
+      const wasInside = Math.abs(prevD) <= F2.wallOffset + 0.5;
+      if (hasWall(track, this.s, side) && (this.h < 3 || wasInside)) {
         this.d = side * wallOff;
         const into = this.vdir.dot(F2.right) * side;
         if (into > 0) {
           const strength = into * Math.abs(this.speed);
-          this.vdir.addScaledVector(F2.right, -side * into * 1.35).normalize();
           const fInto = this.fwd.dot(F2.right) * side;
-          if (fInto > 0) this.fwd.addScaledVector(F2.right, -side * fInto * 0.9).normalize();
-          // Glancing scrapes (and drifting along a wall) cost little; head-on hits cost a lot.
-          const scrape = this.driftDir !== 0 ? 0.35 : 1;
-          this.speed *= 1 - (Math.min(0.45, into * 0.6) * scrape) / Math.max(0.8, this.tune.weight);
-          if (strength > 4) this.events.push({ type: "wall", strength: Math.min(1, strength / 40), side });
-          if (this.driftDir !== 0 && strength > 18) {
-            this.driftDir = 0;
-            this.driftCharge = 0;
-            this.driftTier = 0;
+          if (this.driftDir !== 0) {
+            // Drifting along the rail: slide off it softly and keep the drift (and the charge).
+            this.vdir.addScaledVector(F2.right, -side * (into + 0.06)).normalize();
+            if (fInto > 0) this.fwd.addScaledVector(F2.right, -side * fInto * 0.35).normalize();
+            // The cost follows the impact (the speed going into the rail), so grazing it is nearly free.
+            this.speed *= 1 - Math.min(0.25, into * into * 0.8 + into * 0.04) / Math.max(0.8, this.tune.weight);
+          } else {
+            this.vdir.addScaledVector(F2.right, -side * into * 1.35).normalize();
+            if (fInto > 0) this.fwd.addScaledVector(F2.right, -side * fInto * 0.9).normalize();
+            // Glancing scrapes cost little; head-on hits cost a lot.
+            this.speed *= 1 - Math.min(0.45, into * 0.6) / Math.max(0.8, this.tune.weight);
           }
+          if (strength > 4) this.events.push({ type: "wall", strength: Math.min(1, strength / 40), side });
         }
       } else if (!hasWall(track, this.s, side) && Math.abs(this.d) > F2.wallOffset + 2.4 && !this.airborne) {
         this.airborne = true;

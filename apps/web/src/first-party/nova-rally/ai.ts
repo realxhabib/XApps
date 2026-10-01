@@ -122,6 +122,8 @@ export class AiPilot {
     if (ship.driftDir !== 0) {
       drift = ship.driftTier < this.driftTarget || (Math.abs(curve) > 0.008 && ship.driftDir === Math.sign(curve));
       if (ship.driftDir !== Math.sign(curve) && Math.abs(curve) > 0.004) drift = false;
+      // The line wants out of the drift hard (the corner opened up): cash in rather than get dragged wide.
+      if (steer * ship.driftDir < -0.85 && ship.driftTier > 0) drift = false;
       if (drift) steer = Math.max(-1, Math.min(1, steer * 0.9 + ship.driftDir * 0.15));
     } else if (wantsDrift && Math.sign(steer) === Math.sign(curve) && Math.abs(steer) > 0.3) {
       drift = true;

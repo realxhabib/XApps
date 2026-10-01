@@ -3448,9 +3448,9 @@ void main() {
 
 function buildSun(ctx: Ctx): ThemeLook {
   addStars(ctx, ctx.hi ? 900 : 400, 0.5);
-  const C = azEl(90, -58);
+  const C = azEl(90, -82);
   const D = SKY_R;
-  const alpha = (78 * Math.PI) / 180;
+  const alpha = (80 * Math.PI) / 180;
   const R = D * Math.sin(alpha);
   const starG = new Group();
   starG.position.copy(C).multiplyScalar(D);

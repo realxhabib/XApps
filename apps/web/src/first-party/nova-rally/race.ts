@@ -42,7 +42,7 @@ import {
   BATTLE_SECONDS,
   classScale,
   earnedAchievements,
-  knockoutCount,
+  knockoutsDue,
   emptyRecord,
   gpStats,
   parseSettings,
@@ -376,7 +376,7 @@ export class RaceRuntime {
   private ghostRun: GhostRun | null = null;
   private recording: number[] = [];
   private recordClock = 0;
-  private koLap = 0;
+  private koDone = 0;
   private koSeq = 0;
   private trialResult: { time: number; best: number | null; record: boolean } | null = null;
 
@@ -609,7 +609,7 @@ export class RaceRuntime {
       r.record = emptyRecord(track.def.id);
       r.startDelay = r.isMe ? 0 : 0.05 + Math.random() * 0.35 * (1.2 - (r.ai?.skill ?? 0.6));
     });
-    this.koLap = 0;
+    this.koDone = 0;
     this.koSeq = 0;
     this.recording = [];
     this.recordClock = 0;
@@ -700,7 +700,9 @@ export class RaceRuntime {
     const me = this.me;
     const countdown =
       this.phase === "countdown" ? Math.max(0, Math.ceil(this.phaseLength - this.phaseTime)) : this.phase === "race" && this.raceTime < 0.8 ? 0 : null;
-    const best = me && me.lapTimes.length ? Math.min(...me.lapTimes) : null;
+    // Knocked out: the lap counter and times follow whoever you're watching.
+    const shown = me?.out && this.focus !== me ? this.focus : me;
+    const best = shown && shown.lapTimes.length ? Math.min(...shown.lapTimes) : null;
     return {
       phase: this.phase,
       raceIndex: this.raceIndex,
@@ -709,7 +711,7 @@ export class RaceRuntime {
       trackName: this.track.def.name,
       trackIdNext: this.settings.cup.tracks[this.raceIndex + 1] ?? null,
       cupName: this.settings.cup.name,
-      lap: me ? Math.max(1, Math.min(this.settings.laps, me.lap + 1)) : 1,
+      lap: shown ? Math.max(1, Math.min(this.settings.laps, shown.lap + 1)) : 1,
       laps: this.settings.laps,
       place: me?.place ?? 0,
       field: this.racers.length,
@@ -720,7 +722,7 @@ export class RaceRuntime {
       callout: this.callout,
       standings: this.standings(),
       raceTime: this.raceTime,
-      lastLap: me?.lapTimes.at(-1) ?? null,
+      lastLap: shown?.lapTimes.at(-1) ?? null,
       bestLap: best,
       spectator: this.spectator,
       waiting: this.waitingForGo && this.phase === "intro" && this.phaseTime >= this.phaseLength,
@@ -1029,17 +1031,20 @@ export class RaceRuntime {
   }
 
   private knockouts(): void {
-    const alive = this.racers.filter((r) => !r.out && r.kind !== "ghost");
-    const leaderLap = Math.max(...alive.map((r) => r.lap));
-    const laps = this.settings.laps;
-    if (leaderLap <= this.koLap || leaderLap < 1 || leaderLap >= laps) return;
-    this.koLap = leaderLap;
-    const k = knockoutCount(alive.filter((r) => !r.finished).length, laps - leaderLap);
-    const bottom = alive.filter((r) => !r.finished).sort((a, b) => b.place - a.place).slice(0, k);
-    bottom.forEach((r, i) => {
+    const racing = this.racers.filter((r) => r.kind !== "ghost");
+    const alive = racing.filter((r) => !r.out && !r.finished);
+    if (alive.length <= 2) return;
+    // One ship at a time, spread from the end of lap 1 to a final two-ship duel.
+    const leaderLaps = Math.max(...alive.map((r) => r.progress)) / this.track.length;
+    const due = knockoutsDue(racing.length, this.settings.laps, leaderLaps);
+    if (due <= this.koDone) return;
+    const k = Math.min(due - this.koDone, alive.length - 2);
+    this.koDone = due;
+    const bottom = [...alive].sort((a, b) => b.place - a.place).slice(0, k);
+    bottom.forEach((r) => {
       r.out = true;
       r.finished = true;
-      r.finishTime = 1e6 - leaderLap * 1000 - this.koSeq++ + i * 0;
+      r.finishTime = 1e6 - this.koSeq++; // later knockouts rank ahead of earlier ones
       this.fx.push({ type: "boom", pos: r.ship.pos.clone(), big: true });
       if (r.isMe) {
         this.phase = "finished";

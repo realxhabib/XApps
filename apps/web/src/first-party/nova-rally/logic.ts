@@ -56,10 +56,23 @@ export function parseSettings(raw: { [key: string]: Json } | null | undefined): 
   return { cup, cc, laps, mirror: raw?.mirror === true, knockout: raw?.mode === "knockout", battle: raw?.mode === "battle" };
 }
 
-/** How many racers drop out when the leader completes a lap in knockout (never below two left). */
-export function knockoutCount(alive: number, lapsLeft: number): number {
-  if (lapsLeft <= 0 || alive <= 2) return 0;
-  return Math.max(1, Math.min(alive - 2, Math.floor((alive - 2) / lapsLeft)));
+/**
+ * Knockout pacing: the leader's race progress (in laps, 1.5 = halfway round lap 2) at which each
+ * knockout falls. One racer goes at a time, spread evenly from the end of the first lap (a third of
+ * the race when it's shorter than three laps) to the last stretch, which is left as a final duel
+ * between the last two. For 8 racers over 3 laps: 1, 1⅓, 1⅔, 2, 2⅓, 2⅔ — a knockout at the end of
+ * every lap and two more between, with the last third of the final lap a head-to-head.
+ */
+export function knockoutSchedule(field: number, laps: number): number[] {
+  const n = Math.max(0, field - 2);
+  if (n === 0 || laps <= 0) return [];
+  const first = Math.min(1, laps / 3);
+  return Array.from({ length: n }, (_, i) => first + ((laps - first) * i) / n);
+}
+
+/** How many knockouts are due once the leader has covered `leaderLaps` laps (see knockoutSchedule). */
+export function knockoutsDue(field: number, laps: number, leaderLaps: number): number {
+  return knockoutSchedule(field, laps).filter((at) => leaderLaps >= at - 1e-9).length;
 }
 
 /** Battle length in seconds and starting orbs. */

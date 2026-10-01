@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { earnedAchievements, emptyRecord, knockoutCount, parseSettings, placeSuffix, pointsFor } from "./logic";
+import { earnedAchievements, emptyRecord, knockoutSchedule, knockoutsDue, parseSettings, placeSuffix, pointsFor } from "./logic";
 import { rollItem } from "./items";
 
 describe("rules", () => {
@@ -19,14 +19,32 @@ describe("rules", () => {
     expect(parseSettings({ cc: 999, laps: 40 })).toMatchObject({ cc: 150, laps: 3 });
   });
 
-  it("knocks out racers but always leaves a final duel", () => {
-    expect(knockoutCount(8, 2)).toBe(3);
-    expect(knockoutCount(5, 1)).toBe(3);
-    expect(knockoutCount(2, 1)).toBe(0);
-    expect(knockoutCount(8, 0)).toBe(0);
-    let alive = 8;
-    for (let left = 2; left >= 1; left--) alive -= knockoutCount(alive, left);
-    expect(alive).toBe(2);
+  it("spreads knockouts one at a time across the race, ending in a final duel", () => {
+    expect(knockoutSchedule(8, 3).map((x) => +x.toFixed(2))).toEqual([1, 1.33, 1.67, 2, 2.33, 2.67]);
+    for (const laps of [1, 2, 3, 4, 5]) {
+      for (const field of [2, 3, 5, 8]) {
+        const at = knockoutSchedule(field, laps);
+        expect(at).toHaveLength(field - 2);
+        if (!at.length) continue;
+        // Nobody goes out early: not before the first lap is done (or a third of a short race).
+        expect(at[0]).toBeCloseTo(Math.min(1, laps / 3));
+        // Evenly spaced, with one more gap's worth of the final lap left as the duel.
+        const gap = (laps - at[0]!) / at.length;
+        at.forEach((x, i) => expect(x).toBeCloseTo(at[0]! + gap * i));
+        expect(laps - at.at(-1)!).toBeCloseTo(gap);
+      }
+    }
+  });
+
+  it("counts the knockouts due as the leader goes round", () => {
+    // 3 laps, 8 racers: nobody out on lap 1, then one every third of a lap; half the field still racing at 2 laps.
+    expect(knockoutsDue(8, 3, 0.99)).toBe(0);
+    expect(knockoutsDue(8, 3, 1)).toBe(1);
+    expect(knockoutsDue(8, 3, 1.5)).toBe(2);
+    expect(knockoutsDue(8, 3, 2)).toBe(4);
+    expect(knockoutsDue(8, 3, 2.7)).toBe(6);
+    expect(knockoutsDue(8, 3, 3)).toBe(6);
+    expect(knockoutsDue(2, 3, 2.9)).toBe(0);
   });
 
   it("never hands the leader a comeback item", () => {

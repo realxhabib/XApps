@@ -88,7 +88,7 @@ const TIER_COLORS = ["#ffffff", "#48b4ff", "#ff9a2e", "#c35cff"] as const;
 function DriftGauge({ tier, charge }: { tier: number; charge: number }) {
   const marks = [0.3, 0.62, 1];
   return (
-    <div className="absolute bottom-[18%] left-1/2 flex -translate-x-1/2 gap-1.5">
+    <div data-nr-block className="absolute bottom-[18%] left-1/2 flex -translate-x-1/2 gap-1.5">
       {marks.map((m, i) => {
         const prev = i === 0 ? 0 : marks[i - 1]!;
         const fill = Math.max(0, Math.min(1, (charge - prev) / (m - prev)));
@@ -144,7 +144,7 @@ function Pill({ children, className = "" }: { children: ReactNode; className?: s
 
 function Standings({ rows }: { rows: readonly StandingRow[] }) {
   return (
-    <ol className="flex flex-col gap-1">
+    <ol data-nr-block className="flex flex-col gap-1">
       {rows.map((row) => (
         <li
           key={row.idx}
@@ -189,7 +189,7 @@ export function RaceHud({ hud, minimap, onExit, onRetry }: { hud: HudSnapshot; m
     <div className="pointer-events-none absolute inset-0 select-none" style={{ fontFamily: "var(--font-display), system-ui, sans-serif" }}>
       <AnimatePresence>
         {showRace && !hud.spectator && !hud.out ? (
-          <motion.div key="top" className="absolute left-3 top-3 flex flex-col gap-2" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}>
+          <motion.div key="top" className="absolute left-3 top-3 flex flex-col gap-2" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, transition: { duration: 0 } }}>
             <ItemSlots hud={hud} />
           </motion.div>
         ) : null}
@@ -233,7 +233,7 @@ export function RaceHud({ hud, minimap, onExit, onRetry }: { hud: HudSnapshot; m
         </div>
       ) : null}
 
-      {showRace ? <div className="absolute bottom-3 left-3">{minimap}</div> : null}
+      {showRace ? <div data-nr-block className="absolute bottom-3 left-3">{minimap}</div> : null}
 
       {hud.spectating ? (
         <div className="absolute inset-x-0 bottom-[22%] flex justify-center">
