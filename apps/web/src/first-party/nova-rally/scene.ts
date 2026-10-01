@@ -64,7 +64,7 @@ import {
   type Texture,
 } from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
-import { buildEnvironment, type EnvironmentHandle } from "./environments";
+import { buildEnvironment, craggyRock, rockMaterial, type EnvironmentHandle } from "./environments";
 import { BOX_LANES } from "./items";
 import { rampHeight } from "./physics";
 import type { RaceRuntime, Racer } from "./race";
@@ -719,17 +719,74 @@ export class RaceScene {
     return m;
   }
 
+  /** Track-hazard asteroid materials and halo sprites, one per look (shared across hazards and rebuilds). */
+  private readonly hazardMats = new Map<string, { rock: MeshStandardMaterial; halo: SpriteMaterial }>();
+  private readonly hazardTime = { value: 0 };
+  private hazardSeed = 0;
+
+  /**
+   * A stylised hazard asteroid: a craggy cleaved rock with baked crevice AO, worn edges and glowing
+   * crystal clusters (molten amber in the belt, frosted clear ice on Saturn's rings). Child 0 is the
+   * rock, child 1 a soft halo; both are spun by updateHazards.
+   */
+  private buildHazardRock(size: number, seed: number): [Mesh, Sprite] {
+    const theme = this.track?.def.theme;
+    const hi = this.quality.detail === "high";
+    const look = theme === "saturn" ? "ice" : theme === "belt" ? "belt" : "rock";
+    let mats = this.hazardMats.get(look);
+    if (!mats) {
+      const rock =
+        look === "ice"
+          ? rockMaterial({ uTime: this.hazardTime }, { rough: 0.1, metal: 0.1, envI: 2.2, ice: new Color(0.22, 0.55, 0.95), contrast: 0.25, bump: 0.3, freq: 2.2, glow: new Color(0.6, 0.95, 1.4), rim: new Color(0.35, 0.6, 0.95) })
+          : rockMaterial({ uTime: this.hazardTime }, { rough: 0.78, metal: 0.1, glow: new Color(2.4, 0.7, 0.12), rim: new Color(0.3, 0.16, 0.1), contrast: 0.35, bump: 0.8, flat: true });
+      const halo = new SpriteMaterial({ map: this.dot, color: new Color(look === "ice" ? "#9fdcff" : "#ff7a2a").multiplyScalar(0.55), blending: AdditiveBlending, depthWrite: false, transparent: true, toneMapped: false, opacity: 0.45 });
+      mats = { rock, halo };
+      this.hazardMats.set(look, mats);
+      this.shared.push(rock, halo);
+    }
+    const geo =
+      look === "ice"
+        ? craggyRock({
+            seed: 40 + seed,
+            detail: hi ? 4 : 2,
+            cuts: 15,
+            depth: [0.58, 0.86],
+            lumpy: 0.16,
+            stretch: [1.15, 0.9, 1],
+            lo: new Color(0x0f3a74),
+            mid: new Color(0x72a8de),
+            hi: new Color(0xf4fbff),
+            frost: new Color(0xf8fcff),
+            crystals: { clusters: 3, per: hi ? 5 : 3, size: 0.4, color: new Color(0x5aa8e0), tip: new Color(0xffffff), glow: 0.45 },
+          })
+        : craggyRock({
+            seed: 60 + seed,
+            detail: hi ? 4 : 2,
+            cuts: 14,
+            depth: [0.6, 0.86],
+            lumpy: 0.3,
+            craters: 3,
+            strata: 0.5,
+            lo: new Color(0x110c0e),
+            mid: look === "belt" ? new Color(0x4e4048) : new Color(0x6a625c),
+            hi: look === "belt" ? new Color(0xc0a898) : new Color(0xd2c6b8),
+            crystals: { clusters: hi ? 4 : 3, per: hi ? 5 : 3, size: 0.46, color: new Color(0xb0300a), tip: new Color(0xffa040), glow: 1 },
+          });
+    const rock = new Mesh(geo, mats.rock);
+    rock.scale.setScalar(size * 0.8);
+    rock.castShadow = this.quality.shadows > 0;
+    rock.onBeforeRender = () => {
+      this.hazardTime.value = this.time;
+    };
+    const halo = new Sprite(mats.halo);
+    halo.scale.setScalar(size * 3.4);
+    return [rock, halo];
+  }
+
   private buildHazard(kind: string, size: number): Object3D {
     const g = new Group();
     if (kind === "asteroid") {
-      const rock = new Mesh(this.rockGeo, this.rockMat);
-      rock.scale.setScalar(size * 0.75);
-      rock.castShadow = this.quality.shadows > 0;
-      g.add(rock);
-      // Glowing ore veins.
-      const vein = new Mesh(this.rockGeo, this.glow("#ff6a2a", 1.6));
-      vein.scale.setScalar(size * 0.62);
-      g.add(vein);
+      g.add(...this.buildHazardRock(size, this.hazardSeed++ % 16));
     } else if (kind === "dust") {
       const mat = new MeshBasicMaterial({ color: new Color("#d9864f"), transparent: true, opacity: 0.35, depthWrite: false, side: DoubleSide });
       for (let k = 0; k < 4; k++) {
