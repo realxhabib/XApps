@@ -64,6 +64,8 @@ export interface TrackDef {
   hazards: readonly HazardDef[];
   /** A short, wide battle arena rather than a race circuit. */
   arena?: boolean;
+  /** Open space: the road is a see-through hard-light lane (no deck, slab or metal rails under you). */
+  lightLane?: boolean;
 }
 
 export interface Frame {

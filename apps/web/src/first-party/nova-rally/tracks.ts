@@ -84,6 +84,7 @@ const BELT: TrackDef = {
   autoBank: 1,
   gravity: 1,
   floating: true,
+  lightLane: true,
   nodes: [
     n(0, 0, 0),
     n(0, 6, -130),
@@ -161,6 +162,7 @@ const SATURN: TrackDef = {
   autoBank: 1.1,
   gravity: 1,
   floating: true,
+  lightLane: true,
   nodes: [
     n(0, 0, 0),
     n(0, 0, -60),
@@ -371,6 +373,7 @@ const SUN: TrackDef = {
   autoBank: 1,
   gravity: 1,
   floating: true,
+  lightLane: true,
   nodes: [
     n(0, 0, 0),
     n(0, 4, -140),
