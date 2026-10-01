@@ -370,6 +370,10 @@ export class RaceRuntime {
   private endTimer = -1;
   private remoteSeen = new Map<string, number>();
   private wrongWay = 0;
+  /** What was homing in on you last tick (the announcer warns when something new locks on). */
+  private lastIncoming: HudSnapshot["incoming"] = null;
+  /** Battle: the "hurry up" call has been made. */
+  private hurried = false;
 
   /** Time trial (solo, against your ghost; nothing is submitted). */
   readonly trial: string | null;
@@ -569,6 +573,8 @@ export class RaceRuntime {
     this.lastPlace = -1;
     this.empFlash = 0;
     this.wrongWay = 0;
+    this.lastIncoming = null;
+    this.hurried = false;
     this.callout = null;
 
     // Grid: fewest points at the front of the grid... leaders start at the back.
@@ -1009,6 +1015,9 @@ export class RaceRuntime {
       const was = this.wrongWay;
       this.wrongWay = err > 2.1 && me.ship.state === "drive" ? this.wrongWay + DT : 0;
       if (was < 1.2 && this.wrongWay >= 1.2) this.audio.announce("wrongWay");
+      const incoming = this.incomingFor(me);
+      if (incoming && incoming !== this.lastIncoming) this.audio.announce("lookOut");
+      this.lastIncoming = incoming;
     }
   }
 
@@ -1022,6 +1031,7 @@ export class RaceRuntime {
       this.phase = "finished";
       this.phaseTime = 0;
       this.audio.play("lose");
+      this.audio.announce("out");
       this.say(why, "bad");
     } else if (this.me && !this.me.out) this.say(`${r.name} is out!`, "info");
     if (this.sendRoom && r.local) this.xapps.room.send("fin", { r: this.raceIndex, i: r.idx, t: Math.round(this.raceTime * 1000), o: 1 }).catch(ignore);
@@ -1047,6 +1057,7 @@ export class RaceRuntime {
         this.phase = "finished";
         this.phaseTime = 0;
         this.audio.play("lose");
+        this.audio.announce("out");
         this.say("Knocked out!", "bad");
       }
     });
@@ -1265,7 +1276,7 @@ export class RaceRuntime {
       this.phaseTime = 0;
       r.record.place = r.place;
       this.audio.play("finish");
-      this.audio.announce(r.place === 0 ? "first" : "finish");
+      this.audio.announce(r.place === 0 ? "first" : r.place <= 2 ? "podium" : "lose");
       setTimeout(() => this.audio.play(r.place <= 2 ? "win" : "lose"), 900);
       this.say(r.place === 0 ? "1st place!" : `${placeSuffix(r.place + 1)} place`, r.place <= 2 ? "big" : "info");
       this.xapps.ui.setStatus(`Finished ${placeSuffix(r.place + 1)} on ${this.track.def.name}`).catch(ignore);
@@ -1525,6 +1536,10 @@ export class RaceRuntime {
   private checkRaceEnd(dt: number): void {
     if (this.settings.battle && this.endTimer < 0) {
       const alive = this.racers.filter((r) => !r.out && r.kind !== "ghost");
+      if (!this.hurried && this.raceTime >= BATTLE_SECONDS - 15 && alive.length > 1) {
+        this.hurried = true;
+        if (this.me && !this.me.out) this.audio.announce("hurryUp");
+      }
       if (alive.length <= 1 || this.raceTime >= BATTLE_SECONDS) {
         this.endTimer = 2.2;
         for (const r of alive) {
@@ -1537,6 +1552,7 @@ export class RaceRuntime {
           this.updatePlaces();
           this.say(this.me.place === 0 ? "Last ship flying!" : "Time!", "big");
           this.audio.play(this.me.place === 0 ? "win" : "finish");
+          this.audio.announce(alive.length > 1 ? "timeOver" : "first");
         }
       }
       return;
@@ -1640,6 +1656,10 @@ export class RaceRuntime {
     this.phaseTime = 0;
     this.phaseLength = Infinity;
     this.audio.music("menu");
+    const me = this.me;
+    const place = me ? this.gpOrder().indexOf(me) : -1;
+    if (place >= 0) this.audio.play(place <= 2 ? "podium" : "lose");
+    if (place >= 0 && place <= 2) this.audio.announce(place === 0 ? "first" : "podium");
     this.emit(true);
     this.finishGp();
   }
