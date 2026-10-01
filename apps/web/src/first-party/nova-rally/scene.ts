@@ -32,8 +32,6 @@ import {
   HemisphereLight,
   IcosahedronGeometry,
   LatheGeometry,
-  LineBasicMaterial,
-  LineSegments,
   InstancedMesh,
   Matrix4,
   Mesh,
@@ -379,8 +377,10 @@ interface ProjectileView {
   kind: string;
 }
 
-const DRIFT_SPARK = [new Color("#ffffff"), new Color("#48b4ff"), new Color("#ff9a2e"), new Color("#c35cff")];
+const DRIFT_SPARK = [new Color("#ffffff"), new Color("#1f7bff"), new Color("#ff7a12"), new Color("#a838ff")];
 const UP = new Vector3(0, 1, 0);
+const BOLT_GLOW = new Color("#9a5cff").multiplyScalar(1.6);
+const BOLT_CORE = new Color("#f4ecff").multiplyScalar(3.2);
 const CONFETTI = ["#ff5ad1", "#ffd166", "#5dffb0", "#48b4ff", "#ffffff", "#ff7a2f"].map((c) => new Color(c));
 
 export class RaceScene {
@@ -429,15 +429,30 @@ export class RaceScene {
   private empLife = 0;
   private empFrom = -1;
   private empTargets: number[] = [];
-  private readonly lightningPos = new Float32Array(8 * 12 * 2 * 3);
-  private lightning!: LineSegments;
+  /** Bolt ribbons: per segment two layers (glow, core) of 4 vertices each. */
+  private static readonly BOLT_QUADS = 8 * 12 * 2;
+  private readonly lightningPos = new Float32Array(RaceScene.BOLT_QUADS * 4 * 3);
+  private readonly lightningCol = new Float32Array(RaceScene.BOLT_QUADS * 4 * 3);
+  private lightning!: Mesh;
 
   /** Jagged purple arcs from the EMP user to everyone it zapped, re-rolled every frame. */
   private updateLightning(k: number): void {
     const from = this.rt.racers[this.empFrom];
     const arr = this.lightningPos;
+    const col = this.lightningCol;
     arr.fill(0);
     let w = 0;
+    const cam = this.camera.position;
+    const side = new Vector3();
+    const toCam = new Vector3();
+    // One camera-facing quad from p to q, `width` wide.
+    const quad = (p: Vector3, q: Vector3, width: number, c: Color) => {
+      toCam.copy(p).add(q).multiplyScalar(0.5).sub(cam);
+      side.subVectors(q, p).cross(toCam).normalize().multiplyScalar(width / 2);
+      arr.set([p.x - side.x, p.y - side.y, p.z - side.z, p.x + side.x, p.y + side.y, p.z + side.z, q.x + side.x, q.y + side.y, q.z + side.z, q.x - side.x, q.y - side.y, q.z - side.z], w);
+      for (let v = 0; v < 4; v++) col.set([c.r, c.g, c.b], w + v * 3);
+      w += 12;
+    };
     if (from && k < 0.7) {
       for (const idx of this.empTargets.slice(0, 8)) {
         const to = this.rt.racers[idx];
@@ -449,15 +464,17 @@ export class RaceScene {
           const t = seg / 12;
           const next = a.clone().lerp(b, t);
           if (seg < 12) next.add(new Vector3((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 3, (Math.random() - 0.5) * 4));
-          arr.set([prev.x, prev.y, prev.z, next.x, next.y, next.z], w);
-          // Glow beads along the bolt so it reads thick, not as a 1 px line.
-          if (!this.reduced && seg % 2 === 0) this.particles.emit(next, new Vector3(), new Color("#c9a2ff"), 0.9, 0.08, 0);
-          w += 6;
+          quad(prev, next, 1.1, BOLT_GLOW);
+          quad(prev, next, 0.22, BOLT_CORE);
+          // Glow beads at the kinks.
+          if (!this.reduced && seg % 3 === 0) this.particles.emit(next, new Vector3(), new Color("#c9a2ff"), 1.1, 0.08, 0);
           prev = next;
         }
       }
     }
     (this.lightning.geometry.getAttribute("position") as BufferAttribute).needsUpdate = true;
+    (this.lightning.geometry.getAttribute("color") as BufferAttribute).needsUpdate = true;
+    this.lightning.geometry.setDrawRange(0, (w / 12) * 6);
     this.lightning.visible = w > 0;
   }
   private empDome: Mesh;
@@ -586,8 +603,30 @@ export class RaceScene {
     this.scene.add(this.empRing);
     const lgeo = new BufferGeometry();
     lgeo.setAttribute("position", new BufferAttribute(this.lightningPos, 3).setUsage(DynamicDrawUsage));
-    const lmat = new LineBasicMaterial({ color: new Color("#d9b8ff").multiplyScalar(3), transparent: true, blending: AdditiveBlending, depthWrite: false, toneMapped: false });
-    this.lightning = new LineSegments(lgeo, lmat);
+    lgeo.setAttribute("color", new BufferAttribute(this.lightningCol, 3).setUsage(DynamicDrawUsage));
+    // Soft edges across each ribbon (v = 0 and 1 at the long edges).
+    const boltUv = new Float32Array(RaceScene.BOLT_QUADS * 4 * 2);
+    const boltIdx: number[] = [];
+    for (let q = 0; q < RaceScene.BOLT_QUADS; q++) {
+      boltUv.set([0, 0, 0, 1, 1, 1, 1, 0], q * 8);
+      const b = q * 4;
+      boltIdx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+    }
+    lgeo.setAttribute("uv", new BufferAttribute(boltUv, 2));
+    lgeo.setIndex(boltIdx);
+    const lmat = new ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: AdditiveBlending,
+      side: DoubleSide,
+      toneMapped: false,
+      vertexColors: true,
+      vertexShader: `varying vec2 vUv; varying vec3 vCol;
+        void main() { vUv = uv; vCol = color; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `varying vec2 vUv; varying vec3 vCol;
+        void main() { float e = 1.0 - abs(vUv.y * 2.0 - 1.0); float a = e * e; gl_FragColor = vec4(vCol * a, a); }`,
+    });
+    this.lightning = new Mesh(lgeo, lmat);
     this.lightning.frustumCulled = false;
     this.lightning.visible = false;
     this.scene.add(this.lightning);
@@ -1070,7 +1109,7 @@ export class RaceScene {
         sp.position.copy(pos).addScaledVector(ship.fwd, -1.45).addScaledVector(this.v2.crossVectors(ship.fwd, f.up).normalize(), side * 0.9).addScaledVector(f.up, 0.2);
         const flick = 0.75 + Math.random() * 0.5;
         sp.scale.setScalar((tier === 0 ? 0.4 : 0.75 + tier * 0.22) * flick);
-        sp.material.color.copy(DRIFT_SPARK[tier]!).multiplyScalar(tier === 0 ? 0.6 : 2.4);
+        sp.material.color.copy(DRIFT_SPARK[tier]!).multiplyScalar(tier === 0 ? 0.6 : 1.5);
         sp.material.depthTest = false;
         sp.renderOrder = 8;
       });
