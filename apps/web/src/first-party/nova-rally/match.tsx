@@ -142,13 +142,18 @@ export function MatchView({ choice, trial, onExit, onRetry }: { choice: ShipChoi
         blocks = [...document.querySelectorAll("[data-nr-block]")].map((b) => b.getBoundingClientRect());
       }
       const canvasRect = canvasRef.current?.getBoundingClientRect();
-      for (const tag of scene.tags()) {
+      // Nearest tags win; one that would overlap a nearer tag hides.
+      const placed: { x: number; y: number }[] = [];
+      for (const tag of scene.tags().sort((a, b) => a.dist - b.dist)) {
         const el = tagRefs.current.get(tag.idx);
         if (!el) continue;
         const tx = tag.x + (canvasRect?.left ?? 0);
         const ty = tag.y + (canvasRect?.top ?? 0);
         const covered = blocks.some((b) => tx > b.left - 40 && tx < b.right + 40 && ty > b.top - 8 && ty < b.bottom + 30);
-        el.style.opacity = tag.visible && !covered ? String(Math.max(0.35, 1 - tag.dist / 90)) : "0";
+        const crowded = placed.some((q) => Math.abs(q.x - tx) < 80 && Math.abs(q.y - ty) < 22);
+        const show = tag.visible && !covered && !crowded;
+        if (show) placed.push({ x: tx, y: ty });
+        el.style.opacity = show ? String(Math.max(0.35, 1 - tag.dist / 90)) : "0";
         if (tag.visible) el.style.transform = `translate(${tag.x}px, ${tag.y}px) translate(-50%, -100%) scale(${Math.max(0.7, 1.2 - tag.dist / 80)})`;
       }
       if (flashRef.current) flashRef.current.style.opacity = String(rt.empFlash * 0.22);

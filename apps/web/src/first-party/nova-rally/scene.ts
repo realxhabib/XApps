@@ -1046,9 +1046,10 @@ export class RaceScene {
       model.setShield(ship.shield > 0, this.time);
       // Rivals right in front of the lens fade out instead of filling the screen.
       const lensDist = r === rt.focus ? 99 : pos.distanceTo(this.camera.position);
-      const lensFade = lensDist < 15 ? Math.max(0.06, (lensDist - 5) / 10) : 1;
+      const lensFade = lensDist < 16 ? Math.max(0.06, (lensDist - 6) / 10) : 1;
       model.setGhost(r.kind === "ghost" ? 0.35 : ship.cloak > 0 ? (r.isMe ? 0.4 : 0.12) : lensFade);
-      root.visible = !r.out && (ship.state !== "fall" || ship.h > -30);
+      // Rivals brushing the lens are hidden outright (even faded they fill the frame).
+      root.visible = !r.out && (ship.state !== "fall" || ship.h > -30) && lensDist > 4.5;
       view.trail.mesh.visible = !r.out;
       root.scale.setScalar(ship.shocked > 0 ? 0.6 : 1);
 
@@ -1838,7 +1839,11 @@ export class RaceScene {
     const focus = this.rt.focus;
     for (const view of this.ships.values()) {
       const r = view.racer;
-      if (r === focus) continue;
+      if (r === focus) {
+        // Still reported, so the HUD hides a tag left over from before we started watching this ship.
+        out.push({ idx: r.idx, x: 0, y: 0, visible: false, dist: 0 });
+        continue;
+      }
       const p = view.model.root.position.clone().addScaledVector(r.ship.frame.up, 2.6);
       const dist = p.distanceTo(this.camera.position);
       const ndc = p.clone().project(this.camera);

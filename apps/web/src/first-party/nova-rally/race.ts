@@ -410,15 +410,12 @@ export class RaceRuntime {
     };
     if (!this.spectator) used.add(choice.design);
     const usedPilots = new Set<number>(this.spectator ? [] : [choice.pilot ?? 0]);
+    // Each pilot races once while any are free (only fields bigger than the roster repeat).
     const pickPilot = () => {
-      for (let k = 0; k < 30; k++) {
-        const i = Math.floor(rand.next() * PILOTS.length);
-        if (!usedPilots.has(i)) {
-          usedPilots.add(i);
-          return i;
-        }
-      }
-      return Math.floor(rand.next() * PILOTS.length);
+      const free = PILOTS.map((_, i) => i).filter((i) => !usedPilots.has(i));
+      const i = free.length ? free[Math.floor(rand.next() * free.length)]! : Math.floor(rand.next() * PILOTS.length);
+      usedPilots.add(i);
+      return i;
     };
     let idx = 0;
     for (const p of players) {
