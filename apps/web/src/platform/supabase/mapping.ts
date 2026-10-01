@@ -36,6 +36,7 @@ import type {
   WebhookDelivery,
 } from "../types";
 import { BackendError } from "../backend";
+import { OUTAGE_MESSAGE, isOutage } from "../health";
 
 export interface AppRow {
   slug: string;
@@ -281,6 +282,8 @@ export function toBackendError(error: { code?: string; message?: string } | null
       "setup_required",
     );
   }
+  // Supabase down or unable to reach the database: say so plainly instead of PostgREST's internals.
+  if (isOutage(error)) return new BackendError(OUTAGE_MESSAGE, "internal");
   const message = error?.message || fallback;
   const kind = errorKind(code, message);
   return new BackendError(kind === "conflict" && /state_conflict/i.test(message) ? "The match state changed — try again" : message, kind);
@@ -796,4 +799,30 @@ export function toNotices(data: unknown): DeveloperNotice[] {
     });
   }
   return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/**
+ * A stand-in profile from the signed-in user's X details (the session, which
+ * needs no database) while the database is unreachable: same handle, name
+ * and avatar the profile row was made from, no stats.
+ */
+export function profileFromAuthUser(user: { id: string; created_at?: string; user_metadata?: Record<string, unknown> | null }): Profile {
+  const meta = user.user_metadata ?? {};
+  const text = (key: string) => (typeof meta[key] === "string" && (meta[key] as string).trim() ? (meta[key] as string).trim() : null);
+  const handle = (text("user_name") ?? text("preferred_username") ?? text("screen_name") ?? "player").replace(/^@/, "");
+  const avatar = text("avatar_url") ?? text("picture");
+  return {
+    id: user.id,
+    handle,
+    name: (text("full_name") ?? text("name") ?? handle).slice(0, 50),
+    avatarUrl: avatar ? avatar.replace("_normal.", "_400x400.") : null,
+    bio: "",
+    xp: 0,
+    wins: 0,
+    losses: 0,
+    draws: 0,
+    streak: 0,
+    bestStreak: 0,
+    createdAt: user.created_at ?? new Date(0).toISOString(),
+  };
 }

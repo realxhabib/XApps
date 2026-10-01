@@ -6,6 +6,7 @@ import { env } from "@/lib/env";
 import { APP_MEDIA_BUCKET, baseMime, displayProblem, mediaExtension, mediaKindOf, mediaProblem, probeMedia } from "@/lib/media";
 import { BackendError, type Backend, type RoomTransport } from "../backend";
 import { OFFICIAL_APPS, getOfficialApp, manifestShapeError, withManifestDefaults } from "../catalog";
+import { OUTAGE_MESSAGE, isOutage, noteHealthy, noteOutage } from "../health";
 import type {
   AppAnalytics,
   AppLaunch,
@@ -50,6 +51,7 @@ import {
   toAppVersionResult,
   toAppVersions,
   toNotices,
+  profileFromAuthUser,
   toProfiles,
   toReviewQueue,
   toBackendError,
@@ -109,6 +111,7 @@ function toProfile(row: ProfileRow): Profile {
 }
 
 function fail(error: PostgrestError | Error | null | undefined, fallback = "Something went wrong"): never {
+  if (isOutage(error as { code?: string; message?: string } | null | undefined)) noteOutage();
   throw toBackendError(error as { code?: string; message?: string } | null | undefined, fallback);
 }
 
@@ -164,10 +167,19 @@ export class SupabaseBackend implements Backend {
   }
 
   async getViewer(): Promise<Profile | null> {
-    const id = await this.userId();
-    if (!id) return null;
-    const { data, error } = await this.sb.from("profiles").select("*").eq("id", id).maybeSingle<ProfileRow>();
-    if (error) fail(error);
+    const { data: auth } = await this.sb.auth.getSession();
+    const user = auth.session?.user;
+    if (!user) return null;
+    const { data, error, status } = await this.sb.from("profiles").select("*").eq("id", user.id).maybeSingle<ProfileRow>();
+    if (error) {
+      // Database down: stay signed in with the X details from the session.
+      if (isOutage(error, status)) {
+        noteOutage();
+        return profileFromAuthUser(user);
+      }
+      fail(error);
+    }
+    noteHealthy();
     return data ? toProfile(data) : null;
   }
 
@@ -210,17 +222,29 @@ export class SupabaseBackend implements Backend {
     if (!id) return new Set();
     let query = this.sb.from("app_upvotes").select("app_slug").eq("user_id", id);
     if (slug) query = query.eq("app_slug", slug);
-    const { data, error } = await query;
+    const { data, error, status } = await query;
     if (error) {
       if (isSchemaMissing(error.code)) return new Set();
+      if (isOutage(error, status)) {
+        noteOutage();
+        return new Set();
+      }
       fail(error);
     }
     return new Set(((data ?? []) as { app_slug: string }[]).map((r) => r.app_slug));
   }
 
   async listApps(): Promise<AppManifest[]> {
-    const [{ data, error }, upvoted] = await Promise.all([this.sb.from("apps").select(APP_COLUMNS).order("created_at"), this.viewerUpvotes()]);
-    if (error) fail(error);
+    const [{ data, error, status }, upvoted] = await Promise.all([this.sb.from("apps").select(APP_COLUMNS).order("created_at"), this.viewerUpvotes()]);
+    if (error) {
+      // Database down: the built-in apps still list (without play counts or upvotes).
+      if (isOutage(error, status)) {
+        noteOutage();
+        return OFFICIAL_APPS.map((app) => withManifestDefaults({ ...app, playCount: 0, upvotes: 0, upvoted: false }));
+      }
+      fail(error);
+    }
+    noteHealthy();
     const rows = withViewerUpvotes((data ?? []) as AppRow[], upvoted);
     const bySlug = new Map(rows.map((r) => [r.slug, r]));
     // Keep the official order from the catalog, then community apps.
@@ -234,12 +258,20 @@ export class SupabaseBackend implements Backend {
   }
 
   async getApp(slug: string): Promise<AppManifest | null> {
-    const [{ data, error }, upvoted] = await Promise.all([
+    const [{ data, error, status }, upvoted] = await Promise.all([
       this.sb.from("apps").select(APP_COLUMNS).eq("slug", slug).maybeSingle<AppRow>(),
       this.viewerUpvotes(slug),
     ]);
-    if (error) fail(error);
     const official = getOfficialApp(slug);
+    if (error) {
+      if (isOutage(error, status)) {
+        noteOutage();
+        if (official) return withManifestDefaults({ ...official, upvotes: 0, upvoted: false });
+        throw new BackendError(OUTAGE_MESSAGE, "internal");
+      }
+      fail(error);
+    }
+    noteHealthy();
     if (!data) {
       return official ? withManifestDefaults({ ...official, upvotes: 0, upvoted: false }) : null;
     }
