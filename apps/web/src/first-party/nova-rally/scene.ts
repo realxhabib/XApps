@@ -1696,10 +1696,10 @@ export class RaceScene {
     // Confetti drifting down over the steps.
     if (!this.reduced) {
       const side = new Vector3(1, 0, 0).applyQuaternion(this.podium.quaternion);
-      for (let k = 0; k < 5; k++) {
-        const p = this.podiumAnchor.clone().addScaledVector(side, (Math.random() - 0.5) * 14).add(new Vector3(0, 9 + Math.random() * 3, (Math.random() - 0.5) * 6));
-        const v = new Vector3((Math.random() - 0.5) * 2, -2.5 - Math.random() * 2, (Math.random() - 0.5) * 2);
-        this.particles.emit(p, v, CONFETTI[Math.floor(Math.random() * CONFETTI.length)]!, 0.22, 3 + Math.random(), 0.3);
+      for (let k = 0; k < 14; k++) {
+        const p = this.podiumAnchor.clone().addScaledVector(side, (Math.random() - 0.5) * 18).add(new Vector3(0, 7 + Math.random() * 6, (Math.random() - 0.5) * 9));
+        const v = new Vector3((Math.random() - 0.5) * 3, -2 - Math.random() * 2.5, (Math.random() - 0.5) * 3);
+        this.particles.emit(p, v, CONFETTI[Math.floor(Math.random() * CONFETTI.length)]!, 0.32 + Math.random() * 0.14, 3 + Math.random() * 1.5, 0.3);
       }
     }
     if (!this.reduced && Math.random() < 0.25) {
