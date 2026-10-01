@@ -520,11 +520,13 @@ function tarp(B: PbrBufs, b: Box, color: number, seed: number): void {
       const bb = P(i + 1, k);
       const c = P(i + 1, k + 1);
       const d = P(i, k + 1);
-      const e1: V3 = [bb[0] - a[0], bb[1] - a[1], bb[2] - a[2]];
-      const e2: V3 = [d[0] - a[0], d[1] - a[1], d[2] - a[2]];
+      // Normal from the diagonals: the folded corner cells collapse one edge to a point, and an
+      // edge-based cross product there is zero, which the shader normalizes into NaN.
+      const e1: V3 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+      const e2: V3 = [d[0] - bb[0], d[1] - bb[1], d[2] - bb[2]];
       let n: V3 = [e2[1] * e1[2] - e2[2] * e1[1], e2[2] * e1[0] - e2[0] * e1[2], e2[0] * e1[1] - e2[1] * e1[0]];
-      const l = Math.hypot(n[0], n[1], n[2]) || 1;
-      n = [n[0] / l, n[1] / l, n[2] / l];
+      const l = Math.hypot(n[0], n[1], n[2]);
+      n = l > 1e-9 ? [n[0] / l, n[1] / l, n[2] / l] : [0, 1, 0];
       if (n[1] < -0.2) n = [-n[0], -n[1], -n[2]];
       // uv: the weave; second uv x: how loose (flutter weight).
       B.tarp.quad(a, d, c, bb, n, [
