@@ -1335,7 +1335,7 @@ void main() {
   p = mod(p - uCam + uBox * 0.5, uBox) - uBox * 0.5 + uCam;
   float sp = length(uVel);
   vec3 dir = sp > 0.01 ? uVel / sp : vec3(0.0, 0.0, 1.0);
-  p -= dir * aEnd * (0.4 + min(sp, 120.0) * 0.07) * (0.6 + aSeed);
+  p -= dir * aEnd * (0.3 + min(sp, 120.0) * 0.03) * (0.6 + aSeed);
   gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
   float d = length(p - uCam);
   vA = smoothstep(2.0, 10.0, d) * (1.0 - smoothstep(uBox * 0.25, uBox * 0.5, d)) * (1.0 - aEnd) * smoothstep(4.0, 30.0, sp);
@@ -2734,7 +2734,7 @@ function buildBelt(ctx: Ctx): ThemeLook {
     beacon(ctx, p, k % 5 === 0 ? 0xff5533 : 0xffd9a0, 6 + r() * 6, k % 5 === 0 ? 2 : 0, k, 2);
   }
   addSupports(ctx, 60, new Color(0x43d8ff), new Color(0x445566));
-  addStreaks(ctx, ctx.hi ? 900 : 350, 160, new Color(0.35, 0.45, 0.6));
+  addStreaks(ctx, ctx.hi ? 200 : 90, 160, new Color(0.35, 0.45, 0.6));
   addDust(ctx, { count: ctx.hi ? 900 : 350, box: 180, color: new Color(0x9fb7d8), size: [0.2, 0.7], wind: new Vector3(0.6, 0.2, -0.4), swirl: 2, opacity: 0.5, additive: true, soft: 0 });
   return {
     fog: new FogExp2(new Color(0x0b1024).getHex(), 0.00055),
@@ -2866,7 +2866,7 @@ function buildSaturn(ctx: Ctx): ThemeLook {
   });
   addSupports(ctx, 60, new Color(0xffc46a), new Color(0x5a5048));
   addDust(ctx, { count: ctx.hi ? 1400 : 500, box: 150, color: new Color(0xd8ecff), size: [0.15, 0.5], wind: new Vector3(1.2, 0, 0.4), swirl: 1.5, opacity: 0.8, additive: true, soft: 0 });
-  addStreaks(ctx, ctx.hi ? 500 : 200, 150, new Color(0.4, 0.45, 0.5));
+  addStreaks(ctx, ctx.hi ? 160 : 70, 150, new Color(0.4, 0.45, 0.5));
   return {
     fog: new FogExp2(new Color(0x0a0c14).getHex(), 0.00035),
     sunIntensity: 3.8,
@@ -3202,7 +3202,7 @@ function buildNebula(ctx: Ctx): ThemeLook {
 
   addSupports(ctx, 60, new Color(0xff4fd8), new Color(0x3a3450));
   addDust(ctx, { count: ctx.hi ? 1000 : 400, box: 160, color: new Color(0xd9a8ff), size: [0.2, 0.7], wind: new Vector3(0.5, 0.3, 0.8), swirl: 3, opacity: 0.55, additive: true, soft: 0 });
-  addStreaks(ctx, ctx.hi ? 600 : 250, 160, new Color(0.5, 0.35, 0.65));
+  addStreaks(ctx, ctx.hi ? 180 : 80, 160, new Color(0.5, 0.35, 0.65));
   return {
     fog: new FogExp2(new Color(0x1e0c34).getHex(), 0.0004),
     sunIntensity: 2.8,
@@ -3579,7 +3579,7 @@ function buildSun(ctx: Ctx): ThemeLook {
   // Heat shimmer: rising embers and glowing motes.
   addDust(ctx, { count: ctx.hi ? 1200 : 450, box: 150, color: new Color(1.0, 0.45, 0.12), size: [0.15, 0.6], wind: new Vector3(0.5, 3.5, 0.3), swirl: 2.5, opacity: 0.9, additive: true, soft: 0 });
   addDust(ctx, { count: ctx.hi ? 160 : 60, box: 320, color: new Color(0.9, 0.3, 0.08), size: [10, 30], wind: new Vector3(1, 5, 0), swirl: 10, opacity: 0.08, additive: true, soft: 1 });
-  addStreaks(ctx, ctx.hi ? 500 : 200, 150, new Color(0.7, 0.35, 0.12));
+  addStreaks(ctx, ctx.hi ? 160 : 70, 150, new Color(0.7, 0.35, 0.12));
   return {
     fog: new FogExp2(new Color(0x2a0c05).getHex(), 0.00045),
     sunIntensity: 3.0,

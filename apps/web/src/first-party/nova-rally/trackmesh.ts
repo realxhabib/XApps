@@ -594,8 +594,8 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
     group.add(rm);
     // Sloped side skirts and the lip face so it reads as a solid wedge.
     for (const side of [-1, 1] as const) {
-      const skirt = own(strip(track, { d0: (i) => side * wall(i), d1: (i) => side * wall(i), h0: 0, h1: lift, across: 1, vScale: 3, skip: inRamp, flip: side > 0 }));
-      group.add(new Mesh(skirt, rampMat));
+      const skirt = own(strip(track, { d0: (i) => side * wall(i), d1: (i) => side * wall(i), h0: 0, h1: lift, across: 1, vScale: 3, skip: inRamp, flip: side < 0 }));
+      group.add(new Mesh(skirt, railMat));
     }
     // Glowing lip strip.
     const lip = own(strip(track, { d0: (i) => -wall(i), d1: (i) => wall(i), h0: (i) => lift(i) + 0.02, h1: (i) => lift(i) + 0.02, across: 1, vScale: 1, skip: (i) => {

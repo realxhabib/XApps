@@ -260,6 +260,8 @@ export interface HudSnapshot {
   /** A seeker or singularity is closing in on you. */
   incoming: "seeker" | "singularity" | null;
   battle: { left: number; orbs: number; alive: number } | null;
+  /** Who the camera follows after you're knocked out. */
+  spectating: string | null;
   /** Drift charge 0..1 per tier while drifting (null when not drifting). */
   drift: { tier: number; charge: number } | null;
 }
@@ -708,6 +710,7 @@ export class RaceRuntime {
       mirror: this.settings.mirror,
       out: !!me?.out,
       incoming: this.incomingFor(me),
+      spectating: me?.out && this.focus !== me ? this.focus.name : null,
       drift: me && me.ship.driftDir !== 0 ? { tier: me.ship.driftTier, charge: Math.min(1, me.ship.driftCharge / DRIFT_TIERS[2]) } : null,
       battle: this.settings.battle ? { left: Math.max(0, BATTLE_SECONDS - this.raceTime), orbs: me?.orbs ?? 0, alive: this.racers.filter((r) => !r.out && r.kind !== "ghost").length } : null,
     };

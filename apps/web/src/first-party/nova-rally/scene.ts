@@ -210,6 +210,11 @@ class Particles {
     this.points.frustumCulled = false;
   }
 
+  clear(): void {
+    this.life.fill(0);
+    this.alpha.fill(0);
+  }
+
   setScale(px: number): void {
     this.mat.uniforms.uScale!.value = px;
   }
@@ -893,6 +898,14 @@ export class RaceScene {
       }
     }
     const track = this.track!;
+    if ((rt.phase === "results" || rt.phase === "podium") && this.lastPhase !== rt.phase) {
+      this.particles.clear();
+      this.empLife = 0;
+      this.lightning.visible = false;
+      for (const fb of this.fireballs) fb.life = 0;
+      for (const v of this.ships.values()) v.trail.reset();
+    }
+    this.lastPhase = rt.phase;
     this.updateShips(dt);
     const ceremony = this.updatePodium();
     this.updatePickups();
@@ -973,7 +986,7 @@ export class RaceScene {
       model.setShield(ship.shield > 0, this.time);
       // Rivals right in front of the lens fade out instead of filling the screen.
       const lensDist = r === rt.focus ? 99 : pos.distanceTo(this.camera.position);
-      const lensFade = lensDist < 12 ? Math.max(0.12, (lensDist - 4) / 8) : 1;
+      const lensFade = lensDist < 15 ? Math.max(0.06, (lensDist - 5) / 10) : 1;
       model.setGhost(r.kind === "ghost" ? 0.35 : ship.cloak > 0 ? (r.isMe ? 0.4 : 0.12) : lensFade);
       root.visible = !r.out && (ship.state !== "fall" || ship.h > -30);
       view.trail.mesh.visible = !r.out;
@@ -1043,7 +1056,7 @@ export class RaceScene {
       const tail = this.v3.copy(pos).addScaledVector(ship.fwd, -1.7).addScaledVector(f.up, 0.2);
       const speed01 = Math.min(1.4, Math.max(0, ship.speed) / ship.tune.top);
       const trailColor = this.c1.set(ship.driftDir !== 0 && ship.driftTier > 0 ? DRIFT_SPARK[ship.driftTier]! : new Color(r.livery.glow));
-      view.trail.update(tail, f.up, right, 0.22 + boosting * 0.2, (ship.cloak > 0 ? 0.05 : 1) * Math.min(1, speed01) * (0.12 + boosting * 0.6 + (ship.driftTier > 0 && ship.driftDir !== 0 ? 0.35 : 0)), trailColor);
+      view.trail.update(tail, f.up, right, 0.13 + boosting * 0.12, (ship.cloak > 0 ? 0.05 : 1) * Math.min(1, speed01) * (0.12 + boosting * 0.6 + (ship.driftTier > 0 && ship.driftDir !== 0 ? 0.35 : 0)), trailColor);
 
       // Particles: exhaust, drift sparks, offroad dust.
       const nearCam = root.position.distanceToSquared(this.camera.position) < 120 * 120;
@@ -1249,7 +1262,7 @@ export class RaceScene {
 
   private buildProjectile(kind: string): Object3D {
     const g = new Group();
-    g.scale.setScalar(kind === "seeker" ? 1.6 : kind === "singularity" ? 1.8 : kind === "bolt" ? 1.25 : 1.2);
+    g.scale.setScalar(kind === "seeker" ? 2.4 : kind === "singularity" ? 1.8 : kind === "bolt" ? 1.25 : 1.2);
     if (kind === "seeker") {
       const body = new Mesh(new CylinderGeometry(0.28, 0.35, 1.8, 12), new MeshStandardMaterial({ color: "#e8e8ee", metalness: 0.7, roughness: 0.3 }));
       body.rotation.x = Math.PI / 2;
@@ -1262,6 +1275,9 @@ export class RaceScene {
       flame.rotation.x = -Math.PI / 2;
       flame.position.z = 1.5;
       g.add(flame);
+      const beacon = new Sprite(new SpriteMaterial({ map: this.dot, color: new Color("#ff2a4a").multiplyScalar(3), blending: AdditiveBlending, depthWrite: false, toneMapped: false }));
+      beacon.scale.setScalar(2.6);
+      g.add(beacon);
     } else if (kind === "bolt") {
       g.add(new Mesh(new SphereGeometry(0.75, 16, 12), this.glow("#5affa0", 2.5)));
       const ring = new Mesh(new TorusGeometry(1.1, 0.12, 8, 24), this.glow("#b6ffd9", 2));
@@ -1427,6 +1443,7 @@ export class RaceScene {
   }
 
   private fovKick = 0;
+  private lastPhase = "";
   private readonly shadowDir = new Vector3();
   private podium: Group | null = null;
   private podiumSnap = false;

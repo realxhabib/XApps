@@ -188,7 +188,7 @@ export function RaceHud({ hud, minimap, onExit, onRetry }: { hud: HudSnapshot; m
   return (
     <div className="pointer-events-none absolute inset-0 select-none" style={{ fontFamily: "var(--font-display), system-ui, sans-serif" }}>
       <AnimatePresence>
-        {showRace && !hud.spectator ? (
+        {showRace && !hud.spectator && !hud.out ? (
           <motion.div key="top" className="absolute left-3 top-3 flex flex-col gap-2" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}>
             <ItemSlots hud={hud} />
           </motion.div>
@@ -235,7 +235,12 @@ export function RaceHud({ hud, minimap, onExit, onRetry }: { hud: HudSnapshot; m
 
       {showRace ? <div className="absolute bottom-3 left-3">{minimap}</div> : null}
 
-      {showRace && !hud.spectator ? (
+      {hud.spectating ? (
+        <div className="absolute inset-x-0 bottom-[22%] flex justify-center">
+          <Pill className="text-[14px] not-italic">👀 Spectating {hud.spectating}</Pill>
+        </div>
+      ) : null}
+      {showRace && !hud.spectator && !hud.out ? (
         <div className="absolute bottom-2 right-3 pr-2 max-sm:bottom-[168px]">
           <motion.div key={hud.place} initial={{ scale: 1.5, rotate: -8 }} animate={{ scale: 1, rotate: 0 }} transition={spring.bouncy} style={{ transformOrigin: "100% 100%" }}>
             {hud.battle ? (
@@ -288,7 +293,15 @@ export function RaceHud({ hud, minimap, onExit, onRetry }: { hud: HudSnapshot; m
       <AnimatePresence>{hud.phase === "podium" ? <Podium key="podium" hud={hud} /> : null}</AnimatePresence>
       <AnimatePresence>
         {hud.phase === "finished" && hud.out ? (
-          <motion.div key="out" className="absolute inset-x-0 top-[18%] text-center text-[clamp(34px,9vw,68px)] font-black italic text-[#ff6b6b]" style={{ WebkitTextStroke: "2px #1b0b3a", filter: "drop-shadow(0 4px 0 rgba(0,0,0,0.5))" }} initial={{ scale: 0.4, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ opacity: 0 }} transition={spring.bouncy}>
+          <motion.div
+            key="out"
+            className="absolute inset-x-0 top-[18%] text-center text-[clamp(34px,9vw,68px)] font-black italic text-[#ff6b6b]"
+            style={{ WebkitTextStroke: "2px #1b0b3a", filter: "drop-shadow(0 4px 0 rgba(0,0,0,0.5))" }}
+            initial={{ scale: 0.4, opacity: 0, y: 0 }}
+            animate={{ scale: [0.4, 1, 1, 0.42], opacity: [0, 1, 1, 0.95], y: ["0vh", "0vh", "0vh", "-14vh"] }}
+            transition={{ duration: 3, times: [0, 0.12, 0.7, 1] }}
+            exit={{ opacity: 0 }}
+          >
             {hud.battle ? "OUT OF ORBS" : "KNOCKED OUT"}
           </motion.div>
         ) : hud.phase === "finished" && hud.finishedPlace !== null ? (
