@@ -13,13 +13,16 @@ import type { AppManifest } from "@/platform/types";
 export function AppArt({ app, className }: { app: AppManifest; className?: string }) {
   const cover = appImageSrc(app.coverImage);
   const [failed, setFailed] = useState<string | null>(null);
-  if (cover && failed !== cover) return <CoverArt src={cover} onError={() => setFailed(cover)} className={className} />;
+  if (cover && failed !== cover) {
+    return <CoverArt src={cover} onError={() => setFailed(cover)} className={className} rush={app.slug === "nova-rally"} />;
+  }
   return <DrawnArt app={app} className={className} />;
 }
 
 /** An uploaded cover: fills the art area with a slow drift, fading out at the bottom into the card. */
-function CoverArt({ src, onError, className }: { src: string; onError: () => void; className?: string }) {
+function CoverArt({ src, onError, className, rush = false }: { src: string; onError: () => void; className?: string; rush?: boolean }) {
   const reduced = useReducedMotion();
+  if (rush) return <RushCover src={src} onError={onError} className={className} reduced={!!reduced} />;
   return (
     <div className={cn("relative overflow-hidden", className)} aria-hidden>
       <motion.img
@@ -32,6 +35,46 @@ function CoverArt({ src, onError, className }: { src: string; onError: () => voi
         animate={reduced ? { scale: 1 } : { scale: [1.01, 1.05, 1.01] }}
         transition={reduced ? { duration: 0 } : { duration: 18, repeat: Infinity, ease: "easeInOut" }}
       />
+      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-ink-850/90" />
+    </div>
+  );
+}
+
+/** Racing covers: a steady push toward the vanishing point with light streaks rushing past. */
+const STREAKS = [
+  { y: 18, delay: 0, dur: 1.1, w: 34, from: "#ff9ef0" },
+  { y: 32, delay: 0.5, dur: 0.9, w: 26, from: "#9ef4ff" },
+  { y: 64, delay: 0.25, dur: 1.2, w: 40, from: "#ffffff" },
+  { y: 78, delay: 0.8, dur: 1.0, w: 30, from: "#ffd166" },
+  { y: 48, delay: 1.1, dur: 1.3, w: 22, from: "#b18cff" },
+] as const;
+
+function RushCover({ src, onError, className, reduced }: { src: string; onError: () => void; className?: string; reduced: boolean }) {
+  return (
+    <div className={cn("relative overflow-hidden", className)} aria-hidden>
+      <motion.img
+        src={src}
+        alt=""
+        draggable={false}
+        onError={onError}
+        className="absolute inset-0 size-full object-cover"
+        style={{ transformOrigin: "46% 52%" }}
+        initial={{ scale: 1.02 }}
+        animate={reduced ? { scale: 1.02 } : { scale: [1.02, 1.12], x: ["0%", "-1.5%"] }}
+        transition={reduced ? { duration: 0 } : { duration: 7, repeat: Infinity, repeatType: "mirror", ease: "easeInOut" }}
+      />
+      {reduced
+        ? null
+        : STREAKS.map((s, i) => (
+            <motion.span
+              key={i}
+              className="absolute h-[2px] rounded-full mix-blend-screen"
+              style={{ top: `${s.y}%`, width: `${s.w}%`, background: `linear-gradient(${i % 2 ? 270 : 90}deg, transparent, ${s.from})` }}
+              initial={{ left: "45%", opacity: 0 }}
+              animate={{ left: i % 2 ? ["45%", "-45%"] : ["45%", "110%"], opacity: [0, 0.9, 0] }}
+              transition={{ duration: s.dur, delay: s.delay, repeat: Infinity, repeatDelay: 0.6, ease: "easeIn" }}
+            />
+          ))}
       <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-ink-850/90" />
     </div>
   );
@@ -371,6 +414,43 @@ function DrawnArt({ app, className }: { app: AppManifest; className?: string }) 
         </div>
       );
     }
+    case "nova-rally":
+      // A rocket racer banking round a ringed planet, leaving a light trail.
+      return (
+        <div className={className} aria-hidden>
+          <div className="relative flex size-full items-center justify-center py-2">
+            <svg viewBox="0 0 160 110" className="h-full overflow-visible">
+              <defs>
+                <radialGradient id="nr-art-planet" cx="0.35" cy="0.3">
+                  <stop offset="0" stopColor="#ffc59a" />
+                  <stop offset="1" stopColor="#c2461f" />
+                </radialGradient>
+                <linearGradient id="nr-art-trail" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0" stopColor={b} stopOpacity="0" />
+                  <stop offset="1" stopColor={b} />
+                </linearGradient>
+              </defs>
+              {[[18, 16], [140, 22], [30, 92], [128, 96], [70, 8], [150, 64]].map(([x, y], i) => (
+                <circle key={i} cx={x} cy={y} r={1.4} fill="#fff" opacity={0.8} />
+              ))}
+              <circle cx="80" cy="56" r="28" fill="url(#nr-art-planet)" />
+              <ellipse cx="80" cy="58" rx="62" ry="15" fill="none" stroke={a} strokeWidth="3" opacity="0.8" />
+              <motion.g
+                animate={reduced ? { x: 0 } : { x: [-50, 40, -50] }}
+                transition={reduced ? { duration: 0 } : { duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
+              >
+                <path d="M30 78 Q55 70 76 72" fill="none" stroke="url(#nr-art-trail)" strokeWidth="5" strokeLinecap="round" />
+                <g transform="translate(84 71) rotate(-8)">
+                  <path d="M-12 -5 L8 -4 Q16 0 8 4 L-12 5 Z" fill="#fff" stroke="#1b0b3a" strokeWidth="1.6" />
+                  <path d="M-10 -5 L-15 -10 L-5 -5 Z M-10 5 L-15 10 L-5 5 Z" fill={a} />
+                  <ellipse cx="1" cy="-1" rx="4" ry="2.4" fill="#46e6ff" />
+                  <path d="M-12 -3 L-19 0 L-12 3 Z" fill="#ffb347" />
+                </g>
+              </motion.g>
+            </svg>
+          </div>
+        </div>
+      );
     case "mini-golf":
       return (
         <div className={className} aria-hidden>
