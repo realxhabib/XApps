@@ -18,9 +18,9 @@
 // Vercel preview/development builds skip unless SYNC_APPS=always (a preview
 // must not publish its catalog to the production database). `--build` is how
 // `npm run build` calls it: a failure explains that it is failing the build.
-// When Supabase itself is down or timing out (network errors, 5xx, 429),
-// requests are retried with backoff; if it still can't be reached, a build
-// warns and carries on (the database keeps the previous catalog; re-run
+// When Supabase itself is down or timing out (network errors, 502/503/504),
+// requests are retried with backoff (`fetchWithRetry`); if it still can't be
+// reached, a build warns and carries on (the database keeps the previous catalog; re-run
 // `npm run sync-apps` or redeploy once Supabase recovers). Real problems (a
 // wrong key, a missing schema, a taken slug) still fail the build.
 //
@@ -139,7 +139,7 @@ const supabase = createClient(url, key, {
 /**
  * A sleeping, restarting or busy database can leave requests hanging or answer 502/503/504
  * (PostgREST's PGRST002 "could not query the database for the schema cache" is a 503): retry
- * those for about two minutes (every write here is idempotent) before failing the build.
+ * those for about two minutes (every write here is idempotent); after that `outage()` decides.
  */
 async function fetchWithRetry(input, init) {
   const delays = [2_000, 5_000, 10_000, 20_000, 30_000, 45_000];
@@ -189,24 +189,21 @@ function isOutage(error, status) {
   return /fetch failed|timeout|timed out|aborted|ECONN|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|socket|network|upstream|gateway/i.test(text);
 }
 
-const RETRY_DELAYS = [2_000, 5_000, 10_000, 20_000];
-
-/** Runs a Supabase query, retrying while Supabase looks down; gives up per `isOutage`. */
+/** Runs a Supabase query (`fetchWithRetry` already retried a busy or waking database). */
 async function query(what, run) {
-  for (let attempt = 0; ; attempt++) {
-    let result;
-    try {
-      result = await run();
-    } catch (error) {
-      result = { data: null, error: { message: error?.message ?? String(error), details: error?.cause?.message }, status: 0 };
-    }
-    const { data, error, status } = result;
-    if (!error) return data;
-    if (!isOutage(error, status)) fail(dbError(what, error));
-    if (attempt >= RETRY_DELAYS.length) outage(dbError(what, error));
-    log(`sync-apps: Supabase looks unavailable (${status || "no response"}); retrying in ${RETRY_DELAYS[attempt] / 1000}s…`);
-    await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
+  let result;
+  try {
+    const request = run();
+    // postgrest-js has its own retries; with ours underneath they would multiply.
+    if (typeof request.retry === "function") request.retry(false);
+    result = await request;
+  } catch (error) {
+    result = { data: null, error: { message: error?.message ?? String(error), details: error?.cause?.message }, status: 0 };
   }
+  const { data, error, status } = result;
+  if (!error) return data;
+  if (isOutage(error, status)) outage(dbError(what, error));
+  fail(dbError(what, error));
 }
 
 /** Supabase stayed unreachable: a build deploys anyway (with a loud warning); a manual run fails. */
