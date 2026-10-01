@@ -64,6 +64,19 @@ export type RaceSound =
   | "whoosh";
 
 export type MusicTheme = "mars" | "belt" | "saturn" | "nebula" | "luna" | "sun" | "europa" | "menu";
+const AUDIO_BASE = "/audio/nova-rally";
+
+interface AudioManifest {
+  version: 1;
+  sampleRate: number;
+  sfx: Partial<Record<RaceSound, { start: number; dur: number }>>;
+  music: Partial<Record<MusicTheme, Record<"normal" | "final", { file: string; loopStart: number; loopEnd: number }>>>;
+}
+
+/** Every effect and music theme, for the offline renderer. */
+export const RACE_SOUNDS: readonly RaceSound[] = ["countdown", "go", "rocketStart", "stall", "boost", "boostPad", "miniTurbo1", "miniTurbo2", "miniTurbo3", "driftStart", "itemBox", "roulette", "rouletteStop", "fire", "missile", "mineDrop", "shieldUp", "shieldPop", "explosion", "spinout", "empZap", "singularity", "warp", "cloak", "wallHit", "bump", "land", "trick", "coin", "jump", "fall", "respawn", "lap", "finalLap", "finish", "win", "lose", "positionUp", "positionDown", "select", "click", "whoosh"];
+export const MUSIC_THEMES: readonly MusicTheme[] = ["mars", "belt", "saturn", "nebula", "luna", "sun", "europa", "menu"];
+
 
 export type AnnouncerLine =
   | "three"
@@ -647,7 +660,7 @@ interface EngineNodes {
 
 /** Where a one-shot plays: destination, start time and pitch multiplier. */
 interface Voice {
-  ctx: AudioContext;
+  ctx: BaseAudioContext;
   out: AudioNode;
   t: number;
   p: number;
@@ -760,12 +773,85 @@ export class RaceAudio {
     this.impulse = null;
     this.pulse = null;
     this.probe = null;
+    // Decoded buffers belong to the old context.
+    this.sprite = null;
+    this.spriteLoad = null;
+    this.musicBuffers.clear();
+    this.musicLoads.clear();
+    this.fileMusic = null;
     if (ctx) void ctx.close().catch(() => {});
   }
 
   /** Call from a user gesture (so browsers let us play). Creates the context lazily. */
   resume(): void {
     this.ensure();
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Offline rendering (scripts/render-nova-audio.mjs bakes these to MP3)     */
+  /* ---------------------------------------------------------------------- */
+
+  /** Builds the shared pieces (noise, impulse, pulse wave) on an offline context. */
+  private static offlineVoice(ctx: OfflineAudioContext): RaceAudio {
+    const a = new RaceAudio();
+    a.enabled = true;
+    // Offline contexts expose every node factory the synth uses; the live-only bits (resume/close) are never called.
+    a.ctx = ctx as unknown as AudioContext;
+    const len = ctx.sampleRate * 2;
+    a.noise = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = a.noise.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    a.impulse = a.makeImpulse(ctx, 2.4, 3.2);
+    const n = 32;
+    const real = new Float32Array(n);
+    const imag = new Float32Array(n);
+    for (let k = 1; k < n; k++) {
+      real[k] = Math.sin(2 * Math.PI * k * 0.25) / k;
+      imag[k] = (1 - Math.cos(2 * Math.PI * k * 0.25)) / k;
+    }
+    a.pulse = ctx.createPeriodicWave(real, imag);
+    return a;
+  }
+
+  /** Renders one effect exactly as the live synth would, before the effects bus (dry + its reverb send). */
+  static async renderSound(sound: RaceSound, sampleRate = 44100, seconds = 3): Promise<AudioBuffer> {
+    const ctx = new OfflineAudioContext(2, Math.ceil(sampleRate * seconds), sampleRate);
+    const a = RaceAudio.offlineVoice(ctx);
+    const out = ctx.createGain();
+    out.connect(ctx.destination);
+    const verb = ctx.createConvolver();
+    verb.buffer = a.makeImpulse(ctx, 1.6, 3.5);
+    const wet = ctx.createGain();
+    wet.gain.value = 0.5;
+    verb.connect(wet).connect(ctx.destination);
+    const send = ctx.createGain();
+    send.gain.value = VERB[sound] ?? 0.08;
+    out.connect(send).connect(verb);
+    a.sfx(sound, { ctx, out, t: 0.005, p: 1 });
+    return ctx.startRendering();
+  }
+
+  /**
+   * Renders a seamless music loop: two passes are rendered and the second is
+   * kept, so the reverb and delay tails of the loop's end already ring into
+   * its start. Rendered before the music bus.
+   */
+  static async renderMusic(name: MusicTheme, finalLap: boolean, sampleRate = 44100): Promise<{ buffer: AudioBuffer; loopStart: number; loopEnd: number }> {
+    const th = theme(name);
+    const total = th.bars * 16;
+    const six = 60 / (th.bpm * (finalLap ? 1.08 : 1)) / 4;
+    const loop = total * six;
+    const lead = 0.05;
+    const ctx = new OfflineAudioContext(2, Math.ceil(sampleRate * (lead + loop * 2 + 0.5)), sampleRate);
+    const a = RaceAudio.offlineVoice(ctx);
+    a.finalLap = finalLap;
+    a.musicBus = ctx.createGain();
+    a.musicBus.connect(ctx.destination);
+    a.startTheme(name);
+    a.stopScheduler();
+    for (let step = 0; step < total * 2; step++) a.scheduleStep(th, step % total, lead + step * six);
+    const buffer = await ctx.startRendering();
+    return { buffer, loopStart: lead + loop, loopEnd: lead + loop * 2 };
   }
 
   dispose(): void {
@@ -853,14 +939,15 @@ export class RaceAudio {
       }
       this.pulse = ctx.createPeriodicWave(real, imag);
 
-      if (this.wantTheme) this.startTheme(this.wantTheme);
+      this.loadSprite();
+      if (this.wantTheme) this.music(this.wantTheme);
     }
     if (this.ctx.state === "suspended") void this.ctx.resume().catch(() => {});
     return this.ctx;
   }
 
   /** Stereo exponentially decaying noise, lightly darkened over time: a small hall. */
-  private makeImpulse(ctx: AudioContext, seconds: number, decay: number): AudioBuffer {
+  private makeImpulse(ctx: BaseAudioContext, seconds: number, decay: number): AudioBuffer {
     const rate = ctx.sampleRate;
     const len = Math.floor(rate * seconds);
     const pre = Math.floor(rate * 0.012);
@@ -1036,7 +1123,7 @@ export class RaceAudio {
   /* Primitives                                                              */
   /* ---------------------------------------------------------------------- */
 
-  private osc(ctx: AudioContext, wave: Wave): OscillatorNode {
+  private osc(ctx: BaseAudioContext, wave: Wave): OscillatorNode {
     const o = ctx.createOscillator();
     if (wave === "pulse") {
       if (this.pulse) o.setPeriodicWave(this.pulse);
@@ -1387,18 +1474,30 @@ export class RaceAudio {
     } else {
       out.connect(this.sfxBus);
     }
-    if (this.sfxVerb) {
-      const send = ctx.createGain();
-      send.gain.value = VERB[sound] ?? 0.08;
-      out.connect(send).connect(this.sfxVerb);
-      nodes.push(send);
-    }
     const pitch = opts?.pitch;
-    const v: Voice = { ctx, out, t: ctx.currentTime + 0.005, p: pitch && pitch > 0 && Number.isFinite(pitch) ? pitch : 1 };
-    try {
-      this.sfx(sound, v);
-    } catch {
-      // A bad parameter should never break the game loop.
+    const rate = pitch && pitch > 0 && Number.isFinite(pitch) ? pitch : 1;
+    const clip = this.sprite && this.manifest?.sfx[sound];
+    if (clip && this.sprite) {
+      // Recorded: one buffer source plays its slice of the sprite (reverb already baked in).
+      const src = ctx.createBufferSource();
+      src.buffer = this.sprite;
+      src.playbackRate.value = rate;
+      src.connect(out);
+      src.start(ctx.currentTime + 0.005, clip.start, clip.dur);
+      nodes.push(src);
+    } else {
+      if (this.sfxVerb) {
+        const send = ctx.createGain();
+        send.gain.value = VERB[sound] ?? 0.08;
+        out.connect(send).connect(this.sfxVerb);
+        nodes.push(send);
+      }
+      const v: Voice = { ctx, out, t: ctx.currentTime + 0.005, p: rate };
+      try {
+        this.sfx(sound, v);
+      } catch {
+        // A bad parameter should never break the game loop.
+      }
     }
     window.setTimeout(() => {
       for (const n of nodes) n.disconnect();
@@ -1730,14 +1829,21 @@ export class RaceAudio {
       this.song = null;
       return;
     }
-    if (themeName === this.curTheme && this.timer !== null) return;
-    this.startTheme(themeName);
+    if (themeName === this.curTheme && (this.timer !== null || this.fileMusic)) return;
+    if (!this.playRecorded(themeName)) {
+      this.startTheme(themeName);
+      // Fetch the recording; it takes over (crossfade) as soon as it's decoded.
+      void this.loadMusic(themeName).then(() => {
+        if (this.wantTheme === themeName && this.curTheme === themeName && !this.fileMusic) this.playRecorded(themeName);
+      });
+    }
   }
 
   /** Final lap: ~8% faster, a semitone higher, plus a counter-melody and busier hats. */
   setIntensity(finalLap: boolean): void {
     if (this.finalLap === finalLap) return;
     this.finalLap = finalLap;
+    if (this.fileMusic && this.curTheme) this.playRecorded(this.curTheme);
     const th = this.song;
     const delay = this.bus?.delay;
     if (th && delay && this.ctx) delay.delayTime.setTargetAtTime(3 * this.sixteenth(th), this.ctx.currentTime, 0.05);
@@ -1756,6 +1862,7 @@ export class RaceAudio {
   }
 
   private fadeOutSong(seconds: number): void {
+    this.stopRecorded(seconds);
     const ctx = this.ctx;
     const bus = this.bus;
     this.bus = null;
@@ -1771,6 +1878,126 @@ export class RaceAudio {
       },
       seconds * 1000 + 3000, // let the reverb tail die first
     );
+  }
+
+  /* Recorded audio (public/audio/nova-rally, baked by scripts/render-nova-audio.mjs) */
+
+  private manifest: AudioManifest | null = null;
+  private manifestLoad: Promise<AudioManifest | null> | null = null;
+  private sprite: AudioBuffer | null = null;
+  private spriteLoad: Promise<void> | null = null;
+  private musicBuffers = new Map<string, AudioBuffer>();
+  private musicLoads = new Map<string, Promise<void>>();
+  private fileMusic: { src: AudioBufferSourceNode; gain: GainNode; key: string } | null = null;
+
+  private loadManifest(): Promise<AudioManifest | null> {
+    if (!this.manifestLoad) {
+      this.manifestLoad = fetch(`${AUDIO_BASE}/manifest.json`)
+        .then((r) => (r.ok ? (r.json() as Promise<AudioManifest>) : null))
+        .then((m) => (this.manifest = m && m.version === 1 ? m : null))
+        .catch(() => null);
+    }
+    return this.manifestLoad;
+  }
+
+  private async decode(file: string): Promise<AudioBuffer | null> {
+    const ctx = this.ctx;
+    if (!ctx) return null;
+    try {
+      const res = await fetch(`${AUDIO_BASE}/${file}`);
+      if (!res.ok) return null;
+      const data = await res.arrayBuffer();
+      return await ctx.decodeAudioData(data);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Effects sprite: fetched once per audio context. */
+  private loadSprite(): void {
+    if (this.spriteLoad || typeof fetch === "undefined") return;
+    const ctx = this.ctx;
+    this.spriteLoad = this.loadManifest().then(async (m) => {
+      if (!m) return;
+      const buf = await this.decode("sfx.mp3");
+      if (buf && this.ctx === ctx) this.sprite = buf;
+    });
+  }
+
+  private loadMusic(name: MusicTheme): Promise<void> {
+    const key = name;
+    let p = this.musicLoads.get(key);
+    if (!p) {
+      const ctx = this.ctx;
+      p = this.loadManifest().then(async (m) => {
+        const entry = m?.music[name];
+        if (!entry) return;
+        for (const variant of ["normal", "final"] as const) {
+          const buf = await this.decode(entry[variant].file);
+          if (buf && this.ctx === ctx) this.musicBuffers.set(`${name}:${variant}`, buf);
+        }
+      });
+      this.musicLoads.set(key, p);
+    }
+    return p;
+  }
+
+  /** Plays the recorded loop for a theme (crossfading from whatever played). Returns false when it isn't loaded yet. */
+  private playRecorded(name: MusicTheme): boolean {
+    const ctx = this.ctx;
+    const musicBus = this.musicBus;
+    const variant = this.finalLap ? "final" : "normal";
+    const buf = this.musicBuffers.get(`${name}:${variant}`);
+    const entry = this.manifest?.music[name]?.[variant];
+    if (!ctx || !musicBus || !buf || !entry) return false;
+    const key = `${name}:${variant}`;
+    if (this.fileMusic?.key === key) return true;
+    // Hand over from the synth (or the other variant) with a short crossfade.
+    const prevSynth = this.bus;
+    if (prevSynth) {
+      this.bus = null;
+      const g = prevSynth.out.gain;
+      const t = ctx.currentTime;
+      g.cancelScheduledValues(t);
+      g.setValueAtTime(g.value, t);
+      g.linearRampToValueAtTime(0, t + 0.6);
+      window.setTimeout(() => prevSynth.nodes.forEach((n) => n.disconnect()), 4000);
+    }
+    this.stopScheduler();
+    this.stopRecorded(0.6);
+    const gain = ctx.createGain();
+    const t = ctx.currentTime;
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(1, t + (name === "menu" ? 0.8 : 0.4));
+    gain.connect(musicBus);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    src.loopStart = entry.loopStart;
+    src.loopEnd = entry.loopEnd;
+    src.connect(gain);
+    src.start(t, entry.loopStart);
+    this.fileMusic = { src, gain, key };
+    this.song = theme(name);
+    this.curTheme = name;
+    return true;
+  }
+
+  private stopRecorded(seconds: number): void {
+    const ctx = this.ctx;
+    const fm = this.fileMusic;
+    this.fileMusic = null;
+    if (!ctx || !fm) return;
+    const t = ctx.currentTime;
+    fm.gain.gain.cancelScheduledValues(t);
+    fm.gain.gain.setValueAtTime(fm.gain.gain.value, t);
+    fm.gain.gain.linearRampToValueAtTime(0, t + seconds);
+    try {
+      fm.src.stop(t + seconds + 0.05);
+    } catch {
+      // Already stopped.
+    }
+    window.setTimeout(() => fm.gain.disconnect(), seconds * 1000 + 200);
   }
 
   private startTheme(name: MusicTheme): void {
