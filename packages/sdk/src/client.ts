@@ -33,6 +33,7 @@ import { calmPage, lockGestures } from "./gestures";
 import { createRandom, randomId, type Random } from "./random";
 import { createWindowTransport, type AppTransport } from "./transport";
 import { createMockHost, type MockHostOptions } from "./mock-host";
+import { createDirectMesh, type DirectMesh, type DirectOptions } from "./direct";
 import {
   accessProblem,
   achievementProblem,
@@ -545,6 +546,19 @@ export class XAppsClient {
     },
     /** Player ids currently connected (last known). */
     online: (): string[] => this.online.slice(),
+    /**
+     * Direct WebRTC connections to the other players, signaled over this room:
+     * high-rate traffic goes browser to browser, and falls back to the room per
+     * peer when a direct path can't be made. One per page; `close()` it when done.
+     *
+     * ```ts
+     * const net = xapps.room.direct({ relayHz: 8 });
+     * net.onMessage((data, from) => apply(data, from));
+     * net.send(myState);                      // fast: unordered, may drop
+     * net.send(hit, { reliable: true });      // ordered, retransmitted
+     * ```
+     */
+    direct: (options?: DirectOptions): DirectMesh => createDirectMesh(this, options),
   };
 
   /* ---------------------------------------------------------------- */

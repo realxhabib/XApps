@@ -31,6 +31,8 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const RELEASE_WINDOW_MS = 90;
 /** Swipes shorter than this (fraction of the height) are cancelled. */
 const MIN_SWIPE = 0.06;
+/** Sideways drag (share of the table's width) that aims fully left/right: the rack spans ~45% of it. */
+const LEAN_SPAN = 0.45;
 const KEY_CHARGE_MS = 1_300;
 
 interface Sample {
@@ -255,10 +257,12 @@ export function Stage({
     if (!rect) return;
     const up = Math.max(0, d.y0 - e.clientY);
     handAim.current = {
-      aim: Math.max(-1, Math.min(1, (e.clientX - d.x0) / (rect.width * 0.3))),
+      aim: Math.max(-1, Math.min(1, (e.clientX - d.x0) / (rect.width * LEAN_SPAN))),
       lift: Math.min(1, up / (rect.height * 0.3)),
     };
-    const est = flickOf(d.samples, rect.height);
+    // Aim is the lean you see (the ball slides with your finger); the flick's speed is the power.
+    const flick = flickOf(d.samples, rect.height);
+    const est = flick && { ...flick, aim: handAim.current.aim };
     power.set(est && up > rect.height * 0.02 ? est.power : 0);
     const cur = live.current.g;
     if (cur.showPreview && est && up > rect.height * 0.03 && mySeat !== null) scene?.setPreview(previewArc(est, 0.42), mySeat);
@@ -278,7 +282,8 @@ export function Stage({
       clearAim();
       return;
     }
-    release(flickOf(d.samples, rect.height));
+    const flick = flickOf(d.samples, rect.height);
+    release(flick && { ...flick, aim: Math.max(-1, Math.min(1, (e.clientX - d.x0) / (rect.width * LEAN_SPAN))) });
   };
 
   // Keyboard: ←/→ aim, hold Space (or Enter) to charge, release to throw.

@@ -20,6 +20,7 @@ import { play } from "@/lib/sfx";
 import { spring } from "@/lib/motion";
 import { copyText, openXIntent } from "@/lib/share";
 import { shareLinkFor } from "@/lib/media";
+import { cn } from "@/lib/utils";
 import type { RoomPeer, RoomTransport } from "@/platform/backend";
 import { BackendError } from "@/platform/backend";
 import { useBackend, useViewer } from "@/platform/client";
@@ -30,6 +31,7 @@ import { applyVersionToApp, isTestBuild } from "@/platform/shipping";
 import type { AppManifest, Json, LogLevel, Match, Profile } from "@/platform/types";
 import { showAchievement } from "./achievement-moment";
 import { FloatingReactions, Hud, type HudState, useFloatingReactions } from "./hud";
+import { ImmersiveChrome, useImmersive } from "./immersive";
 import { InviteCard, Lobby } from "./lobby";
 import { isMultiplayer, ordinal, seatedPlayers, viewerIsSpectator, viewerOutcome } from "./match-view";
 import { ResultsOverlay } from "./results-overlay";
@@ -416,6 +418,7 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
   const [goneSince, setGoneSince] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const { items: floating, push: pushFloating } = useFloatingReactions();
+  const { immersive, toggle: toggleImmersive } = useImmersive();
 
   const live = match.mode === "live";
   const me = playerOf(match, viewer.id);
@@ -936,26 +939,38 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
       style={{ "--accent-from": app.accent[0], "--accent-to": app.accent[1] } as React.CSSProperties}
     >
       <Backdrop app={app} />
-      <Hud
-        app={app}
-        match={match}
-        viewerId={viewer.id}
-        online={onlineIds}
-        hud={hud}
-        spectating={spectating}
-        spectatorCount={spectatorCount}
-        onBack={onBack}
-        onReact={react}
-        onForfeit={!spectating && match.status === "active" && seated.length > 1 && me?.state === "joined" ? () => setConfirmLeave(true) : undefined}
-        onCopyLink={async () => {
-          const ok = await copyText(`${window.location.origin}/play/${match.id}`);
-          toast(ok ? "Match link copied" : "Couldn't copy the link", { tone: ok ? "success" : "danger" });
-        }}
-      />
+      <ImmersiveChrome immersive={immersive}>
+        <Hud
+          app={app}
+          match={match}
+          viewerId={viewer.id}
+          online={onlineIds}
+          hud={hud}
+          spectating={spectating}
+          spectatorCount={spectatorCount}
+          onBack={onBack}
+          onReact={react}
+          onForfeit={!spectating && match.status === "active" && seated.length > 1 && me?.state === "joined" ? () => setConfirmLeave(true) : undefined}
+          onCopyLink={async () => {
+            const ok = await copyText(`${window.location.origin}/play/${match.id}`);
+            toast(ok ? "Match link copied" : "Couldn't copy the link", { tone: ok ? "success" : "danger" });
+          }}
+          immersive={immersive}
+          onToggleImmersive={toggleImmersive}
+        />
+      </ImmersiveChrome>
 
-      <div className="relative min-h-0 flex-1 p-3 pt-3">
+      <div
+        className={cn(
+          "relative min-h-0 flex-1",
+          immersive ? "pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]" : "p-3",
+        )}
+      >
         <motion.div
-          className="relative mx-auto h-full max-w-5xl overflow-hidden rounded-[2rem] bg-ink-900 shadow-[0_40px_120px_-40px_rgb(0_0_0/0.9)] ring-1 ring-white/10"
+          className={cn(
+            "relative mx-auto h-full overflow-hidden bg-ink-900",
+            !immersive && "max-w-5xl rounded-[2rem] shadow-[0_40px_120px_-40px_rgb(0_0_0/0.9)] ring-1 ring-white/10",
+          )}
           initial={{ opacity: 0, scale: 0.96, y: 16 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           transition={spring.soft}

@@ -4,9 +4,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { SDK_VERSION, XAppsError, type LaunchContext } from "@xapps/sdk";
 import { standaloneMatch, type HostHandlers } from "@xapps/sdk/host";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowLeft, FlaskConical, Maximize2, Minimize2, Share } from "lucide-react";
+import { ArrowLeft, FlaskConical, Share } from "lucide-react";
 import Link from "next/link";
-import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { toast } from "@/components/chrome/toasts";
 import { AppGlyph } from "@/components/marketplace/app-glyph";
 import { celebrate } from "@/components/motion/confetti";
@@ -19,12 +19,14 @@ import { haptic } from "@/lib/haptics";
 import { spring } from "@/lib/motion";
 import { openXIntent } from "@/lib/share";
 import { shareLinkFor } from "@/lib/media";
+import { cn } from "@/lib/utils";
 import { BackendError } from "@/platform/backend";
 import { useBackend, useViewer } from "@/platform/client";
 import { launchApp } from "@/platform/match-utils";
 import { invalidateProgress, useApp } from "@/platform/queries";
 import type { AppManifest, Json, LogLevel, Profile } from "@/platform/types";
 import { showAchievement } from "./achievement-moment";
+import { ImmersiveButton, ImmersiveChrome, useImmersive } from "./immersive";
 import {
   APP_ALLOW,
   APP_SANDBOX,
@@ -192,22 +194,6 @@ function LaunchError({ error, slug, app }: { error: unknown; slug: string; app: 
 }
 
 /* ---------------------------------------------------------------------- */
-/* Fullscreen                                                             */
-/* ---------------------------------------------------------------------- */
-
-const onFullscreenChange = (notify: () => void) => {
-  document.addEventListener("fullscreenchange", notify);
-  return () => document.removeEventListener("fullscreenchange", notify);
-};
-const noop = () => () => {};
-
-function useFullscreen() {
-  const active = useSyncExternalStore(onFullscreenChange, () => !!document.fullscreenElement, () => false);
-  const supported = useSyncExternalStore(noop, () => document.fullscreenEnabled === true, () => false);
-  return { active, supported };
-}
-
-/* ---------------------------------------------------------------------- */
 /* The running app                                                        */
 /* ---------------------------------------------------------------------- */
 
@@ -217,13 +203,12 @@ function AppStage({ app, versionId, viewer }: { app: AppManifest; versionId: str
   const queryClient = useQueryClient();
   const reduced = useReducedMotion();
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const roomRef = useRef<HTMLDivElement>(null);
   /** The bridge's emit, for handlers (which are built before the bridge exists). */
   const emitRef = useRef<Emit | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [seed] = useState(() => Math.random().toString(36).slice(2, 14));
   const [origin] = useState(() => (typeof window === "undefined" ? "" : window.location.origin));
-  const fullscreen = useFullscreen();
+  const { immersive, toggle: toggleImmersive } = useImmersive();
 
   const testBuild = !!versionId;
   const appUrl = origin ? resolveAppUrl(app.url, origin) : null;
@@ -390,91 +375,81 @@ function AppStage({ app, versionId, viewer }: { app: AppManifest; versionId: str
 
   const share = () => openXIntent(`Check out ${app.name} on XApps ${app.icon}`, `${window.location.origin}/apps/${app.slug}`);
 
-  const toggleFullscreen = () => {
-    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
-    else void roomRef.current?.requestFullscreen().catch(() => toast("Fullscreen isn't available here", { tone: "warning" }));
-  };
-
   return (
-    <div ref={roomRef} className="relative flex h-dvh flex-col overflow-hidden bg-ink-950">
+    <div className="relative flex h-dvh flex-col overflow-hidden bg-ink-950">
       <Backdrop accent={app.accent} />
-      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-white/[0.06] bg-ink-950/70 px-2 backdrop-blur-xl sm:gap-3 sm:px-3">
-        <Button variant="ghost" size="icon-sm" href={`/apps/${app.slug}`} aria-label={`Back to ${app.name}`} icon={<ArrowLeft className="size-4" />} />
-        <Link href={`/apps/${app.slug}`} className="flex min-w-0 flex-1 items-center gap-2.5 rounded-xl" aria-label={`${app.name} details`}>
-          <AppGlyph app={app} size={32} />
-          <span className="min-w-0">
-            <span className="flex items-center gap-2">
-              <span className="truncate font-display text-[15px] font-bold leading-tight text-ink-50">{app.name}</span>
-              {testBuild && (
-                <Badge tone="gold" className="shrink-0">
-                  <span className="inline-flex items-center gap-1" title="Test build: stats and achievements aren't saved">
-                    <FlaskConical className="size-3" aria-hidden />
-                    Test build
-                  </span>
-                </Badge>
-              )}
+      <ImmersiveChrome immersive={immersive}>
+        <header className="flex h-14 shrink-0 items-center gap-2 border-b border-white/[0.06] bg-ink-950/70 px-2 backdrop-blur-xl sm:gap-3 sm:px-3">
+          <Button variant="ghost" size="icon-sm" href={`/apps/${app.slug}`} aria-label={`Back to ${app.name}`} icon={<ArrowLeft className="size-4" />} />
+          <Link href={`/apps/${app.slug}`} className="flex min-w-0 flex-1 items-center gap-2.5 rounded-xl" aria-label={`${app.name} details`}>
+            <AppGlyph app={app} size={32} />
+            <span className="min-w-0">
+              <span className="flex items-center gap-2">
+                <span className="truncate font-display text-[15px] font-bold leading-tight text-ink-50">{app.name}</span>
+                {testBuild && (
+                  <Badge tone="gold" className="shrink-0">
+                    <span className="inline-flex items-center gap-1" title="Test build: stats and achievements aren't saved">
+                      <FlaskConical className="size-3" aria-hidden />
+                      Test build
+                    </span>
+                  </Badge>
+                )}
+              </span>
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.span
+                  key={status ?? "by"}
+                  className="block truncate text-xs leading-tight text-ink-300"
+                  initial={reduced ? { opacity: 0 } : { opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={reduced ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                  transition={spring.snappy}
+                  aria-live="polite"
+                >
+                  {status ?? `by @${app.developer.handle}`}
+                </motion.span>
+              </AnimatePresence>
             </span>
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.span
-                key={status ?? "by"}
-                className="block truncate text-xs leading-tight text-ink-300"
-                initial={reduced ? { opacity: 0 } : { opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={reduced ? { opacity: 0 } : { opacity: 0, y: -4 }}
-                transition={spring.snappy}
-                aria-live="polite"
-              >
-                {status ?? `by @${app.developer.handle}`}
-              </motion.span>
-            </AnimatePresence>
-          </span>
-        </Link>
-        <Button variant="glass" size="sm" onClick={share} icon={<Share className="size-3.5" />} aria-label={`Share ${app.name} on X`}>
-          <span className="hidden sm:inline">Share</span>
-        </Button>
-        {fullscreen.supported && (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={toggleFullscreen}
-            aria-label={fullscreen.active ? "Exit fullscreen" : "Fullscreen"}
-            aria-pressed={fullscreen.active}
-            icon={fullscreen.active ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
-          />
-        )}
-      </header>
+          </Link>
+          <Button variant="glass" size="sm" onClick={share} icon={<Share className="size-3.5" />} aria-label={`Share ${app.name} on X`}>
+            <span className="hidden sm:inline">Share</span>
+          </Button>
+          <ImmersiveButton immersive={immersive} onToggle={toggleImmersive} className="size-9" />
+        </header>
+      </ImmersiveChrome>
 
-      <div className="relative min-h-0 flex-1">
-        {appUrl ? (
-          <iframe
-            ref={iframeRef}
-            src={appUrl.href}
-            title={app.name}
-            className="absolute inset-0 size-full border-0 bg-ink-950"
-            sandbox={APP_SANDBOX}
-            allow={APP_ALLOW}
-          />
-        ) : (
-          origin && (
-            <div className="absolute inset-0 flex items-center justify-center p-6">
-              <EmptyState emoji="🔗" title="This app has no valid address" className="max-w-md">
-                The developer needs to fix the app&apos;s URL.
-              </EmptyState>
-            </div>
-          )
-        )}
-        <AnimatePresence>
-          {appUrl && !connected && (
-            <motion.div
-              key="loading"
-              className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-ink-950"
-              exit={{ opacity: 0, transition: { duration: 0.3 } }}
-            >
-              <PulsingGlyph app={app} />
-              <p className="text-sm text-ink-300">Opening {app.name}…</p>
-            </motion.div>
+      <div className={cn("relative min-h-0 flex-1", immersive && "pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]")}>
+        <div className="relative size-full">
+          {appUrl ? (
+            <iframe
+              ref={iframeRef}
+              src={appUrl.href}
+              title={app.name}
+              className="absolute inset-0 size-full border-0 bg-ink-950"
+              sandbox={APP_SANDBOX}
+              allow={APP_ALLOW}
+            />
+          ) : (
+            origin && (
+              <div className="absolute inset-0 flex items-center justify-center p-6">
+                <EmptyState emoji="🔗" title="This app has no valid address" className="max-w-md">
+                  The developer needs to fix the app&apos;s URL.
+                </EmptyState>
+              </div>
+            )
           )}
-        </AnimatePresence>
+          <AnimatePresence>
+            {appUrl && !connected && (
+              <motion.div
+                key="loading"
+                className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-ink-950"
+                exit={{ opacity: 0, transition: { duration: 0.3 } }}
+              >
+                <PulsingGlyph app={app} />
+                <p className="text-sm text-ink-300">Opening {app.name}…</p>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
       </div>
     </div>
   );

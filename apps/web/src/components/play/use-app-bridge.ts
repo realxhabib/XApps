@@ -14,7 +14,7 @@ import { BackendError, type Backend } from "@/platform/backend";
 import type { Match, StatStanding } from "@/platform/types";
 
 /** Sandbox for every app iframe the host renders (play room, app room and challenge setup). */
-export const APP_SANDBOX = "allow-scripts allow-same-origin allow-popups allow-forms allow-downloads";
+export const APP_SANDBOX = "allow-scripts allow-same-origin allow-popups allow-forms allow-downloads allow-pointer-lock";
 export const APP_ALLOW = "autoplay; clipboard-write; fullscreen; gamepad; web-share";
 
 export type Emit = <E extends HostEvent>(event: E, data: HostEventData<E>) => void;

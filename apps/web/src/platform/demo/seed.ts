@@ -205,6 +205,7 @@ export function buildSeed(): DemoDb {
       if (app.slug === "darts") return rng.int(24, 72) * 5;
       if (app.slug === "mini-golf") return rng.int(22, 36);
       if (app.slug === "nova-rally") return rng.int(12, 45);
+      if (app.slug === "frontline") return rng.int(3, 20);
       return rng.int(0, 2);
     };
     let sa = scoreFor();

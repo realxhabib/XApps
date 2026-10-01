@@ -1917,12 +1917,12 @@ begin
             'audio/webm', 'audio/wav', 'video/mp4', 'video/webm', 'video/quicktime']
             from storage.buckets where id = 'app-media'), 'app-media bucket';
   assert (select bool_and(stats = '[]'::jsonb and achievements = '[]'::jsonb) from public.apps
-           where slug not in ('quick-draw', 'four-in-a-row', 'trivia-royale', 'emoji-decode', 'hot-takes', 'wedge-wars', 'gregs-face', 'perfect-circle', 'cup-pong', 'darts', 'eight-ball', 'mini-golf')),
+           where slug not in ('quick-draw', 'four-in-a-row', 'trivia-royale', 'emoji-decode', 'hot-takes', 'wedge-wars', 'gregs-face', 'perfect-circle', 'cup-pong', 'darts', 'eight-ball', 'mini-golf', 'frontline')),
     'other existing apps declare nothing';
   -- First-party progress (20261002000200): valid lists, matching the web catalog (its test compares them).
   assert (select jsonb_object_agg(slug, jsonb_build_array(jsonb_array_length(stats), jsonb_array_length(achievements)))
             from public.apps where official and status = 'published' and stats <> '[]'::jsonb)
-       = '{"quick-draw":[4,8],"four-in-a-row":[3,9],"wedge-wars":[4,9],"gregs-face":[3,10],"perfect-circle":[3,9],"cup-pong":[4,10],"darts":[4,10],"eight-ball":[4,9],"mini-golf":[4,10]}'::jsonb,
+       = '{"quick-draw":[4,8],"four-in-a-row":[3,9],"wedge-wars":[4,9],"gregs-face":[3,10],"perfect-circle":[3,9],"cup-pong":[4,10],"darts":[4,10],"eight-ball":[4,9],"mini-golf":[4,10],"frontline":[4,9]}'::jsonb,
     'first-party stats + achievements';
   -- Retired first-party apps (official_apps.sql: sync-apps retires what the catalog dropped) keep theirs.
   assert (select jsonb_object_agg(slug, jsonb_build_array(jsonb_array_length(stats), jsonb_array_length(achievements)))

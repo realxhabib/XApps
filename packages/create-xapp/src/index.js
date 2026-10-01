@@ -38,9 +38,9 @@ export const SDK_RANGE = `^${readOwnVersion()}`;
 function readOwnVersion() {
   try {
     const pkg = JSON.parse(readFileSync(resolve(here, "..", "package.json"), "utf8"));
-    return typeof pkg.version === "string" ? pkg.version : "0.7.0";
+    return typeof pkg.version === "string" ? pkg.version : "0.8.0";
   } catch {
-    return "0.7.0";
+    return "0.8.0";
   }
 }
 
