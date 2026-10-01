@@ -126,6 +126,7 @@ const BARRIER_FS = /* glsl */ `
 uniform float uTime;
 uniform vec3 uColor;
 uniform vec3 uFocus;
+uniform float uAlpha;
 varying vec2 vUv;
 varying vec3 vWorld;
 float hex(vec2 p) {
@@ -142,7 +143,7 @@ void main() {
   float fade = (1.0 - vUv.x);
   float base = smoothstep(0.0, 0.08, vUv.x) * (1.0 - smoothstep(0.0, 0.35, vUv.x));
   float a = fade * (0.03 + near * 0.12) + h * fade * (0.05 + near * 0.3) + base * 0.22 + scan * 0.02 * fade;
-  gl_FragColor = vec4(uColor * (0.7 + near * 0.5), a);
+  gl_FragColor = vec4(uColor * (0.7 + near * 0.5), a * uAlpha);
 }`;
 
 const PAD_FS = /* glsl */ `
@@ -180,6 +181,7 @@ uniform vec3 uA;
 uniform vec3 uB;
 uniform vec3 uFocus;
 uniform float uShoulder;
+uniform float uBase;
 varying vec2 vUv;
 varying vec3 vWorld;
 varying vec3 vNormal;
@@ -208,7 +210,7 @@ void main() {
   float chev = line(fract((v - abs(u - 0.5) * 9.0) / 14.0 - uTime * 0.9) - 0.5, 0.025) * (1.0 - glowEdge);
   float light = clamp(edge + glowEdge * 0.35 + dash * 0.8 * far + grid * (0.12 + near * 0.25) * far + chev * (0.3 + near * 0.3) * far, 0.0, 1.0);
   vec3 col = mix(glass, mix(tint, vec3(1.0), edge * 0.6 + dash * 0.5) * (1.1 + near * 0.6), light);
-  float a = clamp(0.22 + fres * 0.45 + light, 0.0, 1.0);
+  float a = clamp(uBase + fres * 0.45 + light, 0.0, 1.0);
   gl_FragColor = vec4(col, a);
 }`;
 
@@ -273,7 +275,7 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
       new ShaderMaterial({
         vertexShader: LANE_VS,
         fragmentShader: LANE_FS,
-        uniforms: { uTime: { value: 0 }, uA: { value: laneA.clone() }, uB: { value: laneB.clone() }, uFocus: { value: new Vector3() }, uShoulder: { value: shoulder ? 1 : 0 } },
+        uniforms: { uTime: { value: 0 }, uA: { value: laneA.clone() }, uB: { value: laneB.clone() }, uFocus: { value: new Vector3() }, uShoulder: { value: shoulder ? 1 : 0 }, uBase: { value: theme === "sun" ? 0.62 : 0.22 } },
         transparent: true,
         depthWrite: false,
         side: DoubleSide,
@@ -381,7 +383,7 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
     new ShaderMaterial({
       vertexShader: BARRIER_VS,
       fragmentShader: BARRIER_FS,
-      uniforms: { uTime: { value: 0 }, uColor: { value: accent2.clone() }, uFocus: { value: new Vector3() } },
+      uniforms: { uTime: { value: 0 }, uColor: { value: accent2.clone() }, uFocus: { value: new Vector3() }, uAlpha: { value: def.lightLane ? 0.45 : 1 } },
       transparent: true,
       depthWrite: false,
       blending: AdditiveBlending,
@@ -672,6 +674,7 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
   const rampMat = own(new MeshStandardMaterial({ color: "#c9ced9", map: rampTex, roughness: 0.35, metalness: 0.6, emissive: accent2, emissiveMap: rampTex, emissiveIntensity: 0.6 }));
   const rampLaneMat = lightLane ? laneMaterial(false) : null;
   if (rampLaneMat) {
+    rampLaneMat.uniforms.uBase!.value = 0.62;
     rampLaneMat.uniforms.uA!.value = laneA.clone().lerp(new Color("#ffffff"), 0.35).multiplyScalar(1.3);
     rampLaneMat.uniforms.uB!.value = laneB.clone().lerp(new Color("#ffffff"), 0.35).multiplyScalar(1.3);
   }

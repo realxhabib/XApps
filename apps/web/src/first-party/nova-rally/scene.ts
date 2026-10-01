@@ -1088,10 +1088,10 @@ export class RaceScene {
       const throttle = r.isMe ? (r.finished ? 0.7 : rt.input.throttle) : ship.speed > 5 ? 0.9 : 0.2;
       model.setThrottle(Math.max(0.15, throttle), boosting, this.time);
       model.setDriftGlow(ship.driftDir !== 0 ? ship.driftTier : 0);
-      model.setShield(ship.shield > 0, this.time);
       // Rivals right in front of the lens fade out instead of filling the screen.
       const lensDist = r === rt.focus ? 99 : pos.distanceTo(this.camera.position);
       const lensFade = lensDist < 16 ? Math.max(0.06, (lensDist - 6) / 10) : 1;
+      model.setShield(ship.shield > 0 && lensDist > 6, this.time);
       model.setGhost(r.kind === "ghost" ? 0.35 : ship.cloak > 0 ? (r.isMe ? 0.4 : 0.12) : lensFade);
       // Rivals brushing the lens are hidden outright (even faded they fill the frame).
       root.visible = !r.out && (ship.state !== "fall" || ship.h > -30) && lensDist > 4.5;
@@ -1163,7 +1163,7 @@ export class RaceScene {
       const tail = this.v3.copy(pos).addScaledVector(ship.fwd, -1.7).addScaledVector(f.up, 0.2);
       const speed01 = Math.min(1.4, Math.max(0, ship.speed) / ship.tune.top);
       const trailColor = this.c1.set(ship.driftDir !== 0 && ship.driftTier > 0 ? DRIFT_SPARK[ship.driftTier]! : new Color(r.livery.glow));
-      view.trail.update(tail, f.up, right, 0.13 + boosting * 0.12, (ship.cloak > 0 ? 0.05 : 1) * Math.min(1, speed01) * (0.12 + boosting * 0.6 + (ship.driftTier > 0 && ship.driftDir !== 0 ? 0.35 : 0)), trailColor);
+      view.trail.update(tail, f.up, right, 0.13 + boosting * 0.12, (ship.cloak > 0 ? 0.05 : 1) * (this.track?.def.lightLane ? 0.55 : 1) * (r === rt.focus ? 1 : Math.min(1, lensFade)) * Math.min(1, speed01) * (0.12 + boosting * 0.6 + (ship.driftTier > 0 && ship.driftDir !== 0 ? 0.35 : 0)), trailColor);
 
       // Particles: exhaust, drift sparks, offroad dust.
       const nearCam = root.position.distanceToSquared(this.camera.position) < 120 * 120;
@@ -1329,6 +1329,8 @@ export class RaceScene {
       }
       frameAt(track, p.s, f);
       view.mesh.position.copy(f.pos).addScaledVector(f.right, p.d).addScaledVector(f.up, p.h);
+      // Nothing parks in the lens: shots that pass right by the camera are hidden for those frames.
+      view.mesh.visible = view.mesh.position.distanceToSquared(this.camera.position) > 25;
       this.m4.makeBasis(f.right, f.up, this.v2.copy(f.fwd).negate().multiplyScalar(Math.sign(p.vs) || 1));
       view.mesh.quaternion.setFromRotationMatrix(this.m4);
       if (p.kind === "mine") {
@@ -1640,9 +1642,9 @@ export class RaceScene {
     const cupProfile = [
       [0, 0], [0.55, 0], [0.55, 0.12], [0.18, 0.22], [0.14, 0.7], [0.5, 0.9], [0.72, 1.5], [0.66, 1.52], [0.44, 0.98], [0, 0.9],
     ].map(([x, y]) => new Vector2(x!, y!));
-    const trophy = new Mesh(new LatheGeometry(cupProfile, 32), new MeshStandardMaterial({ color: "#ffd24a", metalness: 1, roughness: 0.15, emissive: "#ff9a00", emissiveIntensity: 0.35 }));
-    trophy.position.set(xs[0]!, heights[0]! + 2.3, -0.4);
-    trophy.scale.setScalar(1.35);
+    const trophy = new Mesh(new LatheGeometry(cupProfile, 32), new MeshStandardMaterial({ color: "#ffd24a", metalness: 0.6, roughness: 0.25, emissive: "#ffb21a", emissiveIntensity: 0.9 }));
+    trophy.position.set(xs[0]!, heights[0]! + 2.7, -0.3);
+    trophy.scale.setScalar(1.15);
     trophy.name = "trophy";
     g.add(trophy);
     g.position.copy(this.podiumAnchor);
