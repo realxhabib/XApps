@@ -3,6 +3,7 @@ import { CommandPalette } from "@/components/chrome/command-palette";
 import { DemoBanner } from "@/components/chrome/demo-banner";
 import { Dock } from "@/components/chrome/dock";
 import { InboxWatcher } from "@/components/chrome/inbox-watcher";
+import { OutageBanner } from "@/components/chrome/outage-banner";
 import { SetupNotice } from "@/components/chrome/setup-notice";
 import { Toaster } from "@/components/chrome/toasts";
 import { TopBar } from "@/components/chrome/top-bar";
@@ -23,6 +24,7 @@ export default function SiteLayout({ children }: LayoutProps<"/">) {
       <CommandPalette />
       <InboxWatcher />
       <DemoBanner />
+      <OutageBanner />
       <Toaster />
       <ConfettiLayer />
       <AchievementLayer />

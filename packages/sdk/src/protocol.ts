@@ -9,7 +9,7 @@
  */
 
 export const PROTOCOL_VERSION = 1 as const;
-export const SDK_VERSION = "0.8.0";
+export const SDK_VERSION = "0.8.1";
 
 export type Json =
   | string
@@ -462,6 +462,12 @@ export const LIMITS = {
   setupSummaryLength: 140,
   /** Room messages per second per client (burst). */
   roomMessagesPerSecond: 30,
+  /**
+   * Shared-state and turn writes (`state.set`, `turn.end`, `round.set`) per
+   * client: a burst of `burst`, refilled at `perSecond`. Hosts answer the excess
+   * with `rate_limited`, so a stuck retry loop can't flood the database.
+   */
+  matchWrites: { burst: 10, perSecond: 4 },
   eventTypeLength: 64,
   storageKeyLength: 64,
   toastLength: 140,

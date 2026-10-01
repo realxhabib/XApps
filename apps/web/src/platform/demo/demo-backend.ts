@@ -545,6 +545,20 @@ export class DemoBackend implements Backend {
     }
   }
 
+  /**
+   * Plays as an outside profile (offline practice in the Supabase backend while
+   * its database is down): keeps it in the local database under the same id,
+   * so the match seats the real viewer.
+   */
+  adoptViewer(profile: Profile): void {
+    mutate((db) => {
+      const local = db.profiles[profile.id];
+      db.profiles[profile.id] = local ? { ...local, handle: profile.handle, name: profile.name, avatarUrl: profile.avatarUrl } : { ...profile };
+    });
+    if (getViewerId() !== profile.id) setViewerId(profile.id);
+    markHuman(profile.id);
+  }
+
   /* ---------------------------------------------------------------- */
   /* Session                                                          */
   /* ---------------------------------------------------------------- */
@@ -1730,7 +1744,7 @@ export class DemoBackend implements Backend {
     let version = 0;
     const match = this.withMatch(matchId, (_db, row) => {
       this.requirePlayer(row, viewer.id, "change the match state");
-      if (row.status !== "active") throw new BackendError("This match isn't running", "conflict");
+      if (row.status !== "active") throw new BackendError("This match isn't running", "forbidden");
       if (state !== null && byteLength(state) > LIMITS.matchStateBytes) {
         throw new BackendError("Match state is too large (max 64 KB)", "invalid");
       }
@@ -1746,7 +1760,7 @@ export class DemoBackend implements Backend {
     const viewer = this.requireViewer();
     return this.withMatch(matchId, (db, row) => {
       this.requirePlayer(row, viewer.id, "pass the turn");
-      if (row.status !== "active") throw new BackendError("This match isn't running", "conflict");
+      if (row.status !== "active") throw new BackendError("This match isn't running", "forbidden");
       if (row.turnUserId && row.turnUserId !== viewer.id) {
         // The app drives bots, so the human may pass a bot's turn. (SQL limits this to
         // practice; demo personas play as bots in real matches too.)
@@ -1769,7 +1783,7 @@ export class DemoBackend implements Backend {
     const viewer = this.requireViewer();
     return this.withMatch(matchId, (_db, row) => {
       this.requirePlayer(row, viewer.id, "set the round");
-      if (row.status !== "active") throw new BackendError("This match isn't running", "conflict");
+      if (row.status !== "active") throw new BackendError("This match isn't running", "forbidden");
       if (!Number.isInteger(round) || round < row.round || round > 1_000_000) {
         throw new BackendError("Rounds only go forward", "invalid");
       }

@@ -1917,12 +1917,12 @@ begin
             'audio/webm', 'audio/wav', 'video/mp4', 'video/webm', 'video/quicktime']
             from storage.buckets where id = 'app-media'), 'app-media bucket';
   assert (select bool_and(stats = '[]'::jsonb and achievements = '[]'::jsonb) from public.apps
-           where slug not in ('quick-draw', 'four-in-a-row', 'trivia-royale', 'emoji-decode', 'hot-takes', 'wedge-wars', 'gregs-face', 'perfect-circle', 'cup-pong', 'darts', 'eight-ball', 'mini-golf', 'frontline')),
+           where slug not in ('quick-draw', 'four-in-a-row', 'trivia-royale', 'emoji-decode', 'hot-takes', 'wedge-wars', 'gregs-face', 'perfect-circle', 'cup-pong', 'darts', 'eight-ball', 'mini-golf', 'frontline', 'nova-rally')),
     'other existing apps declare nothing';
   -- First-party progress (20261002000200): valid lists, matching the web catalog (its test compares them).
   assert (select jsonb_object_agg(slug, jsonb_build_array(jsonb_array_length(stats), jsonb_array_length(achievements)))
             from public.apps where official and status = 'published' and stats <> '[]'::jsonb)
-       = '{"quick-draw":[4,8],"four-in-a-row":[3,9],"wedge-wars":[4,9],"gregs-face":[3,10],"perfect-circle":[3,9],"cup-pong":[4,10],"darts":[4,10],"eight-ball":[4,9],"mini-golf":[4,10],"frontline":[4,9]}'::jsonb,
+       = '{"quick-draw":[4,8],"four-in-a-row":[3,9],"wedge-wars":[4,9],"gregs-face":[3,10],"perfect-circle":[3,9],"cup-pong":[4,10],"darts":[4,10],"eight-ball":[4,9],"mini-golf":[4,10],"frontline":[4,9],"nova-rally":[6,13]}'::jsonb,
     'first-party stats + achievements';
   -- Retired first-party apps (official_apps.sql: sync-apps retires what the catalog dropped) keep theirs.
   assert (select jsonb_object_agg(slug, jsonb_build_array(jsonb_array_length(stats), jsonb_array_length(achievements)))
@@ -3633,6 +3633,32 @@ begin
   assert has_function_privilege('authenticated', 'public.open_app(text, uuid)', 'execute'), 'users open apps';
   assert not has_function_privilege('anon', 'public.require_game(public.apps)', 'execute'), 'require_game internal';
   assert not has_function_privilege('anon', 'public.log_app_event(text, uuid, text, text, jsonb, text)', 'execute'), 'logs need sign-in';
+end $$;
+
+
+-- ---------------------------------------------------------------- Writes to a match that isn't running are final
+-- 42501, never 55000 (clients map 55000 to "conflict" and retry: a tab left open on a finished
+-- match once looped on this write for days). 20261007000000_stop_write_loops.
+reset role;
+create temp table loop_match as
+  select m.id, mp.user_id from public.matches m
+    join public.match_players mp on mp.match_id = m.id and mp.role = 'player' and mp.state in ('joined', 'submitted')
+   where m.status = 'active' limit 1;
+update public.matches set status = 'completed' where id = (select id from loop_match);
+grant select on loop_match to authenticated;
+set role authenticated;
+select set_config('request.jwt.claim.sub', (select user_id::text from loop_match), false);
+do $$
+begin
+  perform public.update_match_state((select id from loop_match), '{}', 0);
+  raise exception 'expected failure';
+exception when insufficient_privilege then
+  assert sqlerrm = 'This match isn''t running', sqlerrm;
+end $$;
+reset role;
+do $$
+begin
+  assert exists (select 1 from loop_match), 'had an active match to finish';
 end $$;
 
 \echo 'All database lifecycle checks passed ✔'

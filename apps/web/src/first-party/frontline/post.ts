@@ -3,7 +3,7 @@
  *
  *   world render → ambient occlusion (N8AO, half res) → the first-person
  *   weapon over a cleared depth buffer (so it gets no AO from the world) →
- *   bloom (muzzle flashes, fire, sun glints on wet asphalt) → ACES tone
+ *   sanitize (see below) → bloom (muzzle flashes, fire, sun glints on wet asphalt) → ACES tone
  *   mapping → color grade (lift / gamma / gain, split toning, saturation),
  *   vignette and a little film grain → SMAA.
  *
@@ -48,6 +48,30 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   outputColor = vec4(c, inputColor.a);
 }
 `;
+
+/**
+ * A sharp sun glint (low roughness, grazing Fresnel) can overflow the half
+ * float buffer to Inf, and bad math can leave a NaN. Bloom's blur would then
+ * smear that one pixel over the whole screen and tone mapping turns it into
+ * black: a full-frame black flash at certain angles while moving. Clamp every
+ * pixel to a sane HDR range (an overflowed glint stays bright, a NaN goes
+ * black) before anything blurs it.
+ */
+const SANITIZE = /* glsl */ `
+void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
+  vec3 c = inputColor.rgb;
+  // NaN fails every comparison (some compilers fold isnan() away).
+  bool bad = !(c.r == c.r) || !(c.g == c.g) || !(c.b == c.b) || any(isnan(c));
+  c = bad ? vec3(0.0) : clamp(c, 0.0, 64.0);
+  outputColor = vec4(c, inputColor.a);
+}
+`;
+
+class SanitizeEffect extends Effect {
+  constructor() {
+    super("SanitizeEffect", SANITIZE, { blendFunction: BlendFunction.SET });
+  }
+}
 
 class GradeEffect extends Effect {
   constructor() {
@@ -121,6 +145,8 @@ export class PostFx {
     cfg.gammaCorrection = false;
     this.composer.addPass(this.ao);
     this.composer.addPass(new OverlayPass(overlay.scene, overlay.camera, overlay.visible));
+    // Its own pass: bloom reads the input buffer before its pass's shader runs.
+    this.composer.addPass(new EffectPass(camera, new SanitizeEffect()));
     this.bloom = new BloomEffect({ intensity: 0.5, luminanceThreshold: 1.35, luminanceSmoothing: 0.25, mipmapBlur: true, radius: 0.6 });
     const tone = new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC });
     this.composer.addPass(new EffectPass(camera, this.bloom, tone, this.grade));

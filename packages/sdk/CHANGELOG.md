@@ -4,6 +4,17 @@ All notable changes to `@xapps/sdk`. The wire protocol is still version 1:
 every release is additive, and apps built against an older SDK keep working on
 newer hosts (and the other way round, minus the new features).
 
+## 0.8.1
+
+Gentler on the database.
+
+- **Hosts rate-limit match writes**: `state.set`, `turn.end` and `round.set`
+  get a burst of 10, then 4 per second per client (`LIMITS.matchWrites`); the
+  excess is answered `rate_limited`. A game stuck retrying a write can no
+  longer flood the backend.
+- **`state.update` backs off between conflict retries** (40 ms doubling to
+  1 s, jittered) instead of retrying almost at once.
+
 ## 0.8.0
 
 Direct connections.

@@ -101,12 +101,20 @@ export function lower(tier: Tier): Tier {
  * Dynamic resolution: fed frame times, it nudges the pixel ratio down when
  * frames run long (and back up slowly when there's headroom), within the
  * tier's range. Returns a new ratio when it changed, else null.
+ *
+ * Every change resizes the canvas, which costs a hitch (and can blink on
+ * iOS), so it changes rarely: going down needs one slow window, going back up
+ * needs several good ones in a row, and nothing changes again for a few
+ * seconds after a change.
  */
 export class FrameGovernor {
   private acc = 0;
   private frames = 0;
   private warm = 0;
   private lowStreak = 0;
+  private goodStreak = 0;
+  /** Seconds left before another change is allowed. */
+  private cooldown = 0;
   ratio: number;
 
   constructor(
@@ -129,6 +137,7 @@ export class FrameGovernor {
   sample(dt: number): number | null {
     this.warm += dt;
     if (this.warm < 2) return null;
+    this.cooldown = Math.max(0, this.cooldown - dt);
     this.acc += dt;
     this.frames++;
     if (this.acc < 1.5) return null;
@@ -137,6 +146,8 @@ export class FrameGovernor {
     this.frames = 0;
     const before = this.ratio;
     if (fps < this.targetFps - 8) {
+      this.goodStreak = 0;
+      if (this.cooldown > 0) return null;
       this.ratio = Math.max(this.min, this.ratio * (fps < 35 ? 0.8 : 0.9));
       if (this.ratio === this.min && before === this.min) {
         this.lowStreak++;
@@ -147,9 +158,17 @@ export class FrameGovernor {
       }
     } else if (fps > this.targetFps + 3) {
       this.lowStreak = 0;
-      this.ratio = Math.min(this.max, this.ratio * 1.05);
+      this.goodStreak++;
+      // About 6 s of headroom before stepping back up, by a noticeable amount.
+      if (this.goodStreak < 4 || this.cooldown > 0) return null;
+      this.goodStreak = 0;
+      this.ratio = Math.min(this.max, this.ratio * 1.1);
+    } else {
+      this.goodStreak = 0;
     }
     this.ratio = Math.round(this.ratio * 100) / 100;
-    return this.ratio !== before ? this.ratio : null;
+    if (this.ratio === before) return null;
+    this.cooldown = 4;
+    return this.ratio;
   }
 }

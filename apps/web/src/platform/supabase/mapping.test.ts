@@ -243,6 +243,8 @@ describe("errors", () => {
     expect(errorKind("42501")).toBe("forbidden");
     expect(errorKind("22023")).toBe("invalid");
     expect(errorKind("55000")).toBe("conflict");
+    // A match that isn't running any more is final: apps must not retry it like a version conflict.
+    expect(errorKind("55000", "This match isn't running")).toBe("forbidden");
     expect(errorKind("P0002")).toBe("not_found");
     expect(toBackendError({ code: "PGRST202", message: "missing" }).code).toBe("setup_required");
   });

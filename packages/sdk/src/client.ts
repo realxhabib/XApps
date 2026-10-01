@@ -735,7 +735,8 @@ export class XAppsClient {
           } catch (error) {
             if (!(error instanceof XAppsError) || error.code !== "conflict" || attempt >= retries) throw error;
             await api.get();
-            if (attempt > 0) await new Promise((r) => setTimeout(r, Math.random() * 25 * attempt));
+            // Back off (40 ms, 80 ms, … up to 1 s, jittered) so contending writers spread out.
+            await new Promise((r) => setTimeout(r, Math.min(1000, 40 * 2 ** attempt) * (0.5 + Math.random() * 0.5)));
           }
         }
       },

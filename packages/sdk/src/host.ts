@@ -209,6 +209,8 @@ export function createHostCore(transport: HostTransport, options: HostCoreOption
   let refilledAt = Date.now();
   // Logs: ≤ LIMITS.logsPerMinute per app instance; the excess is answered `ok` and dropped.
   const logBudget = createTokenBucket(LIMITS.logsPerMinute, 60_000);
+  // Shared-state and turn writes: a burst, then a steady rate (a stuck retry loop gets `rate_limited`).
+  const writeBudget = createTokenBucket(LIMITS.matchWrites.burst, (LIMITS.matchWrites.burst / LIMITS.matchWrites.perSecond) * 1000);
 
   const send = (message: HostToApp) => {
     if (destroyed) return;
@@ -296,6 +298,10 @@ export function createHostCore(transport: HostTransport, options: HostCoreOption
     }
     if (method === "room.send" && !takeBudget()) {
       respondError(id, method, new XAppsError("rate_limited", "room.send: slow down"));
+      return;
+    }
+    if ((method === "state.set" || method === "turn.end" || method === "round.set") && !writeBudget.take()) {
+      respondError(id, method, new XAppsError("rate_limited", `${method}: slow down`));
       return;
     }
     if (method === "log" && !logBudget.take()) {
