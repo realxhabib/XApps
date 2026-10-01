@@ -93,6 +93,22 @@ const DRIFT_ARC = { wide: 0, neutral: 0.65, tight: 1.5 } as const;
 const DRIFT_MAX_SLIP = 0.42;
 /** How far (radians) a drift may turn the nose across the road before its yaw fades out. */
 const DRIFT_MAX_ACROSS = 0.95;
+/**
+ * Edge awareness while drifting: near the outer edge of the road the outward slide is eased so the ship
+ * closes the remaining room over about this many seconds instead of running onto the shoulder or the rail.
+ */
+const DRIFT_EDGE_TIME = 0.08;
+/** How much further (sine of the angle) than the travel the nose may point at a near edge while drifting. */
+const DRIFT_EDGE_NOSE = 0.25;
+/** Steering out at least this hard (fraction of full lock) lets a drift run off an open edge. */
+const DRIFT_EDGE_OPT_OUT = 0.95;
+/** Most speed (fraction) one drifting rail contact can cost, however long it lasts. */
+const DRIFT_RAIL_MAX_LOSS = 0.08;
+/** Seconds clear of the rail before the next touch counts as a new contact. */
+const DRIFT_RAIL_RESET = 0.4;
+/** Lateral push-off (m/s) after a drifting rail touch, fading out over DRIFT_PUSH_TIME. */
+const DRIFT_PUSH_SPEED = 5;
+const DRIFT_PUSH_TIME = 0.25;
 
 export class Ship {
   readonly track: CompiledTrack;
@@ -137,6 +153,14 @@ export class Ship {
   safeS = 0;
   private fallDir = 0;
   events: PhysEvent[] = [];
+  /** Side of the rail the ship is pressed against this step (0 = clear). */
+  railContact: -1 | 0 | 1 = 0;
+  /** Speed fraction the current drifting rail contact has cost so far, and seconds since it last touched. */
+  private railLoss = 0;
+  private railClear = DRIFT_RAIL_RESET;
+  /** Push-off away from the rail after a drifting touch: seconds left and the rail's side. */
+  private pushOff = 0;
+  private pushSide: -1 | 1 = 1;
   private readonly tmp = new Vector3();
   private readonly tmp2 = new Vector3();
   private readonly surf = new Vector3();
@@ -222,6 +246,8 @@ export class Ship {
   step(c: Controls): void {
     const dt = DT;
     this.events.length = 0;
+    this.railContact = 0;
+    this.railClear += DT;
     const track = this.track;
     const F = frameAt(track, this.s, this.frame);
     this.invuln = Math.max(0, this.invuln - dt);
@@ -359,10 +385,15 @@ export class Ship {
       // Bounded outward slip: the slide never runs more than DRIFT_MAX_SLIP off the nose.
       const slip = this.vdir.angleTo(this.tmp);
       if (slip > DRIFT_MAX_SLIP) this.vdir.lerp(this.tmp, 1 - DRIFT_MAX_SLIP / slip).normalize();
+      this.keepDriftInside(F, steer);
     }
 
     /* Move along the surface */
     this.surf.copy(F.pos).addScaledVector(F.right, this.d).addScaledVector(this.vdir, Math.abs(this.speed) * dt);
+    if (this.pushOff > 0) {
+      this.surf.addScaledVector(F.right, -this.pushSide * DRIFT_PUSH_SPEED * (this.pushOff / DRIFT_PUSH_TIME) * dt);
+      this.pushOff = this.driftDir !== 0 ? Math.max(0, this.pushOff - dt) : 0;
+    }
     const prevS = this.s;
     const prevD = this.d;
     const loc = locate(track, this.surf, this.s, 12);
@@ -417,6 +448,10 @@ export class Ship {
       const wasInside = Math.abs(prevD) <= F2.wallOffset + 0.5;
       if (hasWall(track, this.s, side) && (this.h < 3 || wasInside)) {
         this.d = side * wallOff;
+        this.railContact = side;
+        // A touch after a clear spell is a new contact; scraping on (or bouncing off and back) is the same one.
+        const fresh = this.railClear >= DRIFT_RAIL_RESET;
+        this.railClear = 0;
         const into = this.vdir.dot(F2.right) * side;
         if (into > 0) {
           const strength = into * Math.abs(this.speed);
@@ -425,15 +460,23 @@ export class Ship {
             // Drifting along the rail: slide off it softly and keep the drift (and the charge).
             this.vdir.addScaledVector(F2.right, -side * (into + 0.06)).normalize();
             if (fInto > 0) this.fwd.addScaledVector(F2.right, -side * fInto * 0.35).normalize();
-            // The cost follows the impact (the speed going into the rail), so grazing it is nearly free.
-            this.speed *= 1 - Math.min(0.25, into * into * 0.8 + into * 0.04) / Math.max(0.8, this.tune.weight);
+            // The cost follows the impact (the speed going into the rail), so grazing it is nearly free, and one
+            // contact costs at most DRIFT_RAIL_MAX_LOSS however long the ship scrapes along.
+            if (fresh) this.railLoss = 0;
+            const cost = Math.min(0.25, into * into * 0.8 + into * 0.04) / Math.max(0.8, this.tune.weight);
+            const paid = Math.min(cost, Math.max(0, DRIFT_RAIL_MAX_LOSS - this.railLoss));
+            this.speed *= 1 - paid;
+            this.railLoss += paid;
+            // A short push away from the rail so a held drift comes off it rather than scraping along.
+            this.pushOff = DRIFT_PUSH_TIME;
+            this.pushSide = side;
           } else {
             this.vdir.addScaledVector(F2.right, -side * into * 1.35).normalize();
             if (fInto > 0) this.fwd.addScaledVector(F2.right, -side * fInto * 0.9).normalize();
             // Glancing scrapes cost little; head-on hits cost a lot.
             this.speed *= 1 - Math.min(0.45, into * 0.6) / Math.max(0.8, this.tune.weight);
           }
-          if (strength > 4) this.events.push({ type: "wall", strength: Math.min(1, strength / 40), side });
+          if (strength > 4 && (fresh || this.driftDir === 0)) this.events.push({ type: "wall", strength: Math.min(1, strength / 40), side });
         }
       } else if (!hasWall(track, this.s, side) && Math.abs(this.d) > F2.wallOffset + 2.4 && !this.airborne) {
         this.airborne = true;
@@ -475,6 +518,42 @@ export class Ship {
     this.lean += (targetLean - this.lean) * (1 - Math.exp(-8 * dt));
     this.steerVis += (steer - this.steerVis) * (1 - Math.exp(-10 * dt));
     this.updatePos();
+  }
+
+  /**
+   * A held drift slides wide, but it shouldn't glue the ship to the outer rail, park it on the shoulder
+   * (where the offroad drag holds it near half speed) or carry it off an open edge. Near the outer edge of
+   * the road the outward part of the slide is eased in proportion to the room left, so the travel
+   * direction (and the nose, if it points further out) comes round to the road's tangent before the edge.
+   * Open edges only get this help while the player isn't steering at them at full lock.
+   */
+  private keepDriftInside(F: Frame, steer: number): void {
+    const speed = Math.abs(this.speed);
+    if (speed < 1 || this.h > 3) return;
+    // The edge on the ship's side of the road: the outer one while sliding wide, the inner one once a held
+    // drift has turned the ship across a straightening road.
+    const side: -1 | 1 = this.d < 0 ? -1 : 1;
+    // Steering at it at full lock opts out: open edges stay deadly, and a drift can still be driven into
+    // the inner rail on purpose. The outer rail always eases the slide.
+    if (steer * side >= DRIFT_EDGE_OPT_OUT && (side === this.driftDir || !hasWall(this.track, this.s, side))) return;
+    const sideways = Math.abs(this.fwd.dot(F.right));
+    const wallOff = F.wallOffset - SHIP_RADIUS * (0.6 + 0.5 * sideways);
+    const edge = Math.min(F.halfWidth + 0.3, wallOff - 0.3);
+    const room = edge - this.d * side;
+    // Outward lateral share of the travel the remaining room allows; on the shoulder already, ease back in.
+    const allowed = Math.max(-0.12, room / (speed * DRIFT_EDGE_TIME));
+    if (allowed >= 1) return;
+    const out = this.vdir.dot(F.right) * side;
+    if (out > allowed) {
+      const along = this.vdir.dot(F.fwd) < 0 ? -1 : 1;
+      this.vdir.copy(F.fwd).multiplyScalar(along * Math.sqrt(1 - allowed * allowed)).addScaledVector(F.right, side * allowed);
+    }
+    // Ease the arc too: the nose may point at the edge only a little more than the room allows.
+    const noseOut = this.fwd.dot(F.right) * side;
+    if (noseOut > allowed + DRIFT_EDGE_NOSE && this.fwd.dot(F.fwd) > 0) {
+      const n = Math.min(1, allowed + DRIFT_EDGE_NOSE);
+      this.fwd.copy(F.fwd).multiplyScalar(Math.sqrt(1 - n * n)).addScaledVector(F.right, side * n);
+    }
   }
 
   private startFall(): void {
