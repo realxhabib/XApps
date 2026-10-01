@@ -53,10 +53,10 @@ import {
   type RaceRecord,
 } from "./logic";
 import { DRIFT_TIERS, DT, NO_CONTROLS, Ship, collideShips, tuningFor, type Controls } from "./physics";
-import { LIVERY_SWATCHES, PILOTS, SHIPS, type Pilot, type ShipDesign } from "./ships";
+import { LIVERY_SWATCHES, PILOTS, SHIPS, THRUSTERS, WINGS, applyParts, type PartChoice, type Pilot, type ShipDesign } from "./ships";
 import { compileTrack, deltaS, frameAt, trackPoint, wrapS, type CompiledTrack } from "./track";
 import { mirrored, trackById } from "./tracks";
-import type { Livery } from "./types";
+import type { Livery, ShipStats } from "./types";
 
 const TAG = "nova-rally";
 const ignore = () => {};
@@ -80,6 +80,8 @@ export interface ShipChoice {
   design: number;
   livery: number;
   pilot?: number;
+  /** Thruster and wing part indices (see THRUSTERS / WINGS). */
+  parts?: PartChoice;
 }
 
 interface NetState {
@@ -106,6 +108,7 @@ export class Racer {
   designIndex: number;
   liveryIndex: number;
   pilotIndex: number;
+  parts: PartChoice | undefined;
   ship!: Ship;
   ai: AiPilot | null;
   readonly prevPos = new Vector3();
@@ -147,6 +150,7 @@ export class Racer {
     designIndex: number;
     liveryIndex: number;
     pilotIndex?: number;
+    parts?: PartChoice;
     ai: AiPilot | null;
   }) {
     this.id = opts.id;
@@ -159,6 +163,7 @@ export class Racer {
     this.designIndex = opts.designIndex;
     this.liveryIndex = opts.liveryIndex;
     this.pilotIndex = (opts.pilotIndex ?? 0) % PILOTS.length;
+    this.parts = cleanParts(opts.parts);
     this.design = SHIPS[opts.designIndex % SHIPS.length]!;
     this.livery = liveryFor(this.design, opts.liveryIndex);
     this.ai = opts.ai;
@@ -172,13 +177,32 @@ export class Racer {
     return PILOTS[this.pilotIndex % PILOTS.length]!;
   }
 
-  setDesign(designIndex: number, liveryIndex: number, pilotIndex = this.pilotIndex): void {
+  /** Ship stats with the fitted parts applied. */
+  get stats(): ShipStats {
+    return applyParts(this.design.stats, this.parts);
+  }
+
+  /** Changes whenever the ship's look changes (the scene rebuilds the model). */
+  get lookKey(): string {
+    return `${this.designIndex}:${this.liveryIndex}:${this.pilotIndex}:${this.parts?.thruster ?? 0}:${this.parts?.wing ?? 0}`;
+  }
+
+  setDesign(designIndex: number, liveryIndex: number, pilotIndex = this.pilotIndex, parts = this.parts): void {
+    this.parts = cleanParts(parts);
     this.pilotIndex = Math.abs(pilotIndex) % PILOTS.length;
     this.designIndex = designIndex;
     this.liveryIndex = liveryIndex;
     this.design = SHIPS[designIndex % SHIPS.length]!;
     this.livery = liveryFor(this.design, liveryIndex);
   }
+}
+
+/** Part indices clamped to the catalogue (undefined = stock). */
+export function cleanParts(parts: Partial<PartChoice> | null | undefined): PartChoice | undefined {
+  if (!parts) return undefined;
+  const pick = (v: unknown, n: number) => (typeof v === "number" && Number.isFinite(v) ? Math.abs(Math.round(v)) % n : 0);
+  const out = { thruster: pick(parts.thruster, THRUSTERS.length), wing: pick(parts.wing, WINGS.length) };
+  return out.thruster || out.wing ? out : undefined;
 }
 
 /** Livery -1 = the ship's own paint, else a swatch. */
@@ -417,6 +441,7 @@ export class RaceRuntime {
           designIndex: design,
           liveryIndex: isMe ? choice.livery : -1,
           pilotIndex: isMe ? (choice.pilot ?? 0) : pickPilot(),
+          parts: isMe ? choice.parts : undefined,
           ai: kind === "bot" || kind === "me" ? new AiPilot(kind === "me" ? 0.7 : skill, () => rand.next()) : null,
         }),
       );
@@ -467,7 +492,7 @@ export class RaceRuntime {
     this.track = this.trackFor(0);
     this.racers.forEach((r, slot) => {
       const g = this.track.grid(slot);
-      r.ship = new Ship(this.track, tuningFor(r.design.stats), g.s, g.d);
+      r.ship = new Ship(this.track, tuningFor(r.stats), g.s, g.d);
       r.prevPos.copy(r.ship.pos);
     });
     this.snapshot = this.buildSnapshot();
@@ -560,7 +585,7 @@ export class RaceRuntime {
     }
     order.forEach((r, slot) => {
       const g = track.grid(slot);
-      const tune = tuningFor(r.design.stats);
+      const tune = tuningFor(r.stats);
       tune.top *= this.scale.speed;
       tune.accel *= this.scale.accel;
       r.ship = new Ship(track, tune, g.s, g.d);
@@ -899,7 +924,7 @@ export class RaceRuntime {
       if (!r.isMe && r.ai) {
         const humans = this.racers.filter((o) => o.kind === "me" || o.kind === "human");
         const best = humans.length ? Math.max(...humans.map((h) => h.progress)) : r.progress;
-        const tune = tuningFor(r.design.stats);
+        const tune = tuningFor(r.stats);
         ship.tune.top = tune.top * this.scale.speed * rubberBand(r.ai.skill, r.progress - best, track.length);
       }
 
@@ -1712,7 +1737,7 @@ export class RaceRuntime {
 
   private sendHello(): void {
     if (!this.sendRoom || !this.me) return;
-    this.xapps.room.send("hi", { d: this.me.designIndex, l: this.me.liveryIndex, p: this.me.pilotIndex }).catch(ignore);
+    this.xapps.room.send("hi", { d: this.me.designIndex, l: this.me.liveryIndex, p: this.me.pilotIndex, t: this.me.parts?.thruster ?? 0, w: this.me.parts?.wing ?? 0 }).catch(ignore);
   }
 
   private sendFx(payload: { [key: string]: Json }): void {
@@ -1755,10 +1780,10 @@ export class RaceRuntime {
   }
 
   onRemoteHello(payload: Json, from: string): void {
-    const p = payload as { d?: number; l?: number; p?: number };
+    const p = payload as { d?: number; l?: number; p?: number; t?: number; w?: number };
     const r = this.racers.find((o) => o.id === from);
     if (!r || r.local || typeof p?.d !== "number") return;
-    r.setDesign(Math.abs(Math.round(p.d)) % SHIPS.length, typeof p.l === "number" ? Math.round(p.l) : -1, typeof p.p === "number" ? Math.round(p.p) : r.pilotIndex);
+    r.setDesign(Math.abs(Math.round(p.d)) % SHIPS.length, typeof p.l === "number" ? Math.round(p.l) : -1, typeof p.p === "number" ? Math.round(p.p) : r.pilotIndex, cleanParts({ thruster: p.t, wing: p.w }));
     this.raceSerial++;
     this.emit(true);
   }

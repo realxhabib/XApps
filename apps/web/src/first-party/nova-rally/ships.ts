@@ -239,6 +239,22 @@ class Batch {
     this.parts.push(g);
   }
 
+  /** Visit every triangle added so far (model space), as 9 packed coordinates. */
+  forEachTriangle(fn: (t: Float32Array) => void): void {
+    const t = new Float32Array(9);
+    for (const g of this.parts) {
+      const a = g.getAttribute("position");
+      for (let i = 0; i + 2 < a.count; i += 3) {
+        for (let v = 0; v < 3; v++) {
+          t[v * 3] = a.getX(i + v);
+          t[v * 3 + 1] = a.getY(i + v);
+          t[v * 3 + 2] = a.getZ(i + v);
+        }
+        fn(t);
+      }
+    }
+  }
+
   get empty(): boolean {
     return this.parts.length === 0;
   }
@@ -411,7 +427,7 @@ void main() {
 /* Model context                                                      */
 /* ------------------------------------------------------------------ */
 
-type MatKey = "paint" | "paint2" | "chrome" | "dark" | "trim" | "glass" | "glowN" | "decal";
+type MatKey = "paint" | "paint2" | "chrome" | "dark" | "trim" | "glass" | "glowN" | "partGlow" | "decal";
 const MAT_KEYS: readonly MatKey[] = [
   "paint",
   "paint2",
@@ -419,6 +435,7 @@ const MAT_KEYS: readonly MatKey[] = [
   "dark",
   "trim",
   "glowN",
+  "partGlow",
   "decal",
   "glass",
 ];
@@ -434,6 +451,19 @@ interface Wobble {
 interface Nozzle {
   pos: Vector3;
   r: number;
+  /** Add-on thrusters burn in their own colour; null = livery glow. */
+  tint: Color | null;
+  lenMul: number;
+  /** 0..1: how hard the flame pulses (pulse jets). */
+  pulse: number;
+  core: boolean;
+}
+
+interface NozzleOpts {
+  tint?: string;
+  lenMul?: number;
+  pulse?: number;
+  core?: boolean;
 }
 
 class Ctx {
@@ -463,6 +493,7 @@ class Ctx {
       dark: b(),
       trim: b(),
       glass: b(),
+      partGlow: b(),
       glowN: b(),
       decal: b(),
     };
@@ -523,7 +554,8 @@ class Ctx {
   }
 
   /** A thruster: chrome bell, dark throat, emissive core disc and ring. Exit plane at z. */
-  nozzle(x: number, y: number, z: number, r: number, len = r * 1.5): void {
+  nozzle(x: number, y: number, z: number, r: number, len = r * 1.5, opts: NozzleOpts = {}): void {
+    const glowBatch = opts.tint ? this.batches.partGlow : this.batches.glowN;
     const at: Place = { p: [x, y, z] };
     this.dark.add(
       this.lathe([
@@ -543,9 +575,16 @@ class Ctx {
       ]),
       at,
     );
-    this.batches.glowN.add(new CircleGeometry(r * 0.56, this.q === "high" ? 24 : 10), { p: [x, y, z - r * 0.6] });
-    this.batches.glowN.add(this.torus(r * 0.8, r * 0.07), { p: [x, y, z - r * 0.06] });
-    this.nozzles.push({ pos: new Vector3(x, y, z), r });
+    glowBatch.add(new CircleGeometry(r * 0.56, this.q === "high" ? 24 : 10), { p: [x, y, z - r * 0.6] });
+    glowBatch.add(this.torus(r * 0.8, r * 0.07), { p: [x, y, z - r * 0.06] });
+    this.nozzles.push({
+      pos: new Vector3(x, y, z),
+      r,
+      tint: opts.tint ? new Color(opts.tint) : null,
+      lenMul: opts.lenMul ?? 1,
+      pulse: opts.pulse ?? 0,
+      core: opts.core ?? true,
+    });
   }
 
   /** Decal plane facing `normal`, text up along `up`. */
@@ -1202,6 +1241,298 @@ const BUILDERS: Record<string, (c: Ctx) => void> = {
 };
 
 /* ------------------------------------------------------------------ */
+/* Parts (thrusters + wings)                                          */
+/* ------------------------------------------------------------------ */
+
+export interface ShipPart {
+  id: string;
+  name: string;
+  blurb: string;
+  mods: Partial<ShipStats>;
+}
+
+export interface PartChoice {
+  thruster: number;
+  wing: number;
+}
+
+export const THRUSTERS: readonly ShipPart[] = [
+  { id: "stock", name: "Stock", blurb: "Factory engines, no surprises", mods: {} },
+  { id: "twin-ion", name: "Twin Ion", blurb: "Snappy side pods: quick off the line", mods: { accel: 1, speed: -1 } },
+  { id: "fusion-bell", name: "Fusion Bell", blurb: "Huge bells for huge top speed", mods: { speed: 1, accel: -1 } },
+  { id: "pulse-jets", name: "Pulse Jets", blurb: "Featherweight jets that flick you round", mods: { handling: 1, weight: -1 } },
+];
+
+export const WINGS: readonly ShipPart[] = [
+  { id: "stock", name: "Stock", blurb: "As the designers intended", mods: {} },
+  { id: "delta-fins", name: "Delta Fins", blurb: "Bite into corners", mods: { handling: 1, accel: -1 } },
+  { id: "heavy-plates", name: "Heavy Plates", blurb: "Bump everyone, budge for no one", mods: { weight: 1, handling: -1 } },
+  { id: "solar-sails", name: "Solar Sails", blurb: "Catch starlight, go faster", mods: { speed: 1, weight: -1 } },
+];
+
+const STAT_KEYS = ["speed", "accel", "handling", "weight"] as const;
+
+/** Stats with the chosen parts' deltas applied, each clamped to 1..5. */
+export function applyParts(stats: ShipStats, parts?: PartChoice): ShipStats {
+  const out: ShipStats = { ...stats };
+  const t = parts ? THRUSTERS[parts.thruster] : undefined;
+  const w = parts ? WINGS[parts.wing] : undefined;
+  for (const k of STAT_KEYS) {
+    const v = out[k] + (t?.mods[k] ?? 0) + (w?.mods[k] ?? 0);
+    out[k] = Math.min(5, Math.max(1, v));
+  }
+  return out;
+}
+
+const PART_TINTS: Record<string, string> = {
+  "twin-ion": "#5fd0ff",
+  "fusion-bell": "#ffa43a",
+  "pulse-jets": "#ff4fd8",
+};
+
+interface HullSlab {
+  /** Half width of the hull within the slab. */
+  hw: number;
+  /** Mean height of the outermost vertices (where add-ons attach). */
+  yAt: number;
+  yMax: number;
+  zMin: number;
+  zMax: number;
+}
+
+const HULL_KEYS: readonly MatKey[] = ["paint", "paint2", "dark", "chrome"];
+
+/** Hull extent over triangles overlapping z0..z1 (and above yFloor). */
+function hullSlab(c: Ctx, z0: number, z1: number, yFloor = 0.15): HullSlab {
+  let hw = 0;
+  let yMax = 0.6;
+  let zMin = Infinity;
+  let zMax = -Infinity;
+  const inSlab = (t: Float32Array): boolean => {
+    const lo = Math.min(t[2], t[5], t[8]);
+    const hi = Math.max(t[2], t[5], t[8]);
+    return hi >= z0 && lo <= z1 && Math.max(t[1], t[4], t[7]) >= yFloor;
+  };
+  for (const k of HULL_KEYS) {
+    c.batches[k].forEachTriangle((t) => {
+      zMin = Math.min(zMin, t[2], t[5], t[8]);
+      zMax = Math.max(zMax, t[2], t[5], t[8]);
+      if (!inSlab(t)) return;
+      for (let v = 0; v < 3; v++) {
+        if (t[v * 3 + 1] < yFloor) continue;
+        hw = Math.max(hw, Math.abs(t[v * 3]));
+        yMax = Math.max(yMax, t[v * 3 + 1]);
+      }
+    });
+  }
+  let ySum = 0;
+  let n = 0;
+  for (const k of HULL_KEYS) {
+    c.batches[k].forEachTriangle((t) => {
+      if (!inSlab(t)) return;
+      for (let v = 0; v < 3; v++) {
+        if (t[v * 3 + 1] < yFloor || Math.abs(t[v * 3]) < hw - 0.04) continue;
+        ySum += t[v * 3 + 1];
+        n++;
+      }
+    });
+  }
+  return {
+    hw,
+    yAt: n > 0 ? ySum / n : 0.55,
+    yMax,
+    zMin: Number.isFinite(zMin) ? zMin : -1.6,
+    zMax: Number.isFinite(zMax) ? zMax : 1.6,
+  };
+}
+
+/** Bake `local` then `frame` into geo and add it (mirrored) to a batch. */
+function put(b: Batch, geo: BufferGeometry, local: Place, frame: Matrix4): void {
+  geo.applyMatrix4(placeMatrix(local));
+  geo.applyMatrix4(frame);
+  b.add(geo, { mirror: true });
+}
+
+function addThruster(c: Ctx, id: string, rear: HullSlab): void {
+  const zE = Math.min(rear.zMax, 1.75);
+  const tint = PART_TINTS[id];
+  if (id === "twin-ion") {
+    const x = rear.hw + 0.13;
+    const y = Math.min(Math.max(rear.yAt, 0.34), 0.85);
+    const zc = zE - 0.44;
+    c.paint2.add(
+      c.lathe([
+        [0, -0.44],
+        [0.13, -0.42],
+        [0.175, -0.26],
+        [0.185, 0.1],
+        [0.15, 0.32],
+        [0.07, 0.44],
+        [0, 0.46],
+      ]),
+      { p: [x, y, zc], mirror: true },
+    );
+    for (const dz of [-0.17, 0, 0.17]) c.batches.partGlow.add(c.torus(0.187, 0.026), { p: [x, y, zc + dz], mirror: true });
+    c.chrome.add(c.sphere(), { p: [x, y, zc - 0.43], s: [0.06, 0.06, 0.05], mirror: true });
+    c.dark.add(c.box(0.26, 0.07, 0.42, 0.03), { p: [x - 0.15, y, zc], mirror: true });
+    for (const s of [1, -1]) c.nozzle(x * s, y, zE + 0.02, 0.13, 0.2, { tint, lenMul: 0.8, core: false });
+  } else if (id === "fusion-bell") {
+    const x = rear.hw + 0.22;
+    const y = Math.min(Math.max(rear.yAt + 0.08, 0.42), 0.95);
+    const zc = zE - 0.5;
+    c.paint.add(
+      c.lathe([
+        [0, -0.5],
+        [0.19, -0.48],
+        [0.235, -0.3],
+        [0.235, 0.12],
+        [0.17, 0.36],
+        [0.06, 0.5],
+        [0, 0.52],
+      ]),
+      { p: [x, y, zc], mirror: true },
+    );
+    c.chrome.add(c.torus(0.24, 0.028), { p: [x, y, zc - 0.05], mirror: true });
+    c.batches.partGlow.add(c.torus(0.24, 0.018), { p: [x, y, zc + 0.12], mirror: true });
+    c.paint2.add(c.sphere(), { p: [x, y, zc - 0.5], s: [0.07, 0.07, 0.06], mirror: true });
+    // pylons
+    c.chrome.add(c.box(0.34, 0.06, 0.16, 0.025), { p: [x - 0.2, y + 0.08, zc - 0.15], r: [0, 0, 0.25], mirror: true });
+    c.chrome.add(c.box(0.34, 0.06, 0.16, 0.025), { p: [x - 0.2, y - 0.08, zc + 0.2], r: [0, 0, -0.25], mirror: true });
+    for (const s of [1, -1]) c.nozzle(x * s, y, zE + 0.08, 0.22, 0.3, { tint, lenMul: 1.35, core: false });
+  } else if (id === "pulse-jets") {
+    const x = rear.hw + 0.06;
+    const y = Math.min(Math.max(rear.yAt + 0.24, 0.6), 1.05);
+    const zc = zE - 0.62;
+    c.paint.add(
+      c.lathe([
+        [0.05, -0.62],
+        [0.08, -0.58],
+        [0.09, -0.3],
+        [0.09, 0.42],
+        [0.118, 0.52],
+        [0.118, 0.6],
+        [0.1, 0.64],
+      ]),
+      { p: [x, y, zc], mirror: true },
+    );
+    c.dark.add(new CircleGeometry(0.1, 14).rotateY(Math.PI), { p: [x, y, zc - 0.63], mirror: true });
+    c.chrome.add(c.torus(0.11, 0.018), { p: [x, y, zc - 0.64], mirror: true });
+    c.batches.partGlow.add(c.torus(0.093, 0.014), { p: [x, y, zc + 0.15], mirror: true });
+    c.batches.partGlow.add(c.torus(0.093, 0.014), { p: [x, y, zc + 0.3], mirror: true });
+    const fin: P3[] = [
+      [0.1, 0, 0.02],
+      [-0.25, 0, 0.02],
+      [-0.32, 0.22, 0.05],
+      [-0.1, 0.22, 0.05],
+    ];
+    c.paint2.add(sideSlab(fin, { thick: 0.04, bevel: 0.014 }, c.q), { p: [x, y + 0.06, zc - 0.05], mirror: true });
+    c.paint2.add(sideSlab(fin, { thick: 0.04, bevel: 0.014 }, c.q), { p: [x + 0.06, y, zc - 0.05], r: [0, 0, -Math.PI / 2], mirror: true });
+    c.dark.add(c.box(0.14, 0.05, 0.5, 0.02), { p: [x - 0.08, y - 0.07, zc], mirror: true });
+    for (const s of [1, -1]) c.nozzle(x * s, y, zE + 0.02, 0.085, 0.14, { tint, lenMul: 1.15, pulse: 1, core: false });
+  }
+}
+
+function addWing(c: Ctx, id: string, mid: HullSlab, core: HullSlab): void {
+  const len = mid.zMax - mid.zMin;
+  const k = Math.min(1.1, Math.max(0.85, len / 3.2));
+  const ax = mid.hw - 0.04;
+  const ay = Math.min(Math.max(mid.yAt, 0.3), 0.9);
+  const az = 0.3;
+  const frame = (rz: number): Matrix4 =>
+    new Matrix4().compose(
+      new Vector3(ax, ay, az),
+      new Quaternion().setFromEuler(new Euler(0, 0, rz)),
+      new Vector3(k, k, k),
+    );
+  if (id === "delta-fins") {
+    const f = frame(0.16);
+    put(
+      c.paint2,
+      topSlab(
+        [
+          [0, 0.34, 0.03],
+          [0.56, -0.26, 0.08],
+          [0.62, -0.5, 0.06],
+          [0, -0.5, 0.03],
+        ],
+        { thick: 0.07, bevel: 0.025 },
+        c.q,
+      ),
+      {},
+      f,
+    );
+    put(
+      c.trim,
+      topSlab(
+        [
+          [0.04, 0.33, 0.01],
+          [0.57, -0.24, 0.01],
+          [0.56, -0.18, 0.01],
+          [0.04, 0.4, 0.01],
+        ],
+        { thick: 0.025, bevel: 0 },
+        c.q,
+      ),
+      { p: [0, 0.03, 0] },
+      f,
+    );
+    put(
+      c.paint,
+      sideSlab(
+        [
+          [0.14, 0, 0.02],
+          [-0.22, 0, 0.02],
+          [-0.3, 0.26, 0.05],
+          [-0.05, 0.27, 0.05],
+        ],
+        { thick: 0.045, bevel: 0.016 },
+        c.q,
+      ),
+      { p: [0.6, 0.02, 0.38] },
+      f,
+    );
+    put(c.trim, c.sphere(), { p: [0.6, 0.29, 0.55], s: [0.035, 0.035, 0.07] }, f);
+  } else if (id === "heavy-plates") {
+    // armour hugs the core hull, not wingtips
+    const f = new Matrix4().compose(
+      new Vector3(core.hw - 0.04, Math.min(Math.max(core.yAt, 0.36), 0.9), az),
+      new Quaternion(),
+      new Vector3(k, k, k),
+    );
+    put(c.paint, c.box(0.17, 0.36, 1.5, 0.06), { p: [0.08, -0.02, 0] }, f);
+    put(c.paint2, c.box(0.1, 0.16, 1.3, 0.04), { p: [0.19, 0.05, 0] }, f);
+    put(c.dark, c.box(0.12, 0.1, 1.56, 0.04), { p: [0.17, -0.18, 0] }, f);
+    for (const z of [-0.45, -0.15, 0.15, 0.45]) put(c.chrome, c.sphere(), { p: [0.245, 0.05, z], s: 0.032 }, f);
+    put(c.paint, c.box(0.3, 0.34, 0.12, 0.05), { p: [0.13, 0, 0.78] }, f);
+    put(c.paint2, c.box(0.26, 0.08, 0.13, 0.03), { p: [0.13, 0.06, 0.8] }, f);
+    put(c.trim, c.box(0.18, 0.05, 0.03, 0.012), { p: [0.14, -0.08, 0.85] }, f);
+  } else if (id === "solar-sails") {
+    const f = frame(0.72);
+    put(c.chrome, c.cyl(0.045, 0.045, 0.72, 12), { r: [Math.PI / 2, 0, 0] }, f);
+    put(c.paint2, c.box(0.92, 0.03, 0.66, 0.012), { p: [0.5, -0.012, 0.02] }, f);
+    put(c.dark, c.box(0.86, 0.035, 0.6, 0.012), { p: [0.5, 0.004, 0.02] }, f);
+    for (const x of [0.22, 0.5, 0.78]) put(c.trim, c.box(0.018, 0.012, 0.56, 0.005), { p: [x, 0.025, 0.02] }, f);
+    for (const z of [-0.12, 0.16]) put(c.trim, c.box(0.82, 0.012, 0.018, 0.005), { p: [0.5, 0.025, z] }, f);
+    put(c.paint, c.sphere(), { p: [0.95, 0, 0.02], s: [0.05, 0.05, 0.3] }, f);
+  }
+}
+
+/** Layers the chosen add-ons onto a built hull; returns the thruster flame tint (if any). */
+function addParts(c: Ctx, parts?: PartChoice): string | null {
+  if (!parts) return null;
+  const w = WINGS[parts.wing];
+  const t = THRUSTERS[parts.thruster];
+  // measure the bare hull before anything is bolted on
+  const rear = hullSlab(c, 0.55, 2.2);
+  const mid = hullSlab(c, -0.25, 0.7);
+  const core = hullSlab(c, -0.25, 0.7, (mid.yMax + 0.25) / 2);
+  const thrusterId = t && t.id !== "stock" ? t.id : null;
+  if (w && w.id !== "stock") addWing(c, w.id, mid, core);
+  if (thrusterId) addThruster(c, thrusterId, rear);
+  return thrusterId ? (PART_TINTS[thrusterId] ?? null) : null;
+}
+
+/* ------------------------------------------------------------------ */
 /* Materials                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -1293,6 +1624,7 @@ function makeMaterials(livery: Livery, q: Quality, num: number): MatSet {
         depthWrite: false,
       });
   const glowN = new MeshStandardMaterial({ color: "#000000", emissive: glow, emissiveIntensity: 2 });
+  const partGlow = new MeshStandardMaterial({ color: "#000000", emissive: glow, emissiveIntensity: 2.2 });
   const tex = decalTexture(num, livery);
   const decalOpts = {
     map: tex,
@@ -1314,6 +1646,7 @@ function makeMaterials(livery: Livery, q: Quality, num: number): MatSet {
       trim,
       glass,
       glowN,
+      partGlow,
       decal,
     },
     textures: tex ? [tex] : [],
@@ -1764,7 +2097,13 @@ function buildPilot(pilot: Pilot, q: Quality): PilotRig {
 /* buildShip                                                          */
 /* ------------------------------------------------------------------ */
 
-export function buildShip(design: ShipDesign, livery: Livery, quality: "high" | "low", pilot?: Pilot): ShipModel {
+export function buildShip(
+  design: ShipDesign,
+  livery: Livery,
+  quality: "high" | "low",
+  pilot?: Pilot,
+  parts?: PartChoice,
+): ShipModel {
   const root = new Group();
   root.name = `ship:${design.id}`;
   const body = new Group();
@@ -1773,6 +2112,8 @@ export function buildShip(design: ShipDesign, livery: Livery, quality: "high" | 
   const { mats, textures } = makeMaterials(livery, quality, RACE_NUMBERS[design.id] ?? 0);
   const ctx = new Ctx(quality, body, mats);
   (BUILDERS[design.id] ?? buildComet)(ctx);
+  const partTint = addParts(ctx, parts);
+  if (partTint) (mats.partGlow as MeshStandardMaterial).emissive.set(partTint);
   ctx.finish();
 
   const geos = ctx.geos;
@@ -1813,32 +2154,50 @@ export function buildShip(design: ShipDesign, livery: Livery, quality: "high" | 
   interface Flame {
     group: Group;
     outer: Mesh;
-    core: Mesh;
+    core: Mesh | null;
     bloom: Mesh;
     outerMat: ShaderMaterial;
-    coreMat: ShaderMaterial;
+    coreMat: ShaderMaterial | null;
     r: number;
     seed: number;
+    base: Color;
+    coreCol: Color;
+    lenMul: number;
+    pulse: number;
   }
   const bloomMat = glowMaterial(glowColor, 0.9, 2.4);
   shaderMats.push(bloomMat);
+  let partBloom: ShaderMaterial | null = null;
   const flames: Flame[] = ctx.nozzles.map((n, i) => {
     const seed = i * 2.37 + 0.5;
-    const outerMat = flameMaterial(glowColor, coreBase, seed);
-    const coreMat = flameMaterial(coreBase, new Color("#ffffff"), seed + 1.1);
-    shaderMats.push(outerMat, coreMat);
+    const base = n.tint ?? glowColor;
+    const coreCol = n.tint ? n.tint.clone().lerp(new Color("#ffffff"), 0.7) : coreBase;
+    const outerMat = flameMaterial(base, coreCol, seed);
+    shaderMats.push(outerMat);
     const group = new Group();
     group.position.copy(n.pos);
     const outer = new Mesh(flameGeo, outerMat);
-    const core = new Mesh(flameGeo, coreMat);
     outer.renderOrder = 3;
-    core.renderOrder = 4;
-    const bloom = new Mesh(crossGeo, bloomMat);
+    group.add(outer);
+    let core: Mesh | null = null;
+    let coreMat: ShaderMaterial | null = null;
+    if (n.core) {
+      coreMat = flameMaterial(coreCol, new Color("#ffffff"), seed + 1.1);
+      shaderMats.push(coreMat);
+      core = new Mesh(flameGeo, coreMat);
+      core.renderOrder = 4;
+      group.add(core);
+    }
+    if (n.tint && !partBloom) {
+      partBloom = glowMaterial(n.tint, 0.9, 2.4);
+      shaderMats.push(partBloom);
+    }
+    const bloom = new Mesh(crossGeo, n.tint && partBloom ? partBloom : bloomMat);
     bloom.position.z = n.r * 0.25;
     bloom.renderOrder = 5;
-    group.add(outer, core, bloom);
+    group.add(bloom);
     body.add(group);
-    return { group, outer, core, bloom, outerMat, coreMat, r: n.r, seed };
+    return { group, outer, core, bloom, outerMat, coreMat, r: n.r, seed, base, coreCol, lenMul: n.lenMul, pulse: n.pulse };
   });
 
   // Underglow.
@@ -1897,6 +2256,7 @@ export function buildShip(design: ShipDesign, livery: Livery, quality: "high" | 
   for (const m of allMats) baseState.set(m, { opacity: m.opacity, transparent: m.transparent, depthWrite: m.depthWrite });
 
   const glowMat = mats.glowN as MeshStandardMaterial;
+  const partGlowMat = mats.partGlow as MeshStandardMaterial;
   let driftTier: 0 | 1 | 2 | 3 = 0;
   let shieldSince = -1;
   const tmpColor = new Color();
@@ -1912,24 +2272,28 @@ export function buildShip(design: ShipDesign, livery: Livery, quality: "high" | 
       const th = Math.min(1, Math.max(0, throttle));
       const bo = Math.min(1, Math.max(0, boost));
       for (const f of flames) {
-        const flick = 0.88 + 0.08 * Math.sin(time * 37 + f.seed) + 0.05 * Math.sin(time * 71 + f.seed * 3.1);
-        const len = f.r * (1.5 + th * 4.6 + bo * 6.5) * flick;
+        let flick = 0.88 + 0.08 * Math.sin(time * 37 + f.seed) + 0.05 * Math.sin(time * 71 + f.seed * 3.1);
+        if (f.pulse > 0) flick *= 1 - f.pulse * 0.5 * (0.5 + 0.5 * Math.sin(time * 26 + f.seed));
+        const len = f.r * (1.5 + th * 4.6 + bo * 6.5) * flick * f.lenMul;
         const w = f.r * (0.82 + 0.1 * th + 0.18 * bo);
         f.outer.scale.set(w, w, len);
-        f.core.scale.set(w * 0.55, w * 0.55, len * (0.55 + 0.15 * bo));
+        f.core?.scale.set(w * 0.55, w * 0.55, len * (0.55 + 0.15 * bo));
         f.bloom.scale.setScalar(f.r * (2.2 + 1.4 * th + 1.6 * bo) * (0.94 + 0.06 * flick));
         const op = 0.4 + 0.6 * th + 0.3 * bo;
         setU(f.outerMat, "uOpacity", op);
-        setU(f.coreMat, "uOpacity", op * 1.1);
         setU(f.outerMat, "uTime", time);
-        setU(f.coreMat, "uTime", time);
-        colorU(f.outerMat, "uColor").copy(glowColor).lerp(BOOST_OUTER, bo * 0.55);
-        colorU(f.coreMat, "uColor").copy(coreBase).lerp(BOOST_CORE, bo);
-        colorU(f.outerMat, "uCore").copy(coreBase).lerp(BOOST_CORE, bo);
+        colorU(f.outerMat, "uColor").copy(f.base).lerp(BOOST_OUTER, bo * 0.55);
+        colorU(f.outerMat, "uCore").copy(f.coreCol).lerp(BOOST_CORE, bo);
+        if (f.coreMat) {
+          setU(f.coreMat, "uOpacity", op * 1.1);
+          setU(f.coreMat, "uTime", time);
+          colorU(f.coreMat, "uColor").copy(f.coreCol).lerp(BOOST_CORE, bo);
+        }
       }
       glowMat.emissiveIntensity = 1.2 + th * 2.2 + bo * 3 + 0.25 * Math.sin(time * 23);
       tmpColor.copy(glowColor).lerp(BOOST_CORE, bo * 0.5);
       glowMat.emissive.copy(tmpColor);
+      partGlowMat.emissiveIntensity = 1.4 + th * 2 + bo * 2.5 + 0.6 * Math.sin(time * 26);
       setU(ugMat, "uOpacity", 0.6 + 0.15 * th + 0.08 * Math.sin(time * 5.3) + (driftTier > 0 ? 0.25 : 0));
       if (!celebrating) {
         // the pilot leans harder than the hull and bobs with the engine

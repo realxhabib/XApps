@@ -764,7 +764,7 @@ export class RaceScene {
   }
 
   private addShip(r: Racer): void {
-    const model = buildShip(r.design, r.livery, this.quality.detail, r.pilot);
+    const model = buildShip(r.design, r.livery, this.quality.detail, r.pilot, r.parts);
     model.root.traverse((o) => {
       if ((o as Mesh).isMesh) (o as Mesh).castShadow = this.quality.shadows > 0;
     });
@@ -797,7 +797,7 @@ export class RaceScene {
       this.scene.add(m);
       return m;
     });
-    this.ships.set(r.idx, { racer: r, model, key: `${r.designIndex}:${r.liveryIndex}:${r.pilotIndex}`, trail, drone, flares, warp, blob, reticle, orbs });
+    this.ships.set(r.idx, { racer: r, model, key: r.lookKey, trail, drone, flares, warp, blob, reticle, orbs });
   }
 
   private buildDrone(): Group {
@@ -889,7 +889,7 @@ export class RaceScene {
         // Ships changed (a remote player's pick arrived).
         for (const r of rt.racers) {
           const view = this.ships.get(r.idx);
-          if (view && view.key !== `${r.designIndex}:${r.liveryIndex}:${r.pilotIndex}`) {
+          if (view && view.key !== r.lookKey) {
             this.removeShip(view);
             this.ships.delete(r.idx);
             this.addShip(r);
