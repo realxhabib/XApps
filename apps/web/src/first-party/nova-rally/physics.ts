@@ -155,6 +155,8 @@ export class Ship {
   events: PhysEvent[] = [];
   /** Side of the rail the ship is pressed against this step (0 = clear). */
   railContact: -1 | 0 | 1 = 0;
+  /** Seconds the edge assist has been holding a drift off the edge (riding it builds no charge). */
+  driftPinned = 0;
   /** Speed fraction the current drifting rail contact has cost so far, and seconds since it last touched. */
   private railLoss = 0;
   private railClear = DRIFT_RAIL_RESET;
@@ -346,7 +348,10 @@ export class Ship {
       if (across > DRIFT_MAX_ACROSS) arc *= Math.max(0, 1 - (across - DRIFT_MAX_ACROSS) / 0.5);
       yawRate = this.driftDir * this.tune.turn * arc;
       if (grounded) {
-        this.driftCharge += dt * (0.75 + 0.55 * Math.max(0, into));
+        // Riding the edge on the assist is safe but builds nothing (and bleeds a little): the boost goes to
+        // whoever steers the line.
+        if (this.driftPinned > 0.15) this.driftCharge = Math.max(0, this.driftCharge - dt * 0.35);
+        else this.driftCharge += dt * (0.75 + 0.55 * Math.max(0, into));
         const tier = this.driftCharge >= DRIFT_TIERS[2] ? 3 : this.driftCharge >= DRIFT_TIERS[1] ? 2 : this.driftCharge >= DRIFT_TIERS[0] ? 1 : 0;
         if (tier > this.driftTier) {
           this.driftTier = tier;
@@ -385,7 +390,7 @@ export class Ship {
       // Bounded outward slip: the slide never runs more than DRIFT_MAX_SLIP off the nose.
       const slip = this.vdir.angleTo(this.tmp);
       if (slip > DRIFT_MAX_SLIP) this.vdir.lerp(this.tmp, 1 - DRIFT_MAX_SLIP / slip).normalize();
-      this.keepDriftInside(F, steer);
+      this.driftPinned = this.keepDriftInside(F, steer) ? this.driftPinned + dt : 0;
     }
 
     /* Move along the surface */
@@ -462,7 +467,12 @@ export class Ship {
             if (fInto > 0) this.fwd.addScaledVector(F2.right, -side * fInto * 0.35).normalize();
             // The cost follows the impact (the speed going into the rail), so grazing it is nearly free, and one
             // contact costs at most DRIFT_RAIL_MAX_LOSS however long the ship scrapes along.
-            if (fresh) this.railLoss = 0;
+            if (fresh) {
+              this.railLoss = 0;
+              // Clipping the rail mid-drift knocks the mini-turbo back down a step.
+              this.driftCharge = Math.max(0, this.driftCharge - 0.6);
+              this.driftTier = this.driftCharge >= DRIFT_TIERS[2] ? 3 : this.driftCharge >= DRIFT_TIERS[1] ? 2 : this.driftCharge >= DRIFT_TIERS[0] ? 1 : 0;
+            }
             const cost = Math.min(0.25, into * into * 0.8 + into * 0.04) / Math.max(0.8, this.tune.weight);
             const paid = Math.min(cost, Math.max(0, DRIFT_RAIL_MAX_LOSS - this.railLoss));
             this.speed *= 1 - paid;
@@ -527,23 +537,25 @@ export class Ship {
    * direction (and the nose, if it points further out) comes round to the road's tangent before the edge.
    * Open edges only get this help while the player isn't steering at them at full lock.
    */
-  private keepDriftInside(F: Frame, steer: number): void {
+  /** Returns whether it had to hold the drift off the edge this step. */
+  private keepDriftInside(F: Frame, steer: number): boolean {
     const speed = Math.abs(this.speed);
-    if (speed < 1 || this.h > 3) return;
+    if (speed < 1 || this.h > 3) return false;
     // The edge on the ship's side of the road: the outer one while sliding wide, the inner one once a held
     // drift has turned the ship across a straightening road.
     const side: -1 | 1 = this.d < 0 ? -1 : 1;
     // Steering at it at full lock opts out: open edges stay deadly, and a drift can still be driven into
     // the inner rail on purpose. The outer rail always eases the slide.
-    if (steer * side >= DRIFT_EDGE_OPT_OUT && (side === this.driftDir || !hasWall(this.track, this.s, side))) return;
+    if (steer * side >= DRIFT_EDGE_OPT_OUT && (side === this.driftDir || !hasWall(this.track, this.s, side))) return false;
     const sideways = Math.abs(this.fwd.dot(F.right));
     const wallOff = F.wallOffset - SHIP_RADIUS * (0.6 + 0.5 * sideways);
     const edge = Math.min(F.halfWidth + 0.3, wallOff - 0.3);
     const room = edge - this.d * side;
     // Outward lateral share of the travel the remaining room allows; on the shoulder already, ease back in.
     const allowed = Math.max(-0.12, room / (speed * DRIFT_EDGE_TIME));
-    if (allowed >= 1) return;
+    if (allowed >= 1) return false;
     const out = this.vdir.dot(F.right) * side;
+    const pinned = out > allowed && room < 1.2;
     if (out > allowed) {
       const along = this.vdir.dot(F.fwd) < 0 ? -1 : 1;
       this.vdir.copy(F.fwd).multiplyScalar(along * Math.sqrt(1 - allowed * allowed)).addScaledVector(F.right, side * allowed);
@@ -554,6 +566,7 @@ export class Ship {
       const n = Math.min(1, allowed + DRIFT_EDGE_NOSE);
       this.fwd.copy(F.fwd).multiplyScalar(Math.sqrt(1 - n * n)).addScaledVector(F.right, side * n);
     }
+    return pinned;
   }
 
   private startFall(): void {
