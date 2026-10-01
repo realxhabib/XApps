@@ -1641,7 +1641,8 @@ export class RaceScene {
       [0, 0], [0.55, 0], [0.55, 0.12], [0.18, 0.22], [0.14, 0.7], [0.5, 0.9], [0.72, 1.5], [0.66, 1.52], [0.44, 0.98], [0, 0.9],
     ].map(([x, y]) => new Vector2(x!, y!));
     const trophy = new Mesh(new LatheGeometry(cupProfile, 32), new MeshStandardMaterial({ color: "#ffd24a", metalness: 1, roughness: 0.15, emissive: "#ff9a00", emissiveIntensity: 0.35 }));
-    trophy.position.set(xs[0]!, heights[0]! + 3.3, 0);
+    trophy.position.set(xs[0]!, heights[0]! + 2.3, -0.4);
+    trophy.scale.setScalar(1.35);
     trophy.name = "trophy";
     g.add(trophy);
     g.position.copy(this.podiumAnchor);
@@ -1784,7 +1785,7 @@ export class RaceScene {
       const center = this.podiumAnchor.clone().add(new Vector3(0, 2.4, 0));
       const back = new Vector3(0, 0, 1).applyQuaternion(this.podium.quaternion);
       const side = new Vector3(1, 0, 0).applyQuaternion(this.podium.quaternion);
-      targetPos = center.clone().addScaledVector(back, 11 + Math.cos(a) * 1.2).addScaledVector(side, Math.sin(a) * 3.5).add(new Vector3(0, 4.2, 0));
+      targetPos = center.clone().addScaledVector(back, 8.6 + Math.cos(a) * 1.2).addScaledVector(side, Math.sin(a) * 4.5).add(new Vector3(0, 2.6, 0));
       targetLook = center.clone().add(new Vector3(0, -0.6, 0));
       targetUp = UP;
       rate = this.podiumSnap ? 1000 : 4;

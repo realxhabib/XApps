@@ -234,7 +234,7 @@ function Garage({
         </div>
       </div>
 
-        <div className="pointer-events-auto relative flex flex-col gap-3 rounded-3xl border border-white/10 bg-[rgba(10,6,30,0.62)] p-3 backdrop-blur-md md:max-h-[calc(100dvh-40px)] md:overflow-y-auto">
+        <div className="pointer-events-auto relative flex flex-col gap-3 rounded-3xl border border-white/10 bg-[rgba(10,6,30,0.62)] p-3 backdrop-blur-md md:max-h-[calc(100dvh-40px)] md:overflow-y-auto md:pb-8 md:[mask-image:linear-gradient(to_bottom,black_calc(100%-56px),transparent)]">
           <div className="grid grid-cols-4 gap-2">
             {SHIPS.map((s, i) => {
               const selected = i === choice.design;
