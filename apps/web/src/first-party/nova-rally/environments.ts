@@ -1461,12 +1461,280 @@ function rockGeometry(s: RockShape): BufferGeometry {
   return g;
 }
 
+/** Stylised craggy rock / ice chunk: a noise-displaced icosahedron cleaved by planes into big flat facets. */
+export interface CragShape {
+  seed: number;
+  detail: number;
+  /** Planar cleaves (big flat facets). */
+  cuts: number;
+  /** Cleave plane distance range (unit radius); lower = more angular. */
+  depth?: [number, number];
+  /** Body / crag noise amplitude. */
+  lumpy: number;
+  stretch?: [number, number, number];
+  craters?: number;
+  /** Baked colours: crevice (AO), body, edge highlight. */
+  lo: Color;
+  mid: Color;
+  hi: Color;
+  /** Layered strata bands (0..1). */
+  strata?: number;
+  /** Glowing mineral veins in the crevices (0..1). */
+  veins?: number;
+  /** Crystal clusters merged into the mesh; they glow through `aGlow`. */
+  crystals?: { clusters: number; per: number; size: number; color: Color; tip: Color; glow: number };
+  /** Frost colour: whitens upward faces and ridges. */
+  frost?: Color;
+}
+
+/** Appends one hexagonal crystal (prism + pyramid tip) as flat-shaded triangles. */
+function pushCrystal(out: { pos: number[]; nor: number[]; col: number[]; glow: number[] }, at: Vector3, dirV: Vector3, len: number, w: number, c0: Color, c1: Color, glow: number, twist: number): void {
+  const q = new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), dirV);
+  const ring = (y: number, rad: number) =>
+    Array.from({ length: 6 }, (_, k) => {
+      const a = twist + (k / 6) * Math.PI * 2;
+      return new Vector3(Math.cos(a) * rad, y, Math.sin(a) * rad);
+    });
+  const b0 = ring(0, w * 0.8);
+  const b1 = ring(len * 0.68, w);
+  const tip = new Vector3(0, len, 0);
+  const tris: Vector3[][] = [];
+  for (let k = 0; k < 6; k++) {
+    const k2 = (k + 1) % 6;
+    tris.push([b0[k], b1[k2], b0[k2]], [b0[k], b1[k], b1[k2]], [b1[k], tip, b1[k2]]);
+  }
+  const e1 = new Vector3();
+  const e2 = new Vector3();
+  const cc = new Color();
+  for (const t of tris) {
+    const w3 = t.map((p) => p.clone().applyQuaternion(q).add(at));
+    e1.subVectors(w3[1], w3[0]);
+    e2.subVectors(w3[2], w3[0]);
+    const nn = e1.cross(e2).normalize();
+    t.forEach((p, j) => {
+      const h = p.y / len;
+      out.pos.push(w3[j].x, w3[j].y, w3[j].z);
+      out.nor.push(nn.x, nn.y, nn.z);
+      cc.copy(c0).lerp(c1, h);
+      out.col.push(cc.r, cc.g, cc.b);
+      out.glow.push(glow * (0.45 + 0.55 * h));
+    });
+  }
+}
+
+export function craggyRock(s: CragShape): BufferGeometry {
+  const ico = new IcosahedronGeometry(1, s.detail);
+  ico.deleteAttribute("normal");
+  ico.deleteAttribute("uv");
+  const g = mergeVertices(ico);
+  ico.dispose();
+  const p = g.getAttribute("position") as BufferAttribute;
+  const n = p.count;
+  const r = rng(s.seed * 7919 + 3);
+  // Cleaving planes spread over the sphere (golden spiral, jittered and rotated per seed).
+  const [d0, d1] = s.depth ?? [0.7, 0.92];
+  const rot = new Quaternion().setFromEuler(new Euler(r() * 6.28, r() * 6.28, r() * 6.28));
+  const planes: { n: Vector3; d: number }[] = [];
+  for (let k = 0; k < s.cuts; k++) {
+    const y = 1 - (2 * (k + 0.5)) / s.cuts;
+    const rad = Math.sqrt(Math.max(0, 1 - y * y));
+    const th = k * 2.39996;
+    const nv = new Vector3(Math.cos(th) * rad + (r() - 0.5) * 0.45, y + (r() - 0.5) * 0.45, Math.sin(th) * rad + (r() - 0.5) * 0.45).normalize().applyQuaternion(rot);
+    planes.push({ n: nv, d: lerp(d0, d1, r()) });
+  }
+  const craters: { d: Vector3; r: number }[] = [];
+  for (let k = 0; k < (s.craters ?? 0); k++) craters.push({ d: new Vector3(r() - 0.5, r() - 0.5, r() - 0.5).normalize(), r: 0.14 + r() * 0.26 });
+  const st = s.stretch ?? [1, 1, 1];
+  const v = new Vector3();
+  const q = new Vector3();
+  const dirs = new Float32Array(n * 3);
+  const craterMask = new Float32Array(n);
+  const flatMask = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    v.fromBufferAttribute(p, i).normalize();
+    dirs.set([v.x, v.y, v.z], i * 3);
+    const big = fbm3(v.x * 1.2 + s.seed, v.y * 1.2, v.z * 1.2, s.seed, 3);
+    q.copy(v).multiplyScalar(1 + (big - 0.5) * 1.5 * s.lumpy);
+    let cut = 0;
+    for (const pl of planes) {
+      const t = q.dot(pl.n) - pl.d;
+      if (t > 0) {
+        q.addScaledVector(pl.n, -t * 0.97);
+        cut += t;
+      }
+    }
+    flatMask[i] = smooth(0, 0.05, cut);
+    // Crags: fine detail, mostly kept off the cleaved flats so they read as clean facets.
+    const crag = fbm3(v.x * 4.2 + 2, v.y * 4.2, v.z * 4.2, s.seed + 7, 3);
+    let rr = 1 + (crag - 0.5) * 0.24 * s.lumpy * (1 - 0.75 * flatMask[i]);
+    for (const c of craters) {
+      const ang = Math.acos(clamp(v.dot(c.d), -1, 1)) / c.r;
+      if (ang < 1.5) {
+        rr += ang < 1 ? (ang * ang - 1) * c.r * 0.3 : 0.07 * c.r * Math.exp(-(ang - 1) * (ang - 1) * 20);
+        craterMask[i] = Math.max(craterMask[i], ang < 1 ? 1 - ang * ang : -smooth(1.5, 1, ang));
+      }
+    }
+    q.multiplyScalar(rr);
+    p.setXYZ(i, q.x * st[0], q.y * st[1], q.z * st[2]);
+  }
+  g.computeVertexNormals();
+  const nrm = g.getAttribute("normal") as BufferAttribute;
+  // Curvature from the one-ring: concave → baked AO, convex → edge highlight.
+  const idx = g.index!.array;
+  const acc = new Float32Array(n * 3);
+  const cnt = new Float32Array(n);
+  const elen = new Float32Array(n);
+  const pa = p.array as Float32Array;
+  for (let f = 0; f < idx.length; f += 3) {
+    for (let e = 0; e < 3; e++) {
+      const a = idx[f + e];
+      const b = idx[f + ((e + 1) % 3)];
+      for (const [x, y] of [
+        [a, b],
+        [b, a],
+      ]) {
+        acc[x * 3] += pa[y * 3];
+        acc[x * 3 + 1] += pa[y * 3 + 1];
+        acc[x * 3 + 2] += pa[y * 3 + 2];
+        cnt[x]++;
+        elen[x] += Math.hypot(pa[y * 3] - pa[x * 3], pa[y * 3 + 1] - pa[x * 3 + 1], pa[y * 3 + 2] - pa[x * 3 + 2]);
+      }
+    }
+  }
+  let curv = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const c = cnt[i] || 1;
+    const dx = pa[i * 3] - acc[i * 3] / c;
+    const dy = pa[i * 3 + 1] - acc[i * 3 + 1] / c;
+    const dz = pa[i * 3 + 2] - acc[i * 3 + 2] / c;
+    curv[i] = (dx * nrm.getX(i) + dy * nrm.getY(i) + dz * nrm.getZ(i)) / (elen[i] / c + 1e-6);
+  }
+  // One blur pass: broader occlusion in the crevices.
+  const blur = new Float32Array(n);
+  const bc = new Float32Array(n);
+  for (let f = 0; f < idx.length; f += 3) {
+    for (let e = 0; e < 3; e++) {
+      const a = idx[f + e];
+      const b = idx[f + ((e + 1) % 3)];
+      blur[a] += curv[b];
+      bc[a]++;
+      blur[b] += curv[a];
+      bc[b]++;
+    }
+  }
+  for (let i = 0; i < n; i++) blur[i] = (blur[i] / (bc[i] || 1)) * 0.6 + curv[i] * 0.4;
+  // Relative to this rock's own mean curvature (a sphere is uniformly convex), in standard deviations.
+  let mean = 0;
+  for (let i = 0; i < n; i++) mean += blur[i];
+  mean /= n;
+  let vr = 0;
+  for (let i = 0; i < n; i++) vr += (blur[i] - mean) ** 2;
+  const sd = Math.sqrt(vr / n) + 1e-6;
+  for (let i = 0; i < n; i++) blur[i] = (blur[i] - mean) / sd;
+  curv = blur;
+  const colors = new Float32Array(n * 3);
+  const glow = new Float32Array(n);
+  const col = new Color();
+  for (let i = 0; i < n; i++) {
+    const dx = dirs[i * 3];
+    const dy = dirs[i * 3 + 1];
+    const dz = dirs[i * 3 + 2];
+    const mott = fbm3(dx * 2.3 + 5, dy * 2.3, dz * 2.3, s.seed + 3, 3);
+    col.copy(s.mid).multiplyScalar(0.8 + 0.4 * mott);
+    if (s.strata) {
+      const band = 0.5 + 0.5 * Math.sin((pa[i * 3 + 1] * 5.5 + pa[i * 3] * 1.3 + mott * 3) * 2.2);
+      col.multiplyScalar(1 - s.strata * 0.22 * band);
+    }
+    const concave = smooth(0.2, 1.5, -curv[i]);
+    const convex = smooth(0.4, 1.8, curv[i]);
+    const cm = craterMask[i];
+    col.lerp(s.lo, clamp(concave * 0.85 + Math.max(0, cm) * 0.45, 0, 0.92));
+    col.lerp(s.hi, clamp(convex * 0.75 + Math.max(0, -cm) * 0.35, 0, 0.85));
+    if (s.frost) {
+      const up = smooth(0.15, 0.75, nrm.getY(i));
+      col.lerp(s.frost, clamp(up * 0.55 * (0.5 + 0.5 * mott) + convex * 0.3, 0, 0.85));
+    }
+    colors.set([col.r, col.g, col.b], i * 3);
+    if (s.veins) {
+      const vn = noise3(dx * 2.8 + 3, dy * 2.8, dz * 2.8, s.seed + 11);
+      glow[i] = smooth(0.04, 0.0, Math.abs(vn - 0.5)) * s.veins * (0.55 + 0.45 * concave);
+    }
+  }
+  const hasGlow = !!s.veins || !!s.crystals;
+  if (!s.crystals) {
+    g.setAttribute("color", new BufferAttribute(colors, 3));
+    if (hasGlow) g.setAttribute("aGlow", new BufferAttribute(glow, 1));
+    g.computeBoundingSphere();
+    return g;
+  }
+  // Crystal clusters sprouting from crevices.
+  const cr = s.crystals;
+  const out = { pos: [] as number[], nor: [] as number[], col: [] as number[], glow: [] as number[] };
+  const nv = new Vector3();
+  const dv = new Vector3();
+  const at = new Vector3();
+  for (let k = 0; k < cr.clusters; k++) {
+    // Prefer concave spots: best of a few random picks.
+    let best = Math.floor(r() * n);
+    for (let t = 0; t < 6; t++) {
+      const c = Math.floor(r() * n);
+      if (curv[c] < curv[best]) best = c;
+    }
+    nv.fromBufferAttribute(nrm, best);
+    for (let j = 0; j < cr.per; j++) {
+      dv.set(r() - 0.5, r() - 0.5, r() - 0.5).multiplyScalar(j === 0 ? 0.4 : 1.3).add(nv).normalize();
+      const len = cr.size * (j === 0 ? 1.3 : 0.5 + r() * 0.6);
+      at.fromBufferAttribute(p, best)
+        .addScaledVector(nv, -len * 0.18)
+        .add(new Vector3(r() - 0.5, r() - 0.5, r() - 0.5).multiplyScalar(cr.size * 0.25));
+      pushCrystal(out, at, dv, len, len * (0.16 + r() * 0.06), cr.color, cr.tip, cr.glow, r() * 3);
+    }
+  }
+  const m = out.pos.length / 3;
+  const total = n + m;
+  const pos = new Float32Array(total * 3);
+  pos.set(pa.subarray(0, n * 3));
+  pos.set(out.pos, n * 3);
+  const nor = new Float32Array(total * 3);
+  nor.set((nrm.array as Float32Array).subarray(0, n * 3));
+  nor.set(out.nor, n * 3);
+  const cols = new Float32Array(total * 3);
+  cols.set(colors);
+  cols.set(out.col, n * 3);
+  const gl = new Float32Array(total);
+  gl.set(glow);
+  gl.set(out.glow, n);
+  const index: number[] = Array.from(idx);
+  for (let i = 0; i < m; i++) index.push(n + i);
+  const res = new BufferGeometry();
+  res.setAttribute("position", new BufferAttribute(pos, 3));
+  res.setAttribute("normal", new BufferAttribute(nor, 3));
+  res.setAttribute("color", new BufferAttribute(cols, 3));
+  res.setAttribute("aGlow", new BufferAttribute(gl, 1));
+  res.setIndex(index);
+  res.computeBoundingSphere();
+  g.dispose();
+  return res;
+}
+
 const ROCK_NOISE = GLSL_NOISE.replace(/FBM_OCT/g, "3");
 
-function rockMaterial(
-  ctx: Ctx,
-  opts: { rough: number; metal?: number; glow?: Color; flat?: boolean; envI?: number; emissive?: Color; bump?: number; freq?: number; ice?: Color; contrast?: number },
-): MeshStandardMaterial {
+export interface RockMatOpts {
+  rough: number;
+  metal?: number;
+  glow?: Color;
+  flat?: boolean;
+  envI?: number;
+  emissive?: Color;
+  bump?: number;
+  freq?: number;
+  ice?: Color;
+  contrast?: number;
+  /** Stylised fresnel rim light. */
+  rim?: Color;
+}
+
+export function rockMaterial(ctx: { uTime: { value: number } }, opts: RockMatOpts): MeshStandardMaterial {
   const m = new MeshStandardMaterial({
     vertexColors: true,
     roughness: opts.rough,
@@ -1481,6 +1749,7 @@ function rockMaterial(
   const freq = opts.freq ?? 3.2;
   const ice = opts.ice ?? null;
   const contrast = opts.contrast ?? 1;
+  const rim = opts.rim ?? null;
   m.onBeforeCompile = (s: WebGLProgramParametersWithUniforms) => {
     s.uniforms.uGlowColor = { value: glow ?? new Color(0) };
     s.uniforms.uIce = { value: ice ?? new Color(0) };
@@ -1488,6 +1757,7 @@ function rockMaterial(
     s.uniforms.uTime = uTime;
     s.uniforms.uRockBump = { value: bump };
     s.uniforms.uRockFreq = { value: freq };
+    s.uniforms.uRim = { value: rim ?? new Color(0) };
     s.vertexShader = s.vertexShader
       .replace("#include <common>", `#include <common>\nvarying vec3 vRockP;\n${glow ? "attribute float aGlow;\nvarying float vGlow;" : ""}`)
       .replace("#include <begin_vertex>", `#include <begin_vertex>\nvRockP = position;\n${glow ? "vGlow = aGlow;" : ""}`);
@@ -1501,6 +1771,7 @@ uniform float uRockBump;
 uniform float uRockFreq;
 uniform vec3 uIce;
 uniform float uRockC;
+uniform vec3 uRim;
 varying vec3 vRockP;
 ${glow ? "varying float vGlow;" : ""}
 ${ROCK_NOISE}`,
@@ -1518,7 +1789,7 @@ diffuseColor.rgb *= mix(1.0, 0.66 + 0.68 * rockH, uRockC);`,
 {
   vec3 dpx = dFdx(-vViewPosition);
   vec3 dpy = dFdy(-vViewPosition);
-  float rbk = uRockBump * 0.7 * (1.0 - 0.8 * smoothstep(30.0, 220.0, rockD));
+  float rbk = uRockBump * 0.7 * (1.0 - 0.8 * smoothstep(30.0, 220.0, rockD))${glow ? " * (1.0 - clamp(vGlow, 0.0, 1.0))" : ""};
   float dhx = dFdx(rockH) * rbk;
   float dhy = dFdy(rockH) * rbk;
   vec3 r1 = cross(dpy, normal);
@@ -1532,7 +1803,8 @@ diffuseColor.rgb *= mix(1.0, 0.66 + 0.68 * rockH, uRockC);`,
       .replace(
         "#include <emissivemap_fragment>",
         `#include <emissivemap_fragment>
-${glow ? "totalEmissiveRadiance += uGlowColor * vGlow * (0.7 + 0.3 * sin(uTime * 1.7 + vGlow * 9.0));" : ""}
+${glow ? "totalEmissiveRadiance += uGlowColor * vGlow * (0.55 + 0.25 * sin(uTime * 1.7 + vGlow * 9.0) + 0.9 * pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 2.0));" : ""}
+${rim ? "totalEmissiveRadiance += uRim * pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 3.0) * (0.6 + 0.4 * rockH);" : ""}
 ${
   ice
     ? `{
@@ -1547,7 +1819,7 @@ ${
 }`,
       );
   };
-  m.customProgramCacheKey = () => `nova-rock-${glow ? "g" : ""}${ice ? "i" : ""}`;
+  m.customProgramCacheKey = () => `nova-rock-${glow ? "g" : ""}${ice ? "i" : ""}${rim ? "r" : ""}`;
   return m;
 }
 
@@ -2556,7 +2828,7 @@ function buildMars(ctx: Ctx): ThemeLook {
 
 function asteroidField(
   ctx: Ctx,
-  opts: { count: number; inner: number; outer: number; thick: number; nearFrac: number; shapes: RockShape[]; mats: MeshStandardMaterial[]; tint: [Color, Color]; sizeMax: number; spin: number },
+  opts: { count: number; inner: number; outer: number; thick: number; nearFrac: number; shapes: BufferGeometry[]; mats: MeshStandardMaterial[]; tint: [Color, Color]; sizeMax: number; spin: number },
 ): void {
   const r = rng(4242);
   const o = ctx.outline;
@@ -2598,13 +2870,26 @@ function asteroidField(
     });
     placed++;
   }
-  opts.shapes.forEach((sh, k) => {
-    makeTumbler(ctx, rockGeometry(sh), opts.mats[k], buckets[k], { cast: false, receive: true, perFrame: ctx.hi ? 700 : 250 });
+  opts.shapes.forEach((geo, k) => {
+    makeTumbler(ctx, geo, opts.mats[k], buckets[k], { cast: false, receive: true, perFrame: ctx.hi ? 700 : 250 });
   });
 }
 
 function heroRock(ctx: Ctx, p: Vector3, radius: number, seed: number, mat: MeshStandardMaterial, spin: number): Mesh {
-  const geo = rockGeometry({ seed, detail: ctx.hi ? 5 : 4, lumpy: 0.28, craters: 26, shade: [new Color(0x2a2522), new Color(0x9a8c80)] });
+  const geo = craggyRock({
+    seed,
+    detail: ctx.hi ? 5 : 4,
+    cuts: 18,
+    depth: [0.74, 0.95],
+    lumpy: 0.3,
+    craters: 18,
+    strata: 0.6,
+    veins: 0.9,
+    lo: new Color(0x120f14),
+    mid: new Color(0x6a5a52),
+    hi: new Color(0xc9b7a2),
+    crystals: { clusters: ctx.hi ? 10 : 5, per: 5, size: 0.16, color: new Color(0x1a6a8a), tip: new Color(0xbff6ff), glow: 1 },
+  });
   const m = new Mesh(geo, mat);
   m.position.copy(p);
   m.scale.set(radius, radius * 0.8, radius * 1.15);
@@ -2699,11 +2984,14 @@ function buildBelt(ctx: Ctx): ThemeLook {
   );
   addPlanet(ctx, azEl(62, 30), SKY_R, { radius: 16, map: moonTex, atmo: new Color(0), atmoK: 0, ambient: 0.003, spin: 0.002, segments: 48 }, -970);
 
-  const rockLo = new Color(0x2b2622);
-  const rockHi = new Color(0x8a7c70);
-  const glowRock = rockMaterial(ctx, { rough: 0.85, glow: new Color(0.2, 1.4, 1.8) });
-  const plain = rockMaterial(ctx, { rough: 0.9 });
-  const metallic = rockMaterial(ctx, { rough: 0.55, metal: 0.45 });
+  // Stylised craggy asteroids: cleaved facets, baked crevice AO, worn edge highlights, cyan crystal seams.
+  const rim = new Color(0.05, 0.08, 0.15);
+  const glowRock = rockMaterial(ctx, { rough: 0.85, glow: new Color(0.25, 1.5, 1.9), rim, contrast: 0.6, bump: 0.7, envI: 0.45 });
+  const plain = rockMaterial(ctx, { rough: 0.9, rim, contrast: 0.6, bump: 0.8, envI: 0.45, flat: !ctx.hi });
+  const metallic = rockMaterial(ctx, { rough: 0.6, metal: 0.3, rim, contrast: 0.5, bump: 0.6, envI: 0.6, flat: !ctx.hi });
+  const dd = ctx.hi ? 2 : 1;
+  const basalt = { lo: new Color(0x16121a), mid: new Color(0x5c5048), hi: new Color(0xb8a48e) };
+  const cyanX = { color: new Color(0x0f5a78), tip: new Color(0xc8f8ff), glow: 1 };
   asteroidField(ctx, {
     count: ctx.hi ? 3200 : 1100,
     inner: ctx.extent * 0.2,
@@ -2711,18 +2999,18 @@ function buildBelt(ctx: Ctx): ThemeLook {
     thick: 110,
     nearFrac: 0.35,
     shapes: [
-      { seed: 11, detail: ctx.hi ? 2 : 1, lumpy: 0.45, shade: [rockLo, rockHi] },
-      { seed: 12, detail: ctx.hi ? 2 : 1, lumpy: 0.55, stretch: [1.4, 0.8, 1], shade: [rockLo, rockHi] },
-      { seed: 13, detail: ctx.hi ? 2 : 1, lumpy: 0.4, craters: 4, shade: [new Color(0x3a2e26), new Color(0x9a8470)] },
-      { seed: 14, detail: ctx.hi ? 2 : 1, lumpy: 0.45, veins: true, shade: [new Color(0x1c1a1c), new Color(0x5a5560)] },
-      { seed: 15, detail: ctx.hi ? 3 : 2, lumpy: 0.4, craters: 8, shade: [rockLo, rockHi] },
+      craggyRock({ seed: 11, detail: dd, cuts: 9, lumpy: 0.4, strata: 0.6, ...basalt }),
+      craggyRock({ seed: 12, detail: dd, cuts: 8, depth: [0.6, 0.85], lumpy: 0.35, stretch: [1.5, 0.75, 0.95], ...basalt }),
+      craggyRock({ seed: 13, detail: dd, cuts: 11, lumpy: 0.35, craters: 3, lo: new Color(0x1c120e), mid: new Color(0x7a5a44), hi: new Color(0xe0b48a) }),
+      craggyRock({ seed: 14, detail: dd, cuts: 10, lumpy: 0.4, veins: 0.8, lo: new Color(0x0c0b12), mid: new Color(0x3e3a48), hi: new Color(0x9a94b0), crystals: { clusters: 2, per: ctx.hi ? 5 : 3, size: 0.46, ...cyanX } }),
+      craggyRock({ seed: 15, detail: ctx.hi ? 3 : 2, cuts: 13, lumpy: 0.35, craters: 6, strata: 0.5, veins: 0.5, ...basalt, crystals: { clusters: 2, per: ctx.hi ? 5 : 3, size: 0.36, ...cyanX } }),
     ],
-    mats: [plain, plain, metallic, glowRock, plain],
+    mats: [plain, plain, metallic, glowRock, glowRock],
     tint: [new Color(0.8, 0.78, 0.8), new Color(1.15, 1.05, 0.95)],
     sizeMax: 34,
     spin: 0.5,
   });
-  const heroMat = rockMaterial(ctx, { rough: 0.9 });
+  const heroMat = rockMaterial(ctx, { rough: 0.88, glow: new Color(0.25, 1.5, 1.9), rim, contrast: 0.55, bump: 0.8, envI: 0.5 });
   const big = heroRock(ctx, new Vector3(ctx.cx - ctx.extent - 420, ctx.cy + 60, ctx.cz + 180), 190, 3, heroMat, 0.004);
   heroRock(ctx, new Vector3(ctx.cx + ctx.extent + 360, ctx.cy - 140, ctx.cz - 380), 120, 8, heroMat, -0.006);
   heroRock(ctx, new Vector3(ctx.cx + 140, ctx.cy - 380, ctx.cz + ctx.extent + 300), 150, 17, heroMat, 0.003);
@@ -2821,13 +3109,16 @@ function buildSaturn(ctx: Ctx): ThemeLook {
   );
   addPlanet(ctx, azEl(-95, 42), SKY_R, { radius: 6, map: ice, atmo: new Color(0), atmoK: 0, ambient: 0.02, spin: 0.001, segments: 32 }, -965);
 
-  // Ice shards: we race through a thin layer of the rings.
-  const iceMat = rockMaterial(ctx, { rough: 0.14, metal: 0.1, envI: 2.2, ice: new Color(0.22, 0.55, 0.85), contrast: 0.35, bump: 0.5, freq: 2.4 });
-  const shade: [Color, Color] = [new Color(0x6f9dc0), new Color(0xe6f6ff)];
-  const shapes: RockShape[] = [
-    { seed: 31, detail: ctx.hi ? 2 : 1, lumpy: 0.3, stretch: [0.6, 1.8, 0.7], shade },
-    { seed: 32, detail: ctx.hi ? 2 : 1, lumpy: 0.35, shade },
-    { seed: 33, detail: ctx.hi ? 3 : 2, lumpy: 0.3, stretch: [1.3, 0.8, 1], craters: 3, shade },
+  // Ice chunks: we race through a thin layer of the rings. Cleaved, glassy facets, deep-blue crevices,
+  // frosted tops and little clear crystal clusters.
+  const iceMat = rockMaterial(ctx, { rough: 0.12, metal: 0.1, envI: 2.2, ice: new Color(0.2, 0.5, 0.85), contrast: 0.25, bump: 0.35, freq: 2.4, glow: new Color(0.55, 0.85, 1.2), rim: new Color(0.25, 0.45, 0.7) });
+  const iceC = { lo: new Color(0x123f78), mid: new Color(0x78ade0), hi: new Color(0xeaf7ff), frost: new Color(0xf6fbff) };
+  const frostX = { color: new Color(0x6fb6e8), tip: new Color(0xffffff), glow: 0.35 };
+  const id = ctx.hi ? 2 : 1;
+  const shapes: BufferGeometry[] = [
+    craggyRock({ seed: 31, detail: id, cuts: 10, depth: [0.55, 0.8], lumpy: 0.15, stretch: [0.6, 1.8, 0.7], ...iceC }),
+    craggyRock({ seed: 32, detail: id, cuts: 14, depth: [0.55, 0.85], lumpy: 0.18, ...iceC, crystals: ctx.hi ? { clusters: 2, per: 4, size: 0.3, ...frostX } : undefined }),
+    craggyRock({ seed: 33, detail: ctx.hi ? 3 : 2, cuts: 12, depth: [0.6, 0.88], lumpy: 0.2, stretch: [1.35, 0.75, 1.05], ...iceC, crystals: { clusters: ctx.hi ? 3 : 2, per: 4, size: 0.26, ...frostX } }),
   ];
   const r = rng(77);
   const o = ctx.outline;
@@ -2860,7 +3151,7 @@ function buildSaturn(ctx: Ctx): ThemeLook {
     buckets[k].push({ p: new Vector3(x, y, z), s: new Vector3(size, size, size), spin: (r() - 0.5) * 0.8, color: new Color(1, 1, 1).multiplyScalar(0.85 + r() * 0.3) });
     glints.push(new Vector3(x, y + size * 0.6, z));
   }
-  shapes.forEach((sh, k) => makeTumbler(ctx, rockGeometry(sh), iceMat, buckets[k], { cast: false, receive: true, perFrame: ctx.hi ? 600 : 200 }));
+  shapes.forEach((geo, k) => makeTumbler(ctx, geo, iceMat, buckets[k], { cast: false, receive: true, perFrame: ctx.hi ? 600 : 200 }));
   glints.forEach((g, i) => {
     if (i % 3 === 0) beacon(ctx, g, 0xdff6ff, 1.2 + r() * 2, 0.6 + r() * 2.5, r() * 30, 1.2);
   });
