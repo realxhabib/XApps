@@ -25,7 +25,7 @@ const web = resolve(here, "..");
 const outDir = resolve(web, "public/audio/nova-rally");
 const RATE = 44100;
 const SFX_KBPS = 112;
-const MUSIC_KBPS = 112;
+const MUSIC_KBPS = 96;
 const GAP = 0.25;
 
 const entry = `
