@@ -18,6 +18,11 @@
 // Vercel preview/development builds skip unless SYNC_APPS=always (a preview
 // must not publish its catalog to the production database). `--build` is how
 // `npm run build` calls it: a failure explains that it is failing the build.
+// When Supabase itself is down or timing out (network errors, 5xx, 429),
+// requests are retried with backoff; if it still can't be reached, a build
+// warns and carries on (the database keeps the previous catalog; re-run
+// `npm run sync-apps` or redeploy once Supabase recovers). Real problems (a
+// wrong key, a missing schema, a taken slug) still fail the build.
 //
 // The mapping lives in src/platform/official-apps.ts (unit tested); this file
 // only bundles it with esbuild (the catalog imports the SDK from source) and
@@ -153,10 +158,47 @@ function dbError(what, error) {
   return `${what}: ${detail}${error.code ? ` [${error.code}]` : ""}${hint}`;
 }
 
+/** Supabase being down or overloaded, as opposed to something wrong with this project. */
+function isOutage(error, status) {
+  if (status === 408 || status === 429 || (status >= 500 && status <= 599)) return true;
+  const text = `${error?.message ?? ""} ${error?.details ?? ""}`;
+  return /fetch failed|timeout|timed out|aborted|ECONN|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|socket|network|upstream|gateway/i.test(text);
+}
+
+const RETRY_DELAYS = [2_000, 5_000, 10_000, 20_000];
+
+/** Runs a Supabase query, retrying while Supabase looks down; gives up per `isOutage`. */
+async function query(what, run) {
+  for (let attempt = 0; ; attempt++) {
+    let result;
+    try {
+      result = await run();
+    } catch (error) {
+      result = { data: null, error: { message: error?.message ?? String(error), details: error?.cause?.message }, status: 0 };
+    }
+    const { data, error, status } = result;
+    if (!error) return data;
+    if (!isOutage(error, status)) fail(dbError(what, error));
+    if (attempt >= RETRY_DELAYS.length) outage(dbError(what, error));
+    log(`sync-apps: Supabase looks unavailable (${status || "no response"}); retrying in ${RETRY_DELAYS[attempt] / 1000}s…`);
+    await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
+  }
+}
+
+/** Supabase stayed unreachable: a build deploys anyway (with a loud warning); a manual run fails. */
+function outage(message) {
+  if (!buildMode) fail(`${message} (Supabase looks down; try again later)`);
+  log(
+    `sync-apps: ⚠ ${message}\n` +
+      "sync-apps: ⚠ Supabase looks down, so official apps were NOT synced; deploying anyway.\n" +
+      "            Apps already in the database keep working. New or changed first-party apps\n" +
+      "            catch up when you run `npm run sync-apps` or redeploy after Supabase recovers.",
+  );
+  process.exit(0);
+}
+
 async function fetchRows() {
-  const { data, error } = await supabase.from("apps").select(columns).in("slug", slugs);
-  if (error) fail(dbError("could not read public.apps", error));
-  return data;
+  return query("could not read public.apps", () => supabase.from("apps").select(columns).in("slug", slugs));
 }
 
 log(`sync-apps: syncing ${rows.length} official app(s) to ${host}…`);
@@ -170,13 +212,14 @@ if (conflicts.length) {
 const changes = plan.filter((s) => s.action === "insert" || s.action === "update");
 if (changes.length) {
   const now = new Date().toISOString();
-  const { error } = await supabase
-    .from("apps")
-    .upsert(
-      changes.map((s) => ({ ...s.row, updated_at: now })),
-      { onConflict: "slug" },
-    );
-  if (error) fail(dbError("upsert into public.apps failed", error));
+  await query("upsert into public.apps failed", () =>
+    supabase
+      .from("apps")
+      .upsert(
+        changes.map((s) => ({ ...s.row, updated_at: now })),
+        { onConflict: "slug" },
+      ),
+  );
 }
 
 // Read back: a trigger or constraint that rewrote a value would leave drift.
@@ -190,31 +233,34 @@ for (const s of plan) {
 }
 
 // Official apps the catalog dropped are retired (after the upsert, so a failed sync retires nothing).
-const { data: others, error: othersError } = await supabase
-  .from("apps")
-  .select("slug,official,status")
-  .eq("official", true)
-  .not("slug", "in", `(${mod.catalogSlugs().join(",")})`);
-if (othersError) fail(dbError("could not list official apps", othersError));
+const others = await query("could not list official apps", () =>
+  supabase
+    .from("apps")
+    .select("slug,official,status")
+    .eq("official", true)
+    .not("slug", "in", `(${mod.catalogSlugs().join(",")})`),
+);
 const retirement = mod.planOfficialAppRetirement(others ?? []);
 const toRetire = retirement.filter((s) => s.action === "retire").map((s) => s.slug);
 if (toRetire.length) {
-  const { error } = await supabase
-    .from("apps")
-    .update({ status: mod.RETIRED_STATUS, updated_at: new Date().toISOString() })
-    .in("slug", toRetire)
-    .eq("official", true);
-  if (error) fail(dbError("could not retire official apps", error));
+  await query("could not retire official apps", () =>
+    supabase
+      .from("apps")
+      .update({ status: mod.RETIRED_STATUS, updated_at: new Date().toISOString() })
+      .in("slug", toRetire)
+      .eq("official", true),
+  );
 }
 const cancelled = new Map();
 if (retirement.length) {
-  const { data, error } = await supabase
-    .from("matches")
-    .update({ status: "cancelled", updated_at: new Date().toISOString() })
-    .in("app_slug", retirement.map((s) => s.slug))
-    .in("status", [...mod.RETIRED_MATCH_STATUSES])
-    .select("app_slug");
-  if (error) fail(dbError("could not cancel a retired app's unfinished matches", error));
+  const data = await query("could not cancel a retired app's unfinished matches", () =>
+    supabase
+      .from("matches")
+      .update({ status: "cancelled", updated_at: new Date().toISOString() })
+      .in("app_slug", retirement.map((s) => s.slug))
+      .in("status", [...mod.RETIRED_MATCH_STATUSES])
+      .select("app_slug"),
+  );
   for (const { app_slug } of data ?? []) cancelled.set(app_slug, (cancelled.get(app_slug) ?? 0) + 1);
 }
 for (const s of retirement) {
