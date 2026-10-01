@@ -248,6 +248,9 @@ function stringOrNull(value: unknown): string | null {
 /** Maps a Postgres/PostgREST error code (and message) to a BackendError code. */
 export function errorKind(code: string | undefined, message = ""): BackendError["code"] {
   if (code === "40001" || /state_conflict/i.test(message)) return "conflict";
+  // A finished, expired or cancelled match: final, so never "conflict" (which tells apps to re-read and retry;
+  // a tab left open on a finished match once retried that write forever).
+  if (/isn.t running/i.test(message)) return "forbidden";
   switch (code) {
     case "28000":
       return "unauthenticated";

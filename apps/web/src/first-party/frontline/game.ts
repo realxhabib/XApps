@@ -347,6 +347,9 @@ export class Game {
   private pendingDoc: KillRec[] = [];
   private wantClockEnd = false;
   private writing = false;
+  /** Failed shared-state writes in a row (backs off) and whether writing stopped for good. */
+  private writeFailures = 0;
+  private docClosed = false;
   private writeRetryAt = 0;
   private recentSpawns: { i: number; at: number }[] = [];
   private hudVersion = 0;
@@ -589,7 +592,7 @@ export class Game {
   }
 
   private flushDoc(): void {
-    if (this.writing || !this.transport.canWrite) return;
+    if (this.writing || this.docClosed || !this.transport.canWrite) return;
     if (this.pendingDoc.length === 0 && !this.wantClockEnd) return;
     if (performance.now() < this.writeRetryAt) return;
     this.writing = true;
@@ -620,10 +623,21 @@ export class Game {
       .then(() => {
         this.pendingDoc = this.pendingDoc.filter((k) => !kills.includes(k));
         if (clock) this.wantClockEnd = false;
+        this.writeFailures = 0;
       })
       .catch((error: unknown) => {
         console.warn("[frontline] state write failed", error);
-        this.writeRetryAt = performance.now() + 700;
+        const code = (error as { code?: unknown } | null)?.code;
+        if (code === "forbidden" || code === "not_found" || code === "invalid_params") {
+          // Final (the match is over, or we're not seated): stop writing for good.
+          this.docClosed = true;
+          this.pendingDoc = [];
+          this.wantClockEnd = false;
+          return;
+        }
+        // Transient: back off, 0.7 s doubling to 15 s.
+        this.writeFailures++;
+        this.writeRetryAt = performance.now() + Math.min(15_000, 700 * 2 ** (this.writeFailures - 1));
       })
       .finally(() => {
         this.writing = false;

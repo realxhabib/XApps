@@ -119,6 +119,19 @@ describe("requests", () => {
     const outcomes = await Promise.all(attempts);
     expect(outcomes.filter((o) => o === "rate_limited").length).toBeGreaterThan(0);
   });
+
+  it("rate limits match writes so a stuck retry loop can't flood the backend", async () => {
+    let version = 0;
+    const write = vi.fn(() => ({ version: ++version }));
+    const { client } = await setup({ "state.set": write });
+    const attempts = Array.from({ length: 30 }, (_, i) =>
+      client.state.set({ n: i }, version).then(() => "ok", (e: { code?: string }) => e.code),
+    );
+    const outcomes = await Promise.all(attempts);
+    // The burst gets through; the rest is refused before it reaches the handler.
+    expect(write.mock.calls.length).toBeLessThanOrEqual(11);
+    expect(outcomes.filter((o) => o === "rate_limited").length).toBeGreaterThanOrEqual(19);
+  });
 });
 
 describe("events", () => {
