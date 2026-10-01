@@ -128,8 +128,27 @@ try {
 const { createClient } = await import("@supabase/supabase-js");
 const supabase = createClient(url, key, {
   auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-  global: { fetch: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(30_000) }) },
+  global: { fetch: fetchWithRetry },
 });
+
+/**
+ * A sleeping or cold database can leave the first request hanging: retry timeouts and network
+ * errors a few times (every write here is idempotent) before failing the build.
+ */
+async function fetchWithRetry(input, init) {
+  const delays = [2_000, 5_000, 10_000];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetch(input, { ...init, signal: AbortSignal.timeout(30_000) });
+    } catch (error) {
+      const name = error?.name ?? "";
+      const retryable = name === "TimeoutError" || name === "AbortError" || error instanceof TypeError;
+      if (!retryable || attempt >= delays.length) throw error;
+      log(`sync-apps: ${name || "network error"} talking to ${host}; retrying in ${delays[attempt] / 1000}s…`);
+      await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+    }
+  }
+}
 const columns = mod.OFFICIAL_APP_COLUMNS.join(",");
 const slugs = rows.map((r) => r.slug);
 

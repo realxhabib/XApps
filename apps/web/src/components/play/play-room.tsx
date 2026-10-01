@@ -473,6 +473,15 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
     lastMatch.current = updated;
     store(updated);
   };
+  /** Re-read the match from the backend and pass on anything the cache missed. */
+  const refreshMatch = async () => {
+    try {
+      const fresh = await backend.getMatch(match.id);
+      if (fresh && fresh.stateVersion > latest().stateVersion) announce(fresh);
+    } catch {
+      // Best effort: the SDK's retry still runs, and realtime may catch up.
+    }
+  };
   const seatedOnly = (method: string) => {
     if (spectating) throw new XAppsError("forbidden", `${method}: spectators can't do that`);
   };
@@ -637,8 +646,11 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
         return { version };
       } catch (error) {
         const sdkError = toSdkError(error);
-        // A conflict is routine (the SDK re-reads and retries), so no toast for it.
-        if (sdkError.code !== "conflict") toast(errorMessage(error), { tone: "danger" });
+        // A conflict is routine (the SDK re-reads and retries), so no toast for it. The re-read
+        // (state.get) serves our cached match, which may have missed realtime updates: pull the
+        // database's copy first, or every retry would repeat the same stale version.
+        if (sdkError.code === "conflict") await refreshMatch();
+        else toast(errorMessage(error), { tone: "danger" });
         throw sdkError;
       }
     },
