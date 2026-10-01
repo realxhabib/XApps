@@ -27,6 +27,7 @@ import { useBackend, useViewer } from "@/platform/client";
 import { buildLaunchContext, opponentOf, playerOf, toLaunchMatch, toMatchResult } from "@/platform/match-utils";
 import { invalidateProgress, useApp, useAppVersions, useMatch, useMatchAction } from "@/platform/queries";
 import { retiredAppManifest } from "@/platform/retired-apps";
+import { isOfflineMatch } from "@/platform/health";
 import { applyVersionToApp, isTestBuild } from "@/platform/shipping";
 import type { AppManifest, Json, LogLevel, Match, Profile } from "@/platform/types";
 import { showAchievement } from "./achievement-moment";
@@ -442,6 +443,18 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
   }, []);
 
   const testBuild = isTestBuild(match);
+  /** Practice played on this device while the database was down: nothing is saved. */
+  const offline = isOfflineMatch(match.id);
+  /** Stats and achievements are shown but never saved (test builds, offline practice). */
+  const unsaved = testBuild || offline;
+  useEffect(() => {
+    if (!offline) return;
+    toast("Offline practice", {
+      description: "XApps can't reach its database, so this practice runs on your device. Results, XP and stats aren't saved.",
+      tone: "info",
+      duration: 8000,
+    });
+  }, [offline]);
   /** Test builds load their version's url (and the bridge pins that url's origin). */
   const sourceUrl = match.versionUrl || app.url;
   const appUrl = useMemo(() => {
@@ -585,9 +598,9 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
     },
     "stats.report": async ({ values }) => {
       seatedOnly("stats.report");
-      if (testBuild) {
-        // Test builds never touch stats: echo the values back without saving them.
-        logEvent("info", "stats.report not saved (test build)", { values }, "host");
+      if (unsaved) {
+        // Test builds and offline practice never touch stats: echo the values back without saving them.
+        logEvent("info", `stats.report not saved (${offline ? "offline practice" : "test build"})`, { values }, "host");
         return values;
       }
       try {
@@ -603,9 +616,9 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
     "achievements.unlock": async ({ id }) => {
       seatedOnly("achievements.unlock");
       let result: { unlocked: boolean };
-      if (testBuild) {
+      if (unsaved) {
         // Shown (so the flow can be tried) but never saved, and worth no XP.
-        logEvent("info", `achievements.unlock ${id} not saved (test build)`, { id }, "host");
+        logEvent("info", `achievements.unlock ${id} not saved (${offline ? "offline practice" : "test build"})`, { id }, "host");
         result = { unlocked: true };
       } else {
         try {
@@ -621,7 +634,7 @@ function MatchStage({ app, match, viewer }: { app: AppManifest; match: Match; vi
             icon: def.icon,
             name: def.name,
             description: def.description,
-            xp: testBuild ? 0 : def.xp,
+            xp: unsaved ? 0 : def.xp,
             appName: app.name,
             accent: app.accent,
           });

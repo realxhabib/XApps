@@ -36,7 +36,7 @@ import type {
   WebhookDelivery,
 } from "../types";
 import { BackendError } from "../backend";
-import { OUTAGE_MESSAGE, isOutage } from "../health";
+import { OutageError, isOutage } from "../health";
 
 export interface AppRow {
   slug: string;
@@ -283,7 +283,7 @@ export function toBackendError(error: { code?: string; message?: string } | null
     );
   }
   // Supabase down or unable to reach the database: say so plainly instead of PostgREST's internals.
-  if (isOutage(error)) return new BackendError(OUTAGE_MESSAGE, "internal");
+  if (isOutage(error)) return new OutageError();
   const message = error?.message || fallback;
   const kind = errorKind(code, message);
   return new BackendError(kind === "conflict" && /state_conflict/i.test(message) ? "The match state changed — try again" : message, kind);

@@ -6,7 +6,8 @@ import { env } from "@/lib/env";
 import { APP_MEDIA_BUCKET, baseMime, displayProblem, mediaExtension, mediaKindOf, mediaProblem, probeMedia } from "@/lib/media";
 import { BackendError, type Backend, type RoomTransport } from "../backend";
 import { OFFICIAL_APPS, getOfficialApp, manifestShapeError, withManifestDefaults } from "../catalog";
-import { OUTAGE_MESSAGE, isOutage, noteHealthy, noteOutage } from "../health";
+import { OUTAGE_MESSAGE, OutageError, isOfflineMatch, isOutage, noteHealthy, noteOutage } from "../health";
+import { DemoBackend } from "../demo/demo-backend";
 import type {
   AppAnalytics,
   AppLaunch,
@@ -467,6 +468,8 @@ export class SupabaseBackend implements Backend {
     data?: Json;
     source: "app" | "host";
   }): Promise<void> {
+    // Offline practice runs on this device; its logs have nowhere to go.
+    if (isOfflineMatch(entry.matchId)) return;
     await this.ownerRpc("log_app_event", {
       p_app: entry.appSlug,
       p_match: entry.matchId,
@@ -556,26 +559,68 @@ export class SupabaseBackend implements Backend {
     return this.rpcId("quick_match", quickMatchArgs(appSlug, versionId));
   }
 
-  startPractice(appSlug: string, players?: number, versionId?: string | null): Promise<Match> {
-    // Only name p_players / p_version when asked, so older schemas still resolve the call.
-    return this.rpcId("start_practice", practiceArgs(appSlug, players, versionId));
+  async startPractice(appSlug: string, players?: number, versionId?: string | null): Promise<Match> {
+    try {
+      // Only name p_players / p_version when asked, so older schemas still resolve the call.
+      return await this.rpcId("start_practice", practiceArgs(appSlug, players, versionId));
+    } catch (error) {
+      // Database down: practice a built-in game on this device instead (test builds need the server).
+      if (!(error instanceof OutageError) || versionId || !getOfficialApp(appSlug)) throw error;
+      return (await this.offlineEngine()).startPractice(appSlug, players);
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Offline practice                                                 */
+  /* ---------------------------------------------------------------- */
+
+  private offline: DemoBackend | null = null;
+
+  /**
+   * The local engine offline practice runs on (the demo backend's: bots, rules,
+   * settlement, in this browser), seating the signed-in viewer under their real
+   * id. Its matches have `m-` ids, so every later call for one (after a reload
+   * too) comes back here. Nothing it records reaches XApps.
+   */
+  private async offlineEngine(): Promise<DemoBackend> {
+    const { data } = await this.sb.auth.getSession();
+    const user = data.session?.user;
+    if (!user) throw new BackendError("Sign in to play", "unauthenticated");
+    this.offline ??= new DemoBackend();
+    this.offline.adoptViewer(profileFromAuthUser(user));
+    return this.offline;
+  }
+
+  /** The offline engine for an offline match id (sync callers: the viewer was adopted when the match loaded). */
+  private localFor(matchId: string): DemoBackend | null {
+    if (!isOfflineMatch(matchId)) return null;
+    this.offline ??= new DemoBackend();
+    return this.offline;
   }
 
   startMatch(matchId: string): Promise<Match> {
+    const local = this.localFor(matchId);
+    if (local) return local.startMatch(matchId);
     return this.rpcThenGet("start_match", matchId);
   }
 
   spectate(matchId: string): Promise<Match> {
+    const local = this.localFor(matchId);
+    if (local) return local.spectate(matchId);
     return this.rpcThenGet("spectate_match", matchId);
   }
 
   inviteToMatch(matchId: string, handles: string[]): Promise<Match> {
+    const local = this.localFor(matchId);
+    if (local) return local.inviteToMatch(matchId, handles);
     return this.rpcThenGet("invite_to_match", matchId, {
       p_handles: handles.map((h) => h.replace(/^@/, "").trim().toLowerCase()).filter(Boolean),
     });
   }
 
   async updateState(matchId: string, state: Json, expectedVersion: number): Promise<{ version: number; match: Match }> {
+    const local = this.localFor(matchId);
+    if (local) return local.updateState(matchId, state, expectedVersion);
     const { data, error } = await this.sb.rpc("update_match_state", {
       p_match: matchId,
       p_state: state,
@@ -589,26 +634,37 @@ export class SupabaseBackend implements Backend {
   }
 
   endTurn(matchId: string, next?: string | null): Promise<Match> {
+    const local = this.localFor(matchId);
+    if (local) return local.endTurn(matchId, next);
     return this.rpcThenGet("end_turn", matchId, { p_next: next ?? null });
   }
 
   setRound(matchId: string, round: number): Promise<Match> {
+    const local = this.localFor(matchId);
+    if (local) return local.setRound(matchId, round);
     return this.rpcThenGet("set_round", matchId, { p_round: round });
   }
 
   joinMatch(matchId: string): Promise<Match> {
+    const local = this.localFor(matchId);
+    if (local) return local.joinMatch(matchId);
     return this.rpcThenGet("join_match", matchId);
   }
 
   declineMatch(matchId: string): Promise<Match> {
+    const local = this.localFor(matchId);
+    if (local) return local.declineMatch(matchId);
     return this.rpcThenGet("decline_match", matchId);
   }
 
   cancelMatch(matchId: string): Promise<Match> {
+    const local = this.localFor(matchId);
+    if (local) return local.cancelMatch(matchId);
     return this.rpcThenGet("cancel_match", matchId);
   }
 
   async getMatch(matchId: string): Promise<Match | null> {
+    if (isOfflineMatch(matchId)) return (await this.offlineEngine()).getMatch(matchId);
     const { data, error } = await this.sb.rpc("get_match", { p_match: matchId });
     if (error) {
       if (error.code === "22P02") return null; // not a uuid
@@ -618,22 +674,32 @@ export class SupabaseBackend implements Backend {
   }
 
   markStarted(matchId: string): Promise<Match> {
+    const local = this.localFor(matchId);
+    if (local) return local.markStarted(matchId);
     return this.rpcThenGet("mark_started", matchId);
   }
 
   async heartbeat(matchId: string): Promise<void> {
+    const local = this.localFor(matchId);
+    if (local) return local.heartbeat(matchId);
     await this.sb.rpc("heartbeat", { p_match: matchId });
   }
 
   claimForfeit(matchId: string): Promise<Match> {
+    const local = this.localFor(matchId);
+    if (local) return local.claimForfeit(matchId);
     return this.rpcThenGet("claim_forfeit", matchId);
   }
 
   forfeit(matchId: string): Promise<Match> {
+    const local = this.localFor(matchId);
+    if (local) return local.forfeit(matchId);
     return this.rpcThenGet("forfeit_match", matchId);
   }
 
   async submit(matchId: string, input: SubmitInput): Promise<Match> {
+    const local = this.localFor(matchId);
+    if (local) return local.submit(matchId, input);
     const mediaError = displayProblem(input.display);
     if (mediaError) throw new BackendError(mediaError, "invalid");
     return this.rpcThenGet("submit_entry", matchId, {
@@ -645,6 +711,8 @@ export class SupabaseBackend implements Backend {
   }
 
   vote(matchId: string, choiceUserId: string): Promise<Match> {
+    const local = this.localFor(matchId);
+    if (local) return local.vote(matchId, choiceUserId);
     return this.rpcThenGet("cast_vote", matchId, { p_choice: choiceUserId });
   }
 
@@ -676,6 +744,8 @@ export class SupabaseBackend implements Backend {
   /* ---------------------------------------------------------------- */
 
   watchMatch(matchId: string, handler: (match: Match) => void): () => void {
+    const local = this.localFor(matchId);
+    if (local) return local.watchMatch(matchId, handler);
     let alive = true;
     let pending: ReturnType<typeof setTimeout> | null = null;
     const refresh = () => {
@@ -724,6 +794,8 @@ export class SupabaseBackend implements Backend {
   }
 
   openRoom(matchId: string, viewerId: string): RoomTransport {
+    const local = this.localFor(matchId);
+    if (local) return local.openRoom(matchId, viewerId);
     return createSupabaseRoom(this.sb, matchId, viewerId);
   }
 

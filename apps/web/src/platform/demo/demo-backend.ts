@@ -545,6 +545,20 @@ export class DemoBackend implements Backend {
     }
   }
 
+  /**
+   * Plays as an outside profile (offline practice in the Supabase backend while
+   * its database is down): keeps it in the local database under the same id,
+   * so the match seats the real viewer.
+   */
+  adoptViewer(profile: Profile): void {
+    mutate((db) => {
+      const local = db.profiles[profile.id];
+      db.profiles[profile.id] = local ? { ...local, handle: profile.handle, name: profile.name, avatarUrl: profile.avatarUrl } : { ...profile };
+    });
+    if (getViewerId() !== profile.id) setViewerId(profile.id);
+    markHuman(profile.id);
+  }
+
   /* ---------------------------------------------------------------- */
   /* Session                                                          */
   /* ---------------------------------------------------------------- */

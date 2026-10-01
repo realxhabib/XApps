@@ -17,6 +17,7 @@ import { levelInfo } from "@/platform/scoring";
 import { isTestBuild, testBuildLabel } from "@/platform/shipping";
 import type { AppManifest, Match, MatchPlayer, Profile } from "@/platform/types";
 import { isMultiplayer, ordinal, rankings, seatedPlayers, teamRankings, viewerOutcome, type Placement, type TeamRanking } from "./match-view";
+import { isOfflineMatch } from "@/platform/health";
 
 type Outcome = "win" | "loss" | "draw" | "spectator";
 
@@ -86,8 +87,10 @@ export function ResultsOverlay({
     return () => clearTimeout(t);
   }, [app.accent, multi, outcome, podium, view.rank]);
 
+  // Offline practice (database down) ran on this device: nothing was earned.
+  const offline = isOfflineMatch(match.id);
   const xpAfter = viewer?.xp ?? 0;
-  const xpDelta = me?.xpDelta ?? 0;
+  const xpDelta = offline ? 0 : (me?.xpDelta ?? 0);
   const before = levelInfo(Math.max(0, xpAfter - xpDelta));
   const after = levelInfo(xpAfter);
   const leveledUp = after.level > before.level;
@@ -211,7 +214,9 @@ export function ResultsOverlay({
                 transition={{ delay: 1.2, type: "spring", stiffness: 50, damping: 14 }}
               />
             </div>
-            {testBuild ? (
+            {offline ? (
+              <p className="mt-2 text-xs text-gold">Offline practice — played on your device while XApps&apos; database was down. XP, stats and records aren&apos;t saved.</p>
+            ) : testBuild ? (
               <p className="mt-2 text-xs text-gold">
                 Test build — no rank change{match.versionLabel ? ` (v${match.versionLabel})` : ""}. XP, stats and records aren&apos;t touched.
               </p>

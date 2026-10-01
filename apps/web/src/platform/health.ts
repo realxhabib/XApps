@@ -7,6 +7,7 @@
  */
 
 import { create } from "zustand";
+import { BackendError } from "./backend";
 
 interface HealthState {
   /** When the current outage was first seen (ms), or null while healthy. */
@@ -39,3 +40,20 @@ export function isOutage(error: { code?: string | null; message?: string | null 
 }
 
 export const OUTAGE_MESSAGE = "XApps can't reach its database right now. Try again in a minute.";
+
+/** A request failed because the database is unreachable (see `isOutage`). */
+export class OutageError extends BackendError {
+  constructor() {
+    super(OUTAGE_MESSAGE, "internal");
+    this.name = "OutageError";
+  }
+}
+
+/**
+ * Practice matches played on this device while the database was down. They
+ * use the local (demo) engine, whose match ids start with `m-`; real matches
+ * have UUIDs. Nothing they do is saved to XApps.
+ */
+export function isOfflineMatch(matchId: string | null | undefined): boolean {
+  return typeof matchId === "string" && matchId.startsWith("m-");
+}
