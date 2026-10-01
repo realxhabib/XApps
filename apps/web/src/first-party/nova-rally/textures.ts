@@ -57,7 +57,7 @@ export const ROAD_LOOKS: Record<ThemeId, RoadLook> = {
   saturn: { style: "ringdeck", base: "#9a8c76", panel: "#d9cdb4", seam: "#4e4334", line: "#ffc94a", glow: "#ffd98a", grit: 0.07, roughness: 0.45, metalness: 0.15, emissive: 0.8, curb: ["#ffd98a", "#ffffff"] },
   nebula: { style: "glass", base: "#140b26", panel: "#2a1d48", seam: "#8d87a8", line: "#ffe9ff", glow: "#ff4fd8", grit: 0.03, roughness: 0.1, metalness: 0.35, emissive: 1.3, curb: ["#ff4fd8", "#36f3ff"] },
   luna: { style: "slabs", base: "#4a4e57", panel: "#585d67", seam: "#2a2d33", line: "#9fd0ff", glow: "#5ab0ff", grit: 0.28, roughness: 0.85, metalness: 0.15, emissive: 0.8, curb: ["#3f86ff", "#f4f7ff"] },
-  sun: { style: "ceramic", base: "#140d0b", panel: "#3a312d", seam: "#ff6a1a", line: "#ffe0a0", glow: "#ff9a2e", grit: 0.1, roughness: 0.62, metalness: 0.12, emissive: 1.2, curb: ["#ff5a1f", "#ffe7b0"] },
+  sun: { style: "ceramic", base: "#1c1513", panel: "#5c514a", seam: "#ff6a1a", line: "#ffe0a0", glow: "#ff9a2e", grit: 0.1, roughness: 0.62, metalness: 0.12, emissive: 1.2, curb: ["#ff5a1f", "#ffe7b0"] },
   europa: { style: "ice", base: "#a9c6de", panel: "#c8dcee", seam: "#6f8fae", line: "#5ab0ff", glow: "#7fd6ff", grit: 0.05, roughness: 0.18, metalness: 0.05, emissive: 0.7, curb: ["#2f7dd6", "#ffffff"] },
 };
 
@@ -425,7 +425,7 @@ function paintCeramic({ g, ge, gr, look, rand, W, H }: RoadPaint): void {
       if (x + tw <= 24 || x >= W - 24) continue;
       const y = j * th;
       const kind = rand();
-      const base = kind < 0.06 ? "#cfc6b8" : kind < 0.16 ? "#4a403a" : look.panel;
+      const base = kind < 0.07 ? "#d8cfc0" : kind < 0.18 ? "#3c3330" : kind < 0.3 ? "#6e5a48" : look.panel;
       const tone = 0.82 + rand() * 0.3;
       g.save();
       g.beginPath();
@@ -449,18 +449,20 @@ function paintCeramic({ g, ge, gr, look, rand, W, H }: RoadPaint): void {
         g.fillRect(x + 4 + rand() * (tw - 8), y + 4 + rand() * (th - 8), 1.5, 1.5);
       }
       g.restore();
-      gr.fillStyle = grey(kind < 0.06 ? 0.75 : 0.55 + rand() * 0.15);
+      gr.fillStyle = grey(kind < 0.07 ? 0.75 : 0.55 + rand() * 0.15);
       gr.fillRect(Math.max(24, x + 3), y + 3, tw - 6, th - 6);
       // Glowing grout (diffuse + emissive), hotter toward the middle of the road.
       const u = (x + tw / 2) / W;
-      const heat = ember(u) * (0.35 + rand() * 0.65);
-      g.fillStyle = `rgba(255,120,40,${0.35 + heat * 0.4})`;
-      g.fillRect(x, y, tw, 3);
-      g.fillRect(x, y, 3, th);
+      // Most seams are only warm; a few run hot (clustered toward the middle of the road).
+      const hr = rand();
+      const heat = ember(u) * (hr > 0.72 ? 0.6 + rand() * 0.4 : hr * 0.25);
+      g.fillStyle = `rgba(${90 + heat * 165},${30 + heat * 90},${12 + heat * 20},0.9)`;
+      g.fillRect(x, y, tw, 2.5);
+      g.fillRect(x, y, 2.5, th);
       ge.fillStyle = look.seam;
-      ge.globalAlpha = 0.2 + heat * 0.7;
-      ge.fillRect(Math.max(24, x - 1), y - 1, tw, 4);
-      if (x >= 24) ge.fillRect(x - 1, y - 1, 4, th);
+      ge.globalAlpha = 0.04 + heat * heat * 0.8;
+      ge.fillRect(Math.max(24, x - 0.5), y - 0.5, tw, 3);
+      if (x >= 24) ge.fillRect(x - 0.5, y - 0.5, 3, th);
       ge.globalAlpha = 1;
       // A few tiles soaking up heat: ember glow in the middle.
       if (rand() < 0.07 && x > 60 && x < W - 60 - tw) {
@@ -517,7 +519,7 @@ function paintGlass({ g, ge, gr, look, rand, W, H }: RoadPaint): void {
     const y = rand() * H;
     const rr = 60 + rand() * 160;
     const c = neb[Math.floor(rand() * neb.length)];
-    const a = 0.05 + rand() * 0.08;
+    const a = 0.1 + rand() * 0.12;
     wrapY(H, y, rr, (dy) => {
       for (const [gc, k2] of [
         [g, 1.6],
@@ -585,11 +587,14 @@ function paintGlass({ g, ge, gr, look, rand, W, H }: RoadPaint): void {
       }
       // Frame.
       const fg = g.createLinearGradient(x, y, x + 10, y + 10);
-      fg.addColorStop(0, "#c9c4dc");
-      fg.addColorStop(1, look.seam);
+      fg.addColorStop(0, "#8a84a6");
+      fg.addColorStop(1, "#3a3352");
       g.strokeStyle = fg;
-      g.lineWidth = 10;
+      g.lineWidth = 7;
       g.strokeRect(x + 4, y + 4, pw - 8, ph - 8);
+      g.strokeStyle = "rgba(220,210,255,0.35)";
+      g.lineWidth = 1.5;
+      g.strokeRect(x + 1.5, y + 1.5, pw - 3, ph - 3);
       g.strokeStyle = "rgba(30,20,50,0.9)";
       g.lineWidth = 2;
       g.strokeRect(x + 10, y + 10, pw - 20, ph - 20);
