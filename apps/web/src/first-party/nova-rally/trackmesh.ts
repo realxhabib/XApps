@@ -386,7 +386,7 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
   const goldMat = own(new MeshStandardMaterial({ color: "#ffcf6a", roughness: 0.2, metalness: 1, emissive: "#ff9a2e", emissiveIntensity: 0.25 }));
   const iceMat = own(new MeshStandardMaterial({ color: "#cfe8ff", roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.8, emissive: "#5ab0ff", emissiveIntensity: 0.35 }));
   let k = 0;
-  for (let s = 120; s < track.length - 60; s += archEvery, k++) {
+  for (let s = 120; !def.arena && s < track.length - 60; s += archEvery, k++) {
     const i = Math.floor(s / track.step) % track.count;
     if (noFloor(i)) continue;
     const r = track.wall[i]! + 1.5;

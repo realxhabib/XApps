@@ -52,7 +52,7 @@ import {
   type GpSettings,
   type RaceRecord,
 } from "./logic";
-import { DT, NO_CONTROLS, Ship, collideShips, tuningFor, type Controls } from "./physics";
+import { DRIFT_TIERS, DT, NO_CONTROLS, Ship, collideShips, tuningFor, type Controls } from "./physics";
 import { LIVERY_SWATCHES, PILOTS, SHIPS, type Pilot, type ShipDesign } from "./ships";
 import { compileTrack, deltaS, frameAt, trackPoint, wrapS, type CompiledTrack } from "./track";
 import { mirrored, trackById } from "./tracks";
@@ -260,6 +260,8 @@ export interface HudSnapshot {
   /** A seeker or singularity is closing in on you. */
   incoming: "seeker" | "singularity" | null;
   battle: { left: number; orbs: number; alive: number } | null;
+  /** Drift charge 0..1 per tier while drifting (null when not drifting). */
+  drift: { tier: number; charge: number } | null;
 }
 
 export interface Input {
@@ -706,6 +708,7 @@ export class RaceRuntime {
       mirror: this.settings.mirror,
       out: !!me?.out,
       incoming: this.incomingFor(me),
+      drift: me && me.ship.driftDir !== 0 ? { tier: me.ship.driftTier, charge: Math.min(1, me.ship.driftCharge / DRIFT_TIERS[2]) } : null,
       battle: this.settings.battle ? { left: Math.max(0, BATTLE_SECONDS - this.raceTime), orbs: me?.orbs ?? 0, alive: this.racers.filter((r) => !r.out && r.kind !== "ghost").length } : null,
     };
   }
@@ -1452,7 +1455,10 @@ export class RaceRuntime {
         if (kind === "mine" && me && !backward && this.input.throttle > 0.5 && this.input.steer === 0) s = ship.s - 4.5;
         const vd = kind === "bolt" ? Math.sin(ship.headingError) * 60 * dir : 0;
         const id = `${r.idx}:${++this.projectileSeq}`;
+        // Seekers launch from just ahead of the nose and always outrun the ship that fired them.
+        if (kind === "seeker") s = ship.s + 7;
         const p = spawnProjectile(kind, id, r.id, target, wrapS(s, this.track.length), ship.d, dir, vd);
+        if (kind === "seeker") p.vs = Math.max(p.vs, ship.speed + 30);
         if (kind === "mine") p.s = wrapS(ship.s - 4.5, this.track.length);
         this.projectiles.push(p);
         this.sendFx({ k: "p", id, kind, o: r.idx, t: target ? (this.racers.find((o) => o.id === target)?.idx ?? -1) : -1, s: p.s, d: p.d, dir, vd });
@@ -1512,7 +1518,9 @@ export class RaceRuntime {
     }
     const humans = this.racers.filter((r) => r.kind === "me" || r.kind === "human");
     const leaderDone = this.racers.find((r) => r.finished);
-    const allHumansDone = humans.every((r) => r.finished || r.gone);
+    // A knocked-out human keeps spectating until someone actually crosses the line.
+    const realFinisher = this.racers.some((r) => r.finished && !r.out);
+    const allHumansDone = humans.every((r) => r.gone || (r.finished && (!r.out || realFinisher)));
     if (this.endTimer < 0) {
       if (allHumansDone && humans.length > 0) this.endTimer = this.live ? 3 : 2.6;
       else if (leaderDone && this.raceTime - leaderDone.finishTime > 50) this.endTimer = 0.5;
@@ -1526,6 +1534,9 @@ export class RaceRuntime {
 
   private endRace(): void {
     if (this.phase === "results") return;
+    // Nothing from the race carries over the results and podium screens.
+    this.projectiles = [];
+    this.empFlash = 0;
     if (this.trial && this.me) {
       const time = this.me.finishTime;
       const prev = this.ghostRun?.time ?? null;

@@ -153,7 +153,8 @@ void main() {
   vAlpha = aAlpha;
   vColor = aColor;
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
-  gl_PointSize = min(90.0, aSize * uScale / max(1.5, -mv.z));
+  gl_PointSize = min(60.0, aSize * uScale / max(1.5, -mv.z));
+  vAlpha *= smoothstep(1.5, 6.0, -mv.z);
   gl_Position = projectionMatrix * mv;
 }`;
 
@@ -441,6 +442,8 @@ export class RaceScene {
           const next = a.clone().lerp(b, t);
           if (seg < 12) next.add(new Vector3((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 3, (Math.random() - 0.5) * 4));
           arr.set([prev.x, prev.y, prev.z, next.x, next.y, next.z], w);
+          // Glow beads along the bolt so it reads thick, not as a 1 px line.
+          if (!this.reduced && seg % 2 === 0) this.particles.emit(next, new Vector3(), new Color("#c9a2ff"), 0.9, 0.08, 0);
           w += 6;
           prev = next;
         }
@@ -462,7 +465,7 @@ export class RaceScene {
   private readonly blobGeo = new PlaneGeometry(3.4, 4.4);
   private readonly orbGeo = new SphereGeometry(0.26, 16, 12);
   private readonly blobMat = new MeshBasicMaterial({ color: "#000000", transparent: true, opacity: 0.55, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 });
-  private readonly reticleGeo = new RingGeometry(2.2, 2.6, 4, 1);
+  private readonly reticleGeo = new RingGeometry(2.0, 2.5, 3, 1);
   private readonly reticleMat = new MeshBasicMaterial({ color: new Color("#ff2a4a").multiplyScalar(3), transparent: true, opacity: 0.9, side: DoubleSide, depthTest: false, toneMapped: false });
   private readonly warpMat = new ShaderMaterial({
     vertexShader: "varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
@@ -543,7 +546,7 @@ export class RaceScene {
     this.warpGeo.rotateX(Math.PI / 2);
     this.blobGeo.rotateX(-Math.PI / 2);
     this.blobMat.alphaMap = this.dot;
-    this.shared.push(this.orbGeo);
+    this.shared.push(this.orbGeo, this.fireGeo);
     this.shared.push(this.warpGeo, this.warpMat, this.blobGeo, this.blobMat, this.reticleGeo, this.reticleMat);
     this.shared.push(this.dot, this.itemFace, this.boxGeo, this.boxInnerGeo, this.boxMat, this.boxInnerMat, this.coinGeo, this.coinMat, this.rockGeo, this.rockMat);
 
@@ -561,7 +564,9 @@ export class RaceScene {
     for (let i = 0; i < 70; i++) {
       const a = lr() * Math.PI * 2;
       const r = 2.2 + lr() * 3.5;
-      this.speedLineData.push({ x: Math.cos(a) * r, y: Math.sin(a) * r * 0.65, z: -lr() * 40, len: 1.2 + lr() * 2.5 });
+      const edge = 4.2 + lr() * 2.5;
+      this.speedLineData.push({ x: Math.cos(a) * edge, y: Math.sin(a) * edge * 0.6, z: -lr() * 30, len: 0.8 + lr() * 1.4 });
+      void r;
     }
     this.camera.add(this.speedLines);
     this.scene.add(this.camera);
@@ -895,6 +900,7 @@ export class RaceScene {
     this.updateProjectiles();
     this.handleFx();
     this.particles.update(dt);
+    this.updateFireballs(dt);
     this.updateCamera(dt);
     this.updateSpeedLines(dt);
     this.env?.update(this.time, dt, this.camera);
@@ -912,10 +918,8 @@ export class RaceScene {
     if (this.empLife > 0) {
       this.empLife -= dt;
       const k = 1 - this.empLife / 1.1;
-      this.empRing.quaternion.copy(this.camera.quaternion);
-      this.empRing.scale.setScalar(4 + k * 60);
       this.updateLightning(k);
-      (this.empRing.material as MeshBasicMaterial).opacity = Math.max(0, 1 - k);
+      (this.empRing.material as MeshBasicMaterial).opacity = 0;
       this.empDome.visible = true;
       this.empDome.position.copy(this.empRing.position);
       this.empDome.scale.setScalar(3 + k * 70);
@@ -1288,6 +1292,42 @@ export class RaceScene {
     return g;
   }
 
+  private readonly fireballs: { mesh: Mesh; life: number; max: number; size: number }[] = [];
+  private readonly fireGeo = new IcosahedronGeometry(1, 3);
+
+  /** A glowing fireball that swells and fades (pooled). */
+  private fireball(p: Vector3, big: boolean): void {
+    let fb = this.fireballs.find((f) => f.life <= 0);
+    if (!fb) {
+      if (this.fireballs.length >= 10) return;
+      const mat = new MeshBasicMaterial({ color: "#ffb347", transparent: true, blending: AdditiveBlending, depthWrite: false, toneMapped: false });
+      fb = { mesh: new Mesh(this.fireGeo, mat), life: 0, max: 1, size: 1 };
+      this.scene.add(fb.mesh);
+      this.fireballs.push(fb);
+      this.shared.push(mat);
+    }
+    fb.mesh.position.copy(p);
+    fb.max = big ? 0.7 : 0.45;
+    fb.life = fb.max;
+    fb.size = big ? 6.5 : 3.5;
+    fb.mesh.visible = true;
+  }
+
+  private updateFireballs(dt: number): void {
+    for (const fb of this.fireballs) {
+      if (fb.life <= 0) {
+        fb.mesh.visible = false;
+        continue;
+      }
+      fb.life -= dt;
+      const t = 1 - Math.max(0, fb.life) / fb.max;
+      fb.mesh.scale.setScalar(0.4 + fb.size * Math.sqrt(t));
+      const m = fb.mesh.material as MeshBasicMaterial;
+      m.color.setRGB(1, 0.75 - t * 0.5, 0.35 - t * 0.3).multiplyScalar(2.2 * (1 - t));
+      m.opacity = (1 - t) * (1 - t);
+    }
+  }
+
   private burst(p: Vector3, color: Color, count: number, speed: number, size: number): void {
     if (this.reduced) count = Math.ceil(count / 3);
     for (let k = 0; k < count; k++) {
@@ -1307,6 +1347,7 @@ export class RaceScene {
     for (const e of rt.drainFx()) {
       switch (e.type) {
         case "boom":
+          this.fireball(e.pos, e.big);
           this.burst(e.pos, new Color("#ff8a2a"), e.big ? 70 : 30, e.big ? 26 : 16, e.big ? 3 : 1.8);
           this.burst(e.pos, new Color("#fff1b0"), e.big ? 30 : 12, e.big ? 16 : 10, 1.4);
           this.shakeNear(e.pos, e.big ? 0.9 : 0.4);
@@ -1527,7 +1568,8 @@ export class RaceScene {
     const upTarget = this.v3.copy(f.up).addScaledVector(UP, 0.9 * Math.max(0, f.up.y)).normalize();
     this.camUp.lerp(upTarget, k(5)).normalize();
     const dist = 7.4 + speed01 * 1.6 + (boosting ? 1.2 : 0);
-    const height = 2.6 + speed01 * 0.4;
+    // On the packed starting grid sit higher so neighbours don't fill the lens.
+    const height = 2.6 + speed01 * 0.4 + (rt.phase === "countdown" || (rt.phase === "race" && rt.raceTime < 2) ? 1.6 : 0);
     const lookBack = rt.input.lookBack && rt.phase === "race";
     const chasePos = new Vector3().copy(pos).addScaledVector(this.camFwd, lookBack ? dist : -dist).addScaledVector(this.camUp, height);
     // Keep the camera inside the track corridor: above the road, inside the walls (no terrain or pylons in the lens).
@@ -1535,7 +1577,7 @@ export class RaceScene {
       const loc = locate(track, chasePos, ship.s + (lookBack ? dist : -dist), 30);
       const fr = frameAt(track, loc.s, this.camFrame);
       const d = Math.max(-fr.wallOffset + 0.8, Math.min(fr.wallOffset - 0.8, loc.d));
-      const h = Math.max(1.7, Math.min(8, loc.h));
+      const h = Math.max(2.2, Math.min(8, loc.h));
       if (d !== loc.d || h !== loc.h) chasePos.copy(fr.pos).addScaledVector(fr.right, d).addScaledVector(fr.up, h);
     }
     const chaseLook = new Vector3().copy(pos).addScaledVector(this.camFwd, lookBack ? -10 : 9).addScaledVector(this.camUp, 1.2);

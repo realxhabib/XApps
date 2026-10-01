@@ -82,6 +82,30 @@ function ItemSlots({ hud }: { hud: HudSnapshot }) {
   );
 }
 
+const TIER_COLORS = ["#ffffff", "#48b4ff", "#ff9a2e", "#c35cff"] as const;
+
+/** Mini-turbo charge: three segments that light blue, orange, purple. */
+function DriftGauge({ tier, charge }: { tier: number; charge: number }) {
+  const marks = [0.3, 0.62, 1];
+  return (
+    <div className="absolute bottom-[18%] left-1/2 flex -translate-x-1/2 gap-1.5">
+      {marks.map((m, i) => {
+        const prev = i === 0 ? 0 : marks[i - 1]!;
+        const fill = Math.max(0, Math.min(1, (charge - prev) / (m - prev)));
+        const lit = tier > i;
+        return (
+          <div key={i} className="h-3 w-14 overflow-hidden rounded-full border-2 border-white/80 bg-black/40">
+            <div
+              className="h-full rounded-full"
+              style={{ width: `${fill * 100}%`, background: TIER_COLORS[i + 1], boxShadow: lit ? `0 0 12px ${TIER_COLORS[i + 1]}` : "none", opacity: lit ? 1 : 0.6 }}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function EmptyGlyph({ size }: { size: number }) {
   return <span className="block rounded-full border-2 border-dashed border-white/20" style={{ width: size, height: size }} />;
 }
@@ -124,7 +148,7 @@ function Standings({ rows }: { rows: readonly StandingRow[] }) {
       {rows.map((row) => (
         <li
           key={row.idx}
-          className="flex items-center gap-1.5 rounded-full py-0.5 pl-0.5 pr-2 text-[11px] font-bold text-white"
+          className={`flex items-center gap-1.5 rounded-full py-0.5 pl-0.5 pr-2 text-[11px] font-bold text-white ${row.out ? "line-through opacity-40" : ""}`}
           style={{
             background: row.isMe ? "linear-gradient(90deg, rgba(255,215,90,0.85), rgba(255,140,40,0.7))" : "rgba(12,8,30,0.55)",
             border: `1.5px solid ${row.isMe ? "#fff" : "rgba(255,255,255,0.18)"}`,
@@ -224,6 +248,7 @@ export function RaceHud({ hud, minimap, onExit, onRetry }: { hud: HudSnapshot; m
           </motion.div>
         </div>
       ) : null}
+      {hud.drift && hud.phase === "race" ? <DriftGauge tier={hud.drift.tier} charge={hud.drift.charge} /> : null}
       {hud.incoming && showRace ? (
         <motion.div
           className="absolute left-1/2 top-[16%] -translate-x-1/2 rounded-2xl border-2 border-white px-4 py-1.5 text-lg font-black italic text-white"
@@ -467,7 +492,7 @@ function Podium({ hud }: { hud: HudSnapshot }) {
         </ol>
         {me ? (
           <div className="text-center text-xs font-semibold text-white/80">
-            {hud.submitError ? "Couldn't send your result. Retrying…" : hud.submitted ? "Result sent" : "Sending result…"}
+            {hud.submitError ? "Couldn't send your result. Retrying…" : null}
           </div>
         ) : null}
       </div>
