@@ -1813,7 +1813,9 @@ export class RaceScene {
       rate = p < 0.05 ? 1000 : 10;
     } else if (rt.phase === "countdown") {
       rate = 10;
-    } else if (rt.phase === "finished" || rt.phase === "results" || rt.phase === "podium") {
+    } else if ((rt.phase === "finished" && !(rt.me?.out && r !== rt.me)) || rt.phase === "results" || rt.phase === "podium") {
+      // (Knocked out and watching someone still racing: keep the chase camera on them; the slow
+      // orbit can't keep up with a ship at full speed.)
       const a = this.time * 0.35;
       const orbit = new Vector3(Math.cos(a) * 9, 0, Math.sin(a) * 9);
       targetPos = new Vector3().copy(pos).add(orbit.applyQuaternion(new Quaternion().setFromUnitVectors(UP, f.up))).addScaledVector(f.up, 3.2);
