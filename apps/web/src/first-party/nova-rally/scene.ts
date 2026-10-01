@@ -19,6 +19,7 @@ import {
 } from "postprocessing";
 import {
   AdditiveBlending,
+  BoxGeometry,
   BufferAttribute,
   BufferGeometry,
   Color,
@@ -1126,8 +1127,8 @@ export class RaceScene {
         view.blob.position.copy(pos).addScaledVector(f.up, -(0.35 + bob + ship.h) + 0.04);
         view.blob.quaternion.copy(root.quaternion);
         const fade = Math.max(0, 1 - ship.h / 8);
-        view.blob.scale.setScalar(0.8 + ship.h * 0.08);
-        (view.blob.material as MeshBasicMaterial).opacity = this.track?.def.lightLane ? 0.16 * fade : 0.55;
+        view.blob.scale.setScalar((this.track?.def.lightLane ? 0.5 : 0.8) + ship.h * 0.08);
+        (view.blob.material as MeshBasicMaterial).opacity = this.track?.def.lightLane ? 0.12 * fade : 0.55;
         view.blob.visible = fade > 0.05;
       }
       // Missile lock-on reticle over whoever a seeker is chasing.
@@ -1372,9 +1373,20 @@ export class RaceScene {
     const g = new Group();
     g.scale.setScalar(kind === "seeker" ? 2.4 : kind === "singularity" ? 1.8 : kind === "bolt" ? 1.25 : 1.2);
     if (kind === "seeker") {
-      const body = new Mesh(new CylinderGeometry(0.28, 0.35, 1.8, 12), new MeshStandardMaterial({ color: "#e8e8ee", metalness: 0.7, roughness: 0.3 }));
+      const body = new Mesh(new CylinderGeometry(0.28, 0.35, 1.8, 12), new MeshStandardMaterial({ color: "#ff3d5a", metalness: 0.35, roughness: 0.35, emissive: "#ff1a3a", emissiveIntensity: 0.45 }));
       body.rotation.x = Math.PI / 2;
       g.add(body);
+      // White band and four tail fins so it reads as a missile, not a tube.
+      const band = new Mesh(new CylinderGeometry(0.31, 0.31, 0.3, 12), new MeshStandardMaterial({ color: "#ffffff", roughness: 0.4, emissive: "#ffffff", emissiveIntensity: 0.3 }));
+      band.rotation.x = Math.PI / 2;
+      band.position.z = -0.35;
+      g.add(band);
+      for (let k = 0; k < 4; k++) {
+        const fin = new Mesh(new BoxGeometry(0.05, 0.75, 0.5), new MeshStandardMaterial({ color: "#ffd166", roughness: 0.4, emissive: "#ff9a2e", emissiveIntensity: 0.4 }));
+        fin.position.set(Math.cos((k * Math.PI) / 2) * 0.38, Math.sin((k * Math.PI) / 2) * 0.38, 0.75);
+        fin.rotation.z = (k * Math.PI) / 2;
+        g.add(fin);
+      }
       const nose = new Mesh(new ConeGeometry(0.28, 0.7, 12), this.glow("#ff2a4a", 2));
       nose.rotation.x = -Math.PI / 2;
       nose.position.z = -1.2;

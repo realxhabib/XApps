@@ -13,6 +13,7 @@ import {
   Color,
   CylinderGeometry,
   DoubleSide,
+  FrontSide,
   DynamicDrawUsage,
   Group,
   InstancedMesh,
@@ -182,6 +183,7 @@ uniform vec3 uB;
 uniform vec3 uFocus;
 uniform float uShoulder;
 uniform float uBase;
+uniform float uCool;
 varying vec2 vUv;
 varying vec3 vWorld;
 varying vec3 vNormal;
@@ -196,7 +198,7 @@ void main() {
   // Glass gets denser at grazing angles, so the lane far ahead still reads as a surface.
   float fres = pow(1.0 - abs(dot(normalize(vNormal), view)), 3.0);
   vec3 tint = mix(uA, uB, u);
-  vec3 glass = tint * 0.12;
+  vec3 glass = mix(tint * 0.12, vec3(0.02, 0.06, 0.1), uCool);
   if (uShoulder > 0.5) {
     float hatch = step(0.5, fract((v + u * 6.0) * 0.35));
     vec3 col = mix(glass, vec3(0.9, 0.25, 0.2) * 0.6, hatch * 0.5);
@@ -275,10 +277,11 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
       new ShaderMaterial({
         vertexShader: LANE_VS,
         fragmentShader: LANE_FS,
-        uniforms: { uTime: { value: 0 }, uA: { value: laneA.clone() }, uB: { value: laneB.clone() }, uFocus: { value: new Vector3() }, uShoulder: { value: shoulder ? 1 : 0 }, uBase: { value: theme === "sun" ? 0.62 : 0.22 } },
+        uniforms: { uTime: { value: 0 }, uA: { value: laneA.clone() }, uB: { value: laneB.clone() }, uFocus: { value: new Vector3() }, uShoulder: { value: shoulder ? 1 : 0 }, uBase: { value: theme === "sun" ? 0.62 : 0.22 }, uCool: { value: theme === "sun" ? 1 : 0 } },
         transparent: true,
         depthWrite: false,
-        side: DoubleSide,
+        // The hatched offroad band only shows from above (from below it read as a road shoulder).
+        side: shoulder ? FrontSide : DoubleSide,
         toneMapped: false,
       }),
     );
@@ -383,7 +386,7 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
     new ShaderMaterial({
       vertexShader: BARRIER_VS,
       fragmentShader: BARRIER_FS,
-      uniforms: { uTime: { value: 0 }, uColor: { value: accent2.clone() }, uFocus: { value: new Vector3() }, uAlpha: { value: def.lightLane ? 0.45 : 1 } },
+      uniforms: { uTime: { value: 0 }, uColor: { value: accent2.clone() }, uFocus: { value: new Vector3() }, uAlpha: { value: def.lightLane ? (theme === "sun" ? 0.3 : 0.45) : 1 } },
       transparent: true,
       depthWrite: false,
       blending: AdditiveBlending,
@@ -417,7 +420,7 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
     bm.renderOrder = 2;
     group.add(bm);
     // Open edges get a hazard glow line so you can see the drop.
-    const edgeMat = own(new ShaderMaterial({ vertexShader: SIMPLE_VS, fragmentShader: HAZARD_FS, uniforms: { uTime: { value: 0 } }, transparent: true, depthWrite: false, side: DoubleSide, toneMapped: false }));
+    const edgeMat = own(new ShaderMaterial({ vertexShader: SIMPLE_VS, fragmentShader: HAZARD_FS, uniforms: { uTime: { value: 0 } }, transparent: true, depthWrite: false, side: lightLane ? FrontSide : DoubleSide, toneMapped: false }));
     hazardMats.push(edgeMat);
     const edge = own(
       strip(track, {
@@ -679,7 +682,7 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
     rampLaneMat.uniforms.uB!.value = laneB.clone().lerp(new Color("#ffffff"), 0.35).multiplyScalar(1.3);
   }
   const rampGlassMat = lightLane
-    ? own(new MeshBasicMaterial({ color: laneB.clone().multiplyScalar(0.9), transparent: true, opacity: 0.28, side: DoubleSide, depthWrite: false, blending: AdditiveBlending, toneMapped: false }))
+    ? own(new MeshBasicMaterial({ color: laneB.clone().multiplyScalar(0.35), transparent: true, opacity: 0.55, side: DoubleSide, depthWrite: false, toneMapped: false }))
     : null;
   for (const ramp of track.ramps) {
     const s0 = ramp.s - RAMP_LENGTH;

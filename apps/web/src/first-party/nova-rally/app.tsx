@@ -331,8 +331,8 @@ function Garage({
             {locked ? "Engines hot — waiting for the grid…" : `Start engines (${Math.max(0, autoLeft)})`}
           </motion.button>
 
-          <QualityPicker />
           <TimeTrials onTrial={onTrial} />
+          <QualityPicker />
 
           <div className="relative grid gap-3">
             <div className="rounded-2xl border border-white/10 bg-white/5 p-3 text-[12px] leading-relaxed text-white/80">

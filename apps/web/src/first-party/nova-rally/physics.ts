@@ -160,6 +160,8 @@ export class Ship {
   /** Speed fraction the current drifting rail contact has cost so far, and seconds since it last touched. */
   private railLoss = 0;
   private railClear = DRIFT_RAIL_RESET;
+  /** Seconds of near-continuous rail contact (grinding along a rail builds no drift charge). */
+  private railScrape = 0;
   /** Push-off away from the rail after a drifting touch: seconds left and the rail's side. */
   private pushOff = 0;
   private pushSide: -1 | 1 = 1;
@@ -250,6 +252,7 @@ export class Ship {
     this.events.length = 0;
     this.railContact = 0;
     this.railClear += DT;
+    if (this.railClear > 0.3) this.railScrape = 0;
     const track = this.track;
     const F = frameAt(track, this.s, this.frame);
     this.invuln = Math.max(0, this.invuln - dt);
@@ -350,7 +353,7 @@ export class Ship {
       if (grounded) {
         // Riding the edge on the assist is safe but builds nothing (and bleeds a little): the boost goes to
         // whoever steers the line.
-        if (this.driftPinned > 0.15) this.driftCharge = Math.max(0, this.driftCharge - dt * 0.35);
+        if (this.driftPinned > 0.15 || this.railScrape > 0.4) this.driftCharge = Math.max(0, this.driftCharge - dt * 0.35);
         else this.driftCharge += dt * (0.75 + 0.55 * Math.max(0, into));
         const tier = this.driftCharge >= DRIFT_TIERS[2] ? 3 : this.driftCharge >= DRIFT_TIERS[1] ? 2 : this.driftCharge >= DRIFT_TIERS[0] ? 1 : 0;
         if (tier > this.driftTier) {
@@ -457,6 +460,7 @@ export class Ship {
         // A touch after a clear spell is a new contact; scraping on (or bouncing off and back) is the same one.
         const fresh = this.railClear >= DRIFT_RAIL_RESET;
         this.railClear = 0;
+        this.railScrape += DT;
         const into = this.vdir.dot(F2.right) * side;
         if (into > 0) {
           const strength = into * Math.abs(this.speed);
