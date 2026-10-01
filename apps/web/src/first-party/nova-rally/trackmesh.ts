@@ -162,6 +162,18 @@ void main() {
  * edges, lane dashes, a fine grid and chevrons flowing forward. u runs across the
  * strip (0..1), v along it (metres / 16). uShoulder = 1 draws the offroad band.
  */
+const LANE_VS = /* glsl */ `
+varying vec2 vUv;
+varying vec3 vWorld;
+varying vec3 vNormal;
+void main() {
+  vUv = uv;
+  vec4 w = modelMatrix * vec4(position, 1.0);
+  vWorld = w.xyz;
+  vNormal = normalize(mat3(modelMatrix) * normal);
+  gl_Position = projectionMatrix * viewMatrix * w;
+}`;
+
 const LANE_FS = /* glsl */ `
 uniform float uTime;
 uniform vec3 uA;
@@ -170,35 +182,45 @@ uniform vec3 uFocus;
 uniform float uShoulder;
 varying vec2 vUv;
 varying vec3 vWorld;
+varying vec3 vNormal;
 float line(float x, float w) { return 1.0 - smoothstep(0.0, w, abs(x)); }
 void main() {
   float u = vUv.x;
   float v = vUv.y * 16.0; // metres along the lap
+  vec3 view = normalize(cameraPosition - vWorld);
   float camD = distance(vWorld, cameraPosition);
   float far = 1.0 - smoothstep(50.0, 240.0, camD);
   float near = 1.0 - smoothstep(8.0, 60.0, distance(vWorld, uFocus));
-  vec3 col = mix(uA, uB, u);
-  float a;
+  // Glass gets denser at grazing angles, so the lane far ahead still reads as a surface.
+  float fres = pow(1.0 - abs(dot(normalize(vNormal), view)), 3.0);
+  vec3 tint = mix(uA, uB, u);
+  vec3 glass = tint * 0.12;
   if (uShoulder > 0.5) {
-    // Offroad band: dim hazard hatching that says "not here".
     float hatch = step(0.5, fract((v + u * 6.0) * 0.35));
-    a = 0.05 + hatch * 0.07 * far;
-    col = mix(col, vec3(1.0, 0.35, 0.25), 0.6);
-  } else {
-    float edge = max(line(u, 0.012), line(1.0 - u, 0.012));
-    float glowEdge = max(line(u, 0.08), line(1.0 - u, 0.08));
-    float dash = step(0.45, fract(v / 8.0)) * (line(u - 1.0 / 3.0, 0.006) + line(u - 2.0 / 3.0, 0.006));
-    float grid = (line(fract(v / 4.0) - 0.5, 0.012) + line(fract(u * 8.0) - 0.5, 0.025)) * 0.5;
-    float chev = line(fract((v - abs(u - 0.5) * 9.0) / 14.0 - uTime * 0.9) - 0.5, 0.025) * (1.0 - glowEdge);
-    a = 0.07
-      + edge * 0.9
-      + glowEdge * 0.18
-      + dash * 0.55 * far
-      + grid * (0.05 + near * 0.12) * far
-      + chev * (0.14 + near * 0.2) * far;
-    col = mix(col, vec3(1.0), edge * 0.6 + dash * 0.4);
+    vec3 col = mix(glass, vec3(0.9, 0.25, 0.2) * 0.6, hatch * 0.5);
+    gl_FragColor = vec4(col, 0.16 + fres * 0.3 + hatch * 0.08);
+    return;
   }
-  gl_FragColor = vec4(col * (0.8 + near * 0.6), clamp(a, 0.0, 1.0));
+  float edge = max(line(u, 0.012), line(1.0 - u, 0.012));
+  float glowEdge = max(line(u, 0.08), line(1.0 - u, 0.08));
+  float dash = step(0.45, fract(v / 8.0)) * (line(u - 1.0 / 3.0, 0.006) + line(u - 2.0 / 3.0, 0.006));
+  float grid = (line(fract(v / 4.0) - 0.5, 0.012) + line(fract(u * 8.0) - 0.5, 0.025)) * 0.5;
+  float chev = line(fract((v - abs(u - 0.5) * 9.0) / 14.0 - uTime * 0.9) - 0.5, 0.025) * (1.0 - glowEdge);
+  float light = clamp(edge + glowEdge * 0.35 + dash * 0.8 * far + grid * (0.12 + near * 0.25) * far + chev * (0.3 + near * 0.3) * far, 0.0, 1.0);
+  vec3 col = mix(glass, mix(tint, vec3(1.0), edge * 0.6 + dash * 0.5) * (1.1 + near * 0.6), light);
+  float a = clamp(0.22 + fres * 0.45 + light, 0.0, 1.0);
+  gl_FragColor = vec4(col, a);
+}`;
+
+/** Animated red/white hazard chevrons along an open (fatal) edge. u across, v along (metres / 8). */
+const HAZARD_FS = /* glsl */ `
+uniform float uTime;
+varying vec2 vUv;
+void main() {
+  float stripe = step(0.5, fract(vUv.y * 2.0 + vUv.x * 1.2 - uTime * 0.8));
+  vec3 col = mix(vec3(2.4, 0.35, 0.25), vec3(2.2), stripe);
+  float edge = smoothstep(0.0, 0.15, vUv.x) * (1.0 - smoothstep(0.85, 1.0, vUv.x));
+  gl_FragColor = vec4(col, 0.85 * edge + 0.15);
 }`;
 
 const SIMPLE_VS = /* glsl */ `
@@ -243,15 +265,17 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
   );
   const lightLane = !!def.lightLane;
   const laneMats: ShaderMaterial[] = [];
+  // Over the star the track's warm accents vanish into the plasma: cool hard light there.
+  const laneA = theme === "sun" ? new Color("#6fe9ff") : accent.clone().multiplyScalar(1.3);
+  const laneB = theme === "sun" ? new Color("#e8f6ff") : accent2.clone().multiplyScalar(1.3);
   const laneMaterial = (shoulder: boolean) => {
     const m = own(
       new ShaderMaterial({
-        vertexShader: BARRIER_VS,
+        vertexShader: LANE_VS,
         fragmentShader: LANE_FS,
-        uniforms: { uTime: { value: 0 }, uA: { value: accent.clone().multiplyScalar(1.4) }, uB: { value: accent2.clone().multiplyScalar(1.4) }, uFocus: { value: new Vector3() }, uShoulder: { value: shoulder ? 1 : 0 } },
+        uniforms: { uTime: { value: 0 }, uA: { value: laneA.clone() }, uB: { value: laneB.clone() }, uFocus: { value: new Vector3() }, uShoulder: { value: shoulder ? 1 : 0 } },
         transparent: true,
         depthWrite: false,
-        blending: AdditiveBlending,
         side: DoubleSide,
         toneMapped: false,
       }),
@@ -349,6 +373,7 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
     }
   }
 
+  const hazardMats: ShaderMaterial[] = [];
   /* Walls: a metal rail and an energy barrier above it */
   const railMat = own(new MeshStandardMaterial({ color: "#c9cfdc", roughness: 0.3, metalness: 0.85 }));
   const railGlowMat = own(new MeshBasicMaterial({ color: accent.clone().multiplyScalar(2), toneMapped: false }));
@@ -390,13 +415,14 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
     bm.renderOrder = 2;
     group.add(bm);
     // Open edges get a hazard glow line so you can see the drop.
-    const edgeMat = own(new MeshBasicMaterial({ color: new Color("#ff4a3d").multiplyScalar(2), toneMapped: false }));
+    const edgeMat = own(new ShaderMaterial({ vertexShader: SIMPLE_VS, fragmentShader: HAZARD_FS, uniforms: { uTime: { value: 0 } }, transparent: true, depthWrite: false, side: DoubleSide, toneMapped: false }));
+    hazardMats.push(edgeMat);
     const edge = own(
       strip(track, {
-        d0: (i) => side * (wall(i) + 0.3),
+        d0: (i) => side * (wall(i) - 0.7),
         d1: (i) => side * (wall(i) + 0.6),
-        h0: 0.08,
-        h1: 0.08,
+        h0: 0.1,
+        h1: 0.1,
         across: 1,
         vScale: 8,
         skip: (i) => !openHere(i) || noFloor(i),
@@ -644,6 +670,14 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
   const rampTex = own(paintChevrons(def.accent[1]));
   rampTex.repeat.set(3, 1);
   const rampMat = own(new MeshStandardMaterial({ color: "#c9ced9", map: rampTex, roughness: 0.35, metalness: 0.6, emissive: accent2, emissiveMap: rampTex, emissiveIntensity: 0.6 }));
+  const rampLaneMat = lightLane ? laneMaterial(false) : null;
+  if (rampLaneMat) {
+    rampLaneMat.uniforms.uA!.value = laneA.clone().lerp(new Color("#ffffff"), 0.35).multiplyScalar(1.3);
+    rampLaneMat.uniforms.uB!.value = laneB.clone().lerp(new Color("#ffffff"), 0.35).multiplyScalar(1.3);
+  }
+  const rampGlassMat = lightLane
+    ? own(new MeshBasicMaterial({ color: laneB.clone().multiplyScalar(0.9), transparent: true, opacity: 0.28, side: DoubleSide, depthWrite: false, blending: AdditiveBlending, toneMapped: false }))
+    : null;
   for (const ramp of track.ramps) {
     const s0 = ramp.s - RAMP_LENGTH;
     const lift = (i: number) => {
@@ -655,14 +689,16 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
       return ds < 0 || ds > RAMP_LENGTH;
     };
     const top = own(strip(track, { d0: (i) => -wall(i), d1: (i) => wall(i), h0: lift, h1: lift, across: 6, vScale: RAMP_LENGTH, skip: inRamp }));
-    const rm = new Mesh(top, rampMat);
-    rm.castShadow = true;
-    rm.receiveShadow = true;
+    // On a hard-light lane the ramp is hard light too: a glass wedge with bright chevrons.
+    const rm = new Mesh(top, lightLane ? rampLaneMat! : rampMat);
+    rm.castShadow = !lightLane;
+    rm.receiveShadow = !lightLane;
+    rm.renderOrder = lightLane ? 2 : 0;
     group.add(rm);
     // Sloped side skirts and the lip face so it reads as a solid wedge.
     for (const side of [-1, 1] as const) {
       const skirt = own(strip(track, { d0: (i) => side * wall(i), d1: (i) => side * wall(i), h0: 0, h1: lift, across: 1, vScale: 3, skip: inRamp, flip: side < 0 }));
-      group.add(new Mesh(skirt, railMat));
+      group.add(new Mesh(skirt, lightLane ? rampGlassMat! : railMat));
     }
     // Glowing lip strip.
     const lip = own(strip(track, { d0: (i) => -wall(i), d1: (i) => wall(i), h0: (i) => lift(i) + 0.02, h1: (i) => lift(i) + 0.02, across: 1, vScale: 1, skip: (i) => {
@@ -681,6 +717,7 @@ export function buildTrackView(track: CompiledTrack, quality: "high" | "low"): T
       barrierMat.uniforms.uTime!.value = time;
       (barrierMat.uniforms.uFocus!.value as Vector3).copy(focus);
       for (const m of padMats) m.uniforms.uTime!.value = time;
+      for (const m of hazardMats) m.uniforms.uTime!.value = time;
       for (const m of laneMats) {
         m.uniforms.uTime!.value = time;
         (m.uniforms.uFocus!.value as Vector3).copy(focus);

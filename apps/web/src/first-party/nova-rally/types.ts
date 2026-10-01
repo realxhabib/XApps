@@ -34,4 +34,6 @@ export interface TrackOutline {
   halfWidth: Float32Array;
   /** 1 where the road floats (no ground under it). */
   floating: Uint8Array;
+  /** Open space: a see-through hard-light lane with nothing holding it up. */
+  lightLane?: boolean;
 }

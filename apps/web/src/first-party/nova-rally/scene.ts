@@ -37,6 +37,7 @@ import {
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
+  NormalBlending,
   NoToneMapping,
   Object3D,
   OctahedronGeometry,
@@ -706,6 +707,11 @@ export class RaceScene {
     this.exposure = this.env.exposure;
 
     this.trackView = buildTrackView(track, this.quality.detail);
+    // On a hard-light lane a black blob reads as a hole: the ship casts a soft glow pool instead.
+    const lane = !!track.def.lightLane;
+    this.blobMat.color.set(lane ? "#8fd8ff" : "#000000");
+    this.blobMat.blending = lane ? AdditiveBlending : NormalBlending;
+    this.blobMat.needsUpdate = true;
     this.scene.add(this.trackView.group);
 
     // Item capsules.
@@ -1103,13 +1109,14 @@ export class RaceScene {
       // Drift flares.
       const tier = ship.driftDir !== 0 && !ship.airborne ? ship.driftTier : 0;
       view.flares.forEach((sp, i) => {
-        sp.visible = tier > 0 || (ship.driftDir !== 0 && !ship.airborne);
+        // Tied to the ship: a rival hidden at the lens must not leave its flare (drawn without depth test) on screen.
+        sp.visible = root.visible && lensFade > 0.3 && (tier > 0 || (ship.driftDir !== 0 && !ship.airborne));
         if (!sp.visible) return;
         const side = i === 0 ? -1 : 1;
         sp.position.copy(pos).addScaledVector(ship.fwd, -1.45).addScaledVector(this.v2.crossVectors(ship.fwd, f.up).normalize(), side * 0.9).addScaledVector(f.up, 0.2);
         const flick = 0.75 + Math.random() * 0.5;
         sp.scale.setScalar((tier === 0 ? 0.4 : 0.75 + tier * 0.22) * flick);
-        sp.material.color.copy(DRIFT_SPARK[tier]!).multiplyScalar(tier === 0 ? 0.6 : 1.5);
+        sp.material.color.copy(DRIFT_SPARK[tier]!).multiplyScalar((tier === 0 ? 0.6 : 1.5) * Math.min(1, lensFade));
         sp.material.depthTest = false;
         sp.renderOrder = 8;
       });
@@ -1120,7 +1127,7 @@ export class RaceScene {
         view.blob.quaternion.copy(root.quaternion);
         const fade = Math.max(0, 1 - ship.h / 8);
         view.blob.scale.setScalar(0.8 + ship.h * 0.08);
-        (view.blob.material as MeshBasicMaterial).opacity = 0.55;
+        (view.blob.material as MeshBasicMaterial).opacity = this.track?.def.lightLane ? 0.16 * fade : 0.55;
         view.blob.visible = fade > 0.05;
       }
       // Missile lock-on reticle over whoever a seeker is chasing.
