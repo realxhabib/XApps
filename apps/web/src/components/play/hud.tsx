@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { MODE_LABEL } from "@/platform/match-utils";
 import type { AppManifest, Match, MatchPlayer } from "@/platform/types";
 import { isMultiplayer, seatedPlayers, teamOf, teamStyle, type TeamStyle } from "./match-view";
+import { ImmersiveButton } from "./immersive";
 import { TestBuildBadge } from "./test-build-badge";
 
 export const REACTIONS = ["🔥", "😂", "😱", "👏", "💀", "🫡"] as const;
@@ -340,6 +341,8 @@ export function Hud({
   onReact,
   onForfeit,
   onCopyLink,
+  immersive,
+  onToggleImmersive,
 }: {
   app: AppManifest;
   match: Match;
@@ -352,6 +355,9 @@ export function Hud({
   onReact: (emoji: string) => void;
   onForfeit?: () => void;
   onCopyLink: () => void;
+  /** Full-screen mode (see `./immersive`). */
+  immersive?: boolean;
+  onToggleImmersive?: () => void;
 }) {
   const seated = seatedPlayers(match).filter((p) => p.state !== "invited");
   const me = seated.find((p) => p.userId === viewerId);
@@ -431,7 +437,8 @@ export function Hud({
           </div>
         )}
 
-        <div ref={menuRef} className="relative flex shrink-0 items-center gap-1">
+        <div ref={menuRef} className="relative flex shrink-0 items-center gap-0.5 sm:gap-1">
+          {onToggleImmersive && <ImmersiveButton immersive={!!immersive} onToggle={onToggleImmersive} className="size-10 sm:size-11" />}
           <motion.button
             whileTap={{ scale: 0.88 }}
             onClick={() => {
@@ -439,7 +446,7 @@ export function Hud({
               setMenuOpen(false);
               play("pop");
             }}
-            className="flex size-11 items-center justify-center rounded-full text-ink-200 transition hover:bg-white/10 hover:text-white"
+            className="flex size-10 items-center justify-center rounded-full text-ink-200 transition hover:bg-white/10 hover:text-white sm:size-11"
             aria-label="Send a reaction"
             aria-expanded={reactOpen}
           >
@@ -451,7 +458,7 @@ export function Hud({
               setMenuOpen((o) => !o);
               setReactOpen(false);
             }}
-            className="flex size-11 items-center justify-center rounded-full text-ink-200 transition hover:bg-white/10 hover:text-white"
+            className="flex size-10 items-center justify-center rounded-full text-ink-200 transition hover:bg-white/10 hover:text-white sm:size-11"
             aria-label="Match options"
             aria-expanded={menuOpen}
           >

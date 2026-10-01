@@ -34,6 +34,8 @@ export const metadata: Metadata = {
   description:
     "Sign in with X and go head-to-head: reflex duels, meme battles, robot brawls and more. Build your own app with the XApps SDK.",
   applicationName: "XApps",
+  // Added to the home screen, XApps opens without Safari's bars (see app/manifest.ts).
+  appleWebApp: { capable: true, title: "XApps", statusBarStyle: "black" },
   openGraph: {
     type: "website",
     siteName: "XApps",
