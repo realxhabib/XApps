@@ -87,6 +87,16 @@ export function TouchControls({ engine, hud }: { engine: Engine; hud: HudState }
     },
   });
 
+  // Aim + fire in one touch (mobile shooters' "ADS fire"): automatic and other
+  // guns aim down sights and shoot while held; the sniper scopes in while held
+  // and fires on release (a quick-scope). Dragging on it aims, like Fire.
+  const sniper = me?.weapon === "sniper";
+  const aimFire = (down: boolean) => {
+    if (down) input.setTouch({ ads: true, fire: !sniper });
+    else if (sniper) input.pulseFire({ ads });
+    else input.setTouch({ fire: false, ads });
+  };
+
   const tap = (fn: () => void) => ({
     onPointerDown: (e: ReactPointerEvent) => {
       e.preventDefault();
@@ -193,7 +203,17 @@ export function TouchControls({ engine, hud }: { engine: Engine; hud: HudState }
         >
           <Bomb className="size-5" />
         </Btn>
-        <div />
+        <Btn
+          label={me.weapon === "sniper" ? "Aim and fire: hold to scope in, release to fire" : "Aim and fire: hold to aim down sights and shoot"}
+          size="md"
+          className="bg-[color-mix(in_oklab,var(--accent-to)_28%,transparent)]"
+          {...press((down) => aimFire(down), true)}
+        >
+          <span className="relative">
+            <Scan className="size-7" />
+            <Crosshair className="absolute inset-0 m-auto size-3.5" />
+          </span>
+        </Btn>
         <Btn label="Fire" size="lg" {...press((down) => input.setTouch({ fire: down }), true)} className="bg-[color-mix(in_oklab,var(--accent-to)_40%,transparent)]">
           <Crosshair className="size-9" />
         </Btn>

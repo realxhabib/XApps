@@ -246,6 +246,18 @@ export class Input {
     this.used = true;
   }
 
+  private pulseTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** One shot from a release (the sniper's quick-scope): fire for a few frames, then apply `after`. */
+  pulseFire(after: Partial<TouchState> = {}, ms = 90): void {
+    if (this.pulseTimer) clearTimeout(this.pulseTimer);
+    this.setTouch({ fire: true });
+    this.pulseTimer = setTimeout(() => {
+      this.pulseTimer = null;
+      this.setTouch({ fire: false, ...after });
+    }, ms);
+  }
+
   private readonly drags = new Map<number, { x: number; y: number }>();
 
   /** A finger started dragging to look (look pad, or the fire button). */
@@ -268,6 +280,8 @@ export class Input {
 
   /** Drops held buttons (menus opening, death). */
   release(): void {
+    if (this.pulseTimer) clearTimeout(this.pulseTimer);
+    this.pulseTimer = null;
     this.drags.clear();
     this.mouseFire = false;
     this.mouseAds = false;
