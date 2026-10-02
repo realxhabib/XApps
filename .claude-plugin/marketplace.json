@@ -1,0 +1,6 @@
+{
+  "name": "xapps",
+  "description": "XApps games as Claude Code mods: play while Claude works",
+  "owner": { "name": "XApps", "url": "https://github.com/realxhabib/XApps" },
+  "plugins": [{ "name": "xapps-arcade", "source": "./mods/xapps-arcade" }]
+}

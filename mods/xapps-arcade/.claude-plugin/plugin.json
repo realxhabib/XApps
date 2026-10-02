@@ -1,0 +1,9 @@
+{
+  "name": "xapps-arcade",
+  "version": "0.1.0",
+  "description": "Play XApps games (Four in a Row vs the XApps bot) while Claude works, and get handed back when it's done",
+  "author": {
+    "name": "XApps",
+    "url": "https://github.com/realxhabib/XApps"
+  }
+}
