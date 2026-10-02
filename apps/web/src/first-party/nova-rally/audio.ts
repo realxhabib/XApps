@@ -1,21 +1,20 @@
 /**
- * Nova Rally sound. Effects and music are designed here as WebAudio synths and
- * baked to MP3 by scripts/render-nova-audio.mjs (public/audio/nova-rally/):
- * at runtime the effects play from one sprite and each course plays a ~1 min
- * recorded song (main, lift, breakdown, full) — the live synth is only the
- * fallback while files load. The engine stays live (it tracks speed), and the
- * announcer uses the browser's speech synthesis.
+ * Nova Rally sound. Effects, announcer and engine are recorded CC0 samples
+ * and the music is a recorded CC0 soundtrack, all built into
+ * public/audio/nova-rally/ by scripts/render-nova-audio.mjs (sources in its
+ * CREDITS.md): one sprite holds every effect, the announcer lines and the
+ * engine loops; each world has a looping track plus a faster final-lap take.
+ * The WebAudio synths below are the fallback while (or if) files don't load.
  *
- * - `engine()` drives a continuous rocket engine (saw + square sub through a
- *   speed-tracking filter, filtered-noise rumble, a boost hiss with bright
- *   harmonics, and a drift whine that climbs with the mini-turbo tier).
- * - `play()` fires one-shot effects (items, boosts, hits, UI, jingles) with a
- *   touch of shared reverb.
- * - `music()` runs a sequenced track per course with a lookahead scheduler:
- *   a layered drum kit, bass, detuned supersaw chords ducked by the kick,
- *   filtered plucks / FM bells through a tempo-synced delay and a convolution
- *   reverb, and a lead hook. The final lap speeds up and rises a semitone.
- * - `announce()` speaks short race callouts ("Three!", "Final lap!").
+ * - `engine()` drives the player's engine: looping engine and rumble samples
+ *   pitched with speed, a thruster layer for boosts and a synth drift whine
+ *   and screech that climb with the mini-turbo tier. (The synth engine — saw
+ *   + square sub, noise rumble, boost hiss — plays until the sprite loads.)
+ * - `play()` fires one-shot effects (items, boosts, hits, UI, jingles).
+ * - `music()` loops the course's track (crossfading to the final-lap take);
+ *   the fallback is a sequenced synth song with a lookahead scheduler.
+ * - `announce()` plays recorded race callouts ("Three!", "Final round!");
+ *   only lines without a recording fall back to the browser's speech synthesis.
  *
  * Follows the platform's sound toggle (`@/lib/sfx`). Nothing touches `window`
  * until a method is called, so importing this during SSR is safe.
@@ -61,6 +60,7 @@ export type RaceSound =
   | "finish"
   | "win"
   | "lose"
+  | "podium"
   | "positionUp"
   | "positionDown"
   | "select"
@@ -70,17 +70,23 @@ export type RaceSound =
 export type MusicTheme = "mars" | "belt" | "saturn" | "nebula" | "luna" | "sun" | "europa" | "menu";
 const AUDIO_BASE = "/audio/nova-rally";
 
+type Clip = { start: number; dur: number };
+type EngineLoop = "core" | "rumble" | "boost";
+
 interface AudioManifest {
   version: 1;
   sampleRate: number;
-  sfx: Partial<Record<RaceSound, { start: number; dur: number }>>;
+  sfx: Partial<Record<RaceSound, Clip>>;
+  /** Recorded announcer lines (in the sprite). */
+  voice?: Partial<Record<AnnouncerLine, Clip>>;
+  /** Seamless engine loops (regions of the sprite). */
+  engine?: Partial<Record<EngineLoop, Clip>>;
   music: Partial<Record<MusicTheme, Record<"normal" | "final", { file: string; loopStart: number; loopEnd: number }>>>;
 }
 
 /** Every effect and music theme, for the offline renderer. */
-export const RACE_SOUNDS: readonly RaceSound[] = ["countdown", "go", "rocketStart", "stall", "boost", "boostPad", "miniTurbo1", "miniTurbo2", "miniTurbo3", "driftStart", "itemBox", "roulette", "rouletteStop", "fire", "missile", "mineDrop", "shieldUp", "shieldPop", "explosion", "spinout", "empZap", "singularity", "warp", "cloak", "wallHit", "bump", "land", "trick", "coin", "jump", "fall", "respawn", "lap", "finalLap", "finish", "win", "lose", "positionUp", "positionDown", "select", "click", "whoosh"];
+export const RACE_SOUNDS: readonly RaceSound[] = ["countdown", "go", "rocketStart", "stall", "boost", "boostPad", "miniTurbo1", "miniTurbo2", "miniTurbo3", "driftStart", "itemBox", "roulette", "rouletteStop", "fire", "missile", "mineDrop", "shieldUp", "shieldPop", "explosion", "spinout", "empZap", "singularity", "warp", "cloak", "wallHit", "bump", "land", "trick", "coin", "jump", "fall", "respawn", "lap", "finalLap", "finish", "win", "lose", "podium", "positionUp", "positionDown", "select", "click", "whoosh"];
 export const MUSIC_THEMES: readonly MusicTheme[] = ["mars", "belt", "saturn", "nebula", "luna", "sun", "europa", "menu"];
-
 
 export type AnnouncerLine =
   | "three"
@@ -90,10 +96,16 @@ export type AnnouncerLine =
   | "finalLap"
   | "finish"
   | "first"
+  | "podium"
+  | "lose"
   | "newRecord"
   | "itemHit"
   | "rocketStart"
   | "ultraTurbo"
+  | "lookOut"
+  | "out"
+  | "timeOver"
+  | "hurryUp"
   | "wrongWay";
 
 /* ------------------------------------------------------------------------ */
@@ -116,6 +128,7 @@ const RATE: Partial<Record<RaceSound, number>> = {
   finish: 800,
   win: 800,
   lose: 800,
+  podium: 800,
   finalLap: 800,
   lap: 300,
   countdown: 200,
@@ -129,6 +142,7 @@ const VERB: Partial<Record<RaceSound, number>> = {
   finish: 0.5,
   win: 0.5,
   lose: 0.4,
+  podium: 0.5,
   finalLap: 0.45,
   lap: 0.35,
   coin: 0.22,
@@ -146,24 +160,43 @@ const VERB: Partial<Record<RaceSound, number>> = {
   select: 0.15,
 };
 
+/** Jingles the music dips under. */
+const STINGERS: ReadonlySet<RaceSound> = new Set<RaceSound>(["finalLap", "finish", "win", "lose", "podium"]);
+
+/** Reverb send of an effect (the sample renderer bakes the same room in). */
+export const raceSoundReverb = (sound: RaceSound): number => VERB[sound] ?? 0.08;
+
 /* ------------------------------------------------------------------------ */
 /* Announcer                                                                 */
 /* ------------------------------------------------------------------------ */
 
+/** Text for the speech-synthesis fallback: lines without a recording, or while the sprite loads. */
 const LINES: Record<AnnouncerLine, { text: string; rate: number; pitch: number }> = {
   three: { text: "Three!", rate: 1.0, pitch: 1.05 },
   two: { text: "Two!", rate: 1.0, pitch: 1.08 },
   one: { text: "One!", rate: 1.0, pitch: 1.12 },
   go: { text: "Go!", rate: 1.15, pitch: 1.3 },
   finalLap: { text: "Final lap!", rate: 1.08, pitch: 1.15 },
-  finish: { text: "Finish!", rate: 1.05, pitch: 1.15 },
-  first: { text: "First place!", rate: 1.05, pitch: 1.2 },
-  newRecord: { text: "New record!", rate: 1.05, pitch: 1.2 },
-  itemHit: { text: "Direct hit!", rate: 1.15, pitch: 1.15 },
-  rocketStart: { text: "Rocket start!", rate: 1.12, pitch: 1.2 },
-  ultraTurbo: { text: "Ultra turbo!", rate: 1.12, pitch: 1.2 },
+  finish: { text: "Mission completed!", rate: 1.05, pitch: 1.15 },
+  first: { text: "You win!", rate: 1.05, pitch: 1.2 },
+  podium: { text: "Congratulations!", rate: 1.05, pitch: 1.2 },
+  lose: { text: "You lose.", rate: 1.0, pitch: 1.0 },
+  newRecord: { text: "New high score!", rate: 1.05, pitch: 1.2 },
+  itemHit: { text: "Target destroyed!", rate: 1.15, pitch: 1.15 },
+  rocketStart: { text: "Go go go!", rate: 1.12, pitch: 1.2 },
+  ultraTurbo: { text: "Power up!", rate: 1.12, pitch: 1.2 },
+  lookOut: { text: "Look out!", rate: 1.15, pitch: 1.1 },
+  out: { text: "Game over.", rate: 1.0, pitch: 1.0 },
+  timeOver: { text: "Time over!", rate: 1.05, pitch: 1.1 },
+  hurryUp: { text: "Hurry up!", rate: 1.1, pitch: 1.15 },
   wrongWay: { text: "Wrong way!", rate: 1.05, pitch: 1.0 },
 };
+/** Lines the voice pack has no recording for: always speech synthesis. */
+const UNRECORDED_LINES: ReadonlySet<AnnouncerLine> = new Set<AnnouncerLine>(["wrongWay"]);
+/** Recorded announcer level (the sprite's lines are normalized to the same loudness). */
+const VOICE_BUS = 0.95;
+/** Speech-synthesis pilot barks are rare: at most one per this many ms. */
+const BARK_GAP_MS = 12000;
 
 /** Novelty system voices that should never be the announcer. */
 const SILLY_VOICES = /bad news|bells|boing|bubbles|cellos|whisper|zarvox|trinoids|albert|jester|organ|superstar|wobble|good news|hysterical|deranged|junior|ralph|kathy|fred|grandma|grandpa|eddy|flo|reed|rocko|sandy|shelley/i;
@@ -644,7 +677,34 @@ const HAT_PARTIALS = [205.3, 304.4, 369.6, 522.7, 540, 800];
 /* Engine graph                                                              */
 /* ------------------------------------------------------------------------ */
 
-interface EngineNodes {
+/** Drift whine + tyre-ish screech: synth layers shared by both engines. */
+interface DriftNodes {
+  drift1: OscillatorNode;
+  drift2: OscillatorNode;
+  driftFilter: BiquadFilterNode;
+  driftGain: GainNode;
+  screechGain: GainNode;
+}
+
+/** The recorded engine: looping sprite regions pitched with speed. */
+interface SampleEngine extends DriftNodes {
+  kind: "sample";
+  out: GainNode;
+  core: AudioBufferSourceNode;
+  coreFilter: BiquadFilterNode;
+  coreGain: GainNode;
+  rumble: AudioBufferSourceNode;
+  rumbleGain: GainNode;
+  boost: AudioBufferSourceNode;
+  boostFilter: BiquadFilterNode;
+  boostGain: GainNode;
+  sources: AudioScheduledSourceNode[];
+}
+
+type EngineNodes = SynthEngine | SampleEngine;
+
+interface SynthEngine extends DriftNodes {
+  kind: "synth";
   out: GainNode;
   saw: OscillatorNode;
   sub: OscillatorNode;
@@ -658,11 +718,6 @@ interface EngineNodes {
   hissGain: GainNode;
   harm: OscillatorNode;
   harmGain: GainNode;
-  drift1: OscillatorNode;
-  drift2: OscillatorNode;
-  driftFilter: BiquadFilterNode;
-  driftGain: GainNode;
-  screechGain: GainNode;
   sources: AudioScheduledSourceNode[];
 }
 
@@ -735,6 +790,12 @@ export class RaceAudio {
   private speechVoice: SpeechSynthesisVoice | null = null;
   private voicesListener: (() => void) | null = null;
   private speaking = false;
+  private voiceBus: GainNode | null = null;
+  /** The recorded line playing now (a new line cuts it off). */
+  private voiceSrc: AudioBufferSourceNode | null = null;
+  private lastBarkAt = -1e9;
+  /** performance.now() until which a stinger holds the music down. */
+  private stingerUntil = 0;
 
   // Music state.
   private musicVol = 0.5;
@@ -760,6 +821,7 @@ export class RaceAudio {
       if (!on) this.hush();
     });
     if (this.master && this.ctx) this.master.gain.setTargetAtTime(this.enabled ? MASTER : 0, this.ctx.currentTime, 0.05);
+    this.prefetchSprite();
   }
 
   /** Stop listening and release the audio context (a later `resume()` makes a new one and restarts the music). */
@@ -779,14 +841,20 @@ export class RaceAudio {
     this.sfxVerb = null;
     this.engBus = null;
     this.musicBus = null;
+    this.voiceBus = null;
+    this.voiceSrc = null;
     this.noise = null;
     this.impulse = null;
     this.pulse = null;
     this.probe = null;
-    // Decoded buffers belong to the old context.
-    this.sprite = null;
-    this.spriteLoad = null;
-    this.musicBuffers.clear();
+    // Music elements are tied to the context (the sprite plays in any context and stays).
+    for (const el of this.musicEls.values()) {
+      el.pause();
+      el.removeAttribute("src");
+      el.load();
+    }
+    this.fileMusic?.el.pause();
+    this.musicEls.clear();
     this.musicLoads.clear();
     this.fileMusic = null;
     if (ctx) void ctx.close().catch(() => {});
@@ -798,7 +866,8 @@ export class RaceAudio {
   }
 
   /* ---------------------------------------------------------------------- */
-  /* Offline rendering (scripts/render-nova-audio.mjs bakes these to MP3)     */
+  /* Offline rendering of the synth fallback. scripts/render-nova-audio.mjs  */
+  /* levels each recorded effect to its synth version's loudness.           */
   /* ---------------------------------------------------------------------- */
 
   /** Builds the shared pieces (noise, impulse, pulse wave) on an offline context. */
@@ -875,6 +944,8 @@ export class RaceAudio {
   dispose(): void {
     this.wantTheme = null;
     this.detach();
+    this.sprite = null;
+    this.spriteLoad = null;
     this.last.clear();
     if (this.voicesListener && typeof window !== "undefined" && window.speechSynthesis) {
       try {
@@ -936,6 +1007,10 @@ export class RaceAudio {
       this.engBus.gain.value = ENGINE_BUS;
       this.engBus.connect(master);
 
+      this.voiceBus = ctx.createGain();
+      this.voiceBus.gain.value = VOICE_BUS;
+      this.voiceBus.connect(master);
+
       // Music: its own glue compressor so the mix breathes with the kick.
       this.musicBus = ctx.createGain();
       this.musicBus.gain.value = this.musicVol * MUSIC_BUS;
@@ -957,7 +1032,7 @@ export class RaceAudio {
       }
       this.pulse = ctx.createPeriodicWave(real, imag);
 
-      this.loadSprite();
+      this.prefetchSprite();
       if (this.wantTheme) this.music(this.wantTheme);
     }
     if (this.ctx.state === "suspended") void this.ctx.resume().catch(() => {});
@@ -993,10 +1068,17 @@ export class RaceAudio {
     if (!on) this.hush();
   }
 
-  /** Speak a short race callout. Cancels any line still being spoken. */
+  /**
+   * Plays a short race callout: the recorded line when there is one (it cuts
+   * off the line still playing), otherwise speech synthesis.
+   */
   announce(line: AnnouncerLine, opts?: { rate?: number; pitch?: number; volume?: number }): void {
     if (typeof window === "undefined" || !this.announcerOn) return;
     if (!(this.off ? this.enabled : isSoundEnabled())) return;
+    if (this.playVoice(line, opts?.volume ?? 1)) return;
+    // A line with a recording that's still loading is skipped rather than spoken in another voice.
+    const recorded = this.manifest ? !!this.manifest.voice?.[line] : !UNRECORDED_LINES.has(line);
+    if (recorded && !this.noRecordings) return;
     const synth = window.speechSynthesis as SpeechSynthesis | undefined;
     if (!synth || typeof SpeechSynthesisUtterance === "undefined") return;
     const spec = LINES[line];
@@ -1021,12 +1103,58 @@ export class RaceAudio {
     }
   }
 
-  /** A short pilot voice bark ("Wahoo!") in that pilot's pitch. Never interrupts the announcer. */
+  /** The recorded announcer line, from the sprite. False when it has no recording or the sprite isn't loaded yet. */
+  private playVoice(line: AnnouncerLine, volume: number): boolean {
+    const ctx = this.ctx;
+    const bus = this.voiceBus;
+    const clip = this.manifest?.voice?.[line];
+    if (!ctx || !bus || !this.sprite || !clip) return false;
+    this.stopVoice();
+    try {
+      window.speechSynthesis?.cancel();
+    } catch {
+      // ignore
+    }
+    const g = ctx.createGain();
+    g.gain.value = clamp(volume, 0, 1);
+    const src = ctx.createBufferSource();
+    src.buffer = this.sprite;
+    src.connect(g).connect(bus);
+    src.onended = () => {
+      g.disconnect();
+      if (this.voiceSrc !== src) return;
+      this.voiceSrc = null;
+      this.duckMusicForVoice(false);
+    };
+    src.start(ctx.currentTime + 0.005, clip.start, clip.dur);
+    this.voiceSrc = src;
+    this.duckMusicForVoice(true);
+    return true;
+  }
+
+  private stopVoice(): void {
+    const src = this.voiceSrc;
+    this.voiceSrc = null;
+    try {
+      src?.stop();
+    } catch {
+      // Already stopped.
+    }
+  }
+
+  /**
+   * A short pilot voice bark ("Wahoo!") in that pilot's pitch, by speech
+   * synthesis (catchphrases have no recording), so kept rare: at most one per
+   * BARK_GAP_MS, and never over the announcer.
+   */
   bark(text: string, pitch: number, rate = 1.15): void {
     if (typeof window === "undefined" || !this.announcerOn) return;
     if (!(this.off ? this.enabled : isSoundEnabled())) return;
     const synth = window.speechSynthesis as SpeechSynthesis | undefined;
-    if (!synth || typeof SpeechSynthesisUtterance === "undefined" || synth.speaking) return;
+    if (!synth || typeof SpeechSynthesisUtterance === "undefined" || synth.speaking || this.voiceSrc) return;
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (now - this.lastBarkAt < BARK_GAP_MS) return;
+    this.lastBarkAt = now;
     try {
       this.hookVoices(synth);
       if (!this.speechVoice) this.speechVoice = this.pickVoice(synth);
@@ -1121,14 +1249,29 @@ export class RaceAudio {
       this.lastKick = 0;
       this.keepAlive();
     }
-    if (this.musicBus && this.ctx) {
-      const level = this.musicVol * MUSIC_BUS * (on ? 0.55 : 1);
-      this.musicBus.gain.setTargetAtTime(level, this.ctx.currentTime, on ? 0.04 : 0.25);
-    }
+    if (this.musicBus && this.ctx) this.musicBus.gain.setTargetAtTime(this.musicLevel(), this.ctx.currentTime, on ? 0.04 : 0.25);
+  }
+
+  /** Music bus level: the volume setting, dipped while the announcer talks or a stinger plays. */
+  private musicLevel(): number {
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    return this.musicVol * MUSIC_BUS * (this.speaking ? 0.55 : 1) * (now < this.stingerUntil ? 0.35 : 1);
+  }
+
+  /** Dips the music under a jingle for about its length. */
+  private duckForStinger(seconds: number): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.musicBus) return;
+    this.stingerUntil = performance.now() + seconds * 1000;
+    this.musicBus.gain.setTargetAtTime(this.musicLevel(), ctx.currentTime, 0.05);
+    window.setTimeout(() => {
+      if (this.musicBus && this.ctx) this.musicBus.gain.setTargetAtTime(this.musicLevel(), this.ctx.currentTime, 0.4);
+    }, seconds * 1000 + 20);
   }
 
   private hush(): void {
     if (typeof window === "undefined") return;
+    this.stopVoice();
     try {
       window.speechSynthesis?.cancel();
     } catch {
@@ -1284,7 +1427,8 @@ export class RaceAudio {
   /* Engine                                                                  */
   /* ---------------------------------------------------------------------- */
 
-  private buildEngine(ctx: AudioContext, bus: AudioNode): EngineNodes | null {
+  /** The synth engine: plays until the sprite's engine loops load (or if they never do). */
+  private buildSynthEngine(ctx: AudioContext, bus: AudioNode): SynthEngine | null {
     if (!this.noise) return null;
     const out = ctx.createGain();
     out.gain.value = 0;
@@ -1351,8 +1495,36 @@ export class RaceAudio {
     harmGain.gain.value = 0;
     harm.connect(harmFilter).connect(harmGain).connect(out);
     sources.push(hissSrc, harm);
+    const drift = this.buildDrift(ctx, out, sources);
 
-    // Drift: a wobbling whine plus a tyre-ish screech band.
+    const t = ctx.currentTime;
+    rumbleSrc.start(t, 0);
+    hissSrc.start(t, 0.7);
+    for (const s of [saw, sub, flutter, harm]) s.start(t);
+    out.gain.setTargetAtTime(1, t, 0.2);
+
+    return {
+      kind: "synth",
+      out,
+      saw,
+      sub,
+      toneFilter,
+      toneGain,
+      flutter,
+      flutterGain,
+      rumbleFilter,
+      rumbleGain,
+      hissFilter,
+      hissGain,
+      harm,
+      harmGain,
+      ...drift,
+      sources,
+    };
+  }
+
+  /** Drift: a wobbling whine plus a tyre-ish screech band (started here; silent until drifting). */
+  private buildDrift(ctx: AudioContext, out: AudioNode, sources: AudioScheduledSourceNode[]): DriftNodes {
     const drift1 = ctx.createOscillator();
     drift1.type = "triangle";
     drift1.frequency.value = 620;
@@ -1388,35 +1560,84 @@ export class RaceAudio {
     screechGain.gain.value = 0;
     scrSrc.connect(scrFilter).connect(screechGain).connect(out);
     sources.push(drift1, drift2, wob, scrSrc);
-
     const t = ctx.currentTime;
-    rumbleSrc.start(t, 0);
-    hissSrc.start(t, 0.7);
     scrSrc.start(t, 1.3);
-    for (const s of [saw, sub, flutter, harm, drift1, drift2, wob]) s.start(t);
-    out.gain.setTargetAtTime(1, t, 0.2);
+    for (const s of [drift1, drift2, wob]) s.start(t);
+    return { drift1, drift2, driftFilter, driftGain, screechGain };
+  }
 
-    return {
-      out,
-      saw,
-      sub,
-      toneFilter,
-      toneGain,
-      flutter,
-      flutterGain,
-      rumbleFilter,
-      rumbleGain,
-      hissFilter,
-      hissGain,
-      harm,
-      harmGain,
-      drift1,
-      drift2,
-      driftFilter,
-      driftGain,
-      screechGain,
-      sources,
+  /**
+   * The recorded engine (null until the sprite holds the engine loops): a
+   * looping engine hum through a speed-tracking lowpass, a deep rumble loop,
+   * a thruster roar for boosts, and the synth drift layers.
+   */
+  private sampleEngineReady(): boolean {
+    const loops = this.manifest?.engine;
+    return !!(this.sprite && this.noise && loops?.core && loops.rumble && loops.boost);
+  }
+
+  private buildSampleEngine(ctx: AudioContext, bus: AudioNode): SampleEngine | null {
+    const sprite = this.sprite;
+    const loops = this.manifest?.engine;
+    if (!this.sampleEngineReady() || !sprite || !loops?.core || !loops.rumble || !loops.boost) return null;
+    const out = ctx.createGain();
+    out.gain.value = 0;
+    out.connect(bus);
+    const sources: AudioScheduledSourceNode[] = [];
+    const t = ctx.currentTime;
+    const loop = (clip: Clip, at: number): AudioBufferSourceNode => {
+      const src = ctx.createBufferSource();
+      src.buffer = sprite;
+      src.loop = true;
+      src.loopStart = clip.start;
+      src.loopEnd = clip.start + clip.dur;
+      src.start(t, clip.start + at * clip.dur);
+      sources.push(src);
+      return src;
     };
+
+    const core = loop(loops.core, 0);
+    const coreFilter = ctx.createBiquadFilter();
+    coreFilter.type = "lowpass";
+    coreFilter.frequency.value = 900;
+    coreFilter.Q.value = 0.9;
+    const coreGain = ctx.createGain();
+    coreGain.gain.value = 0;
+    core.connect(coreFilter).connect(coreGain).connect(out);
+
+    const rumble = loop(loops.rumble, 0.37);
+    const rumbleGain = ctx.createGain();
+    rumbleGain.gain.value = 0;
+    rumble.connect(rumbleGain).connect(out);
+
+    const boost = loop(loops.boost, 0.61);
+    const boostFilter = ctx.createBiquadFilter();
+    boostFilter.type = "highpass";
+    boostFilter.frequency.value = 250;
+    const boostGain = ctx.createGain();
+    boostGain.gain.value = 0;
+    boost.connect(boostFilter).connect(boostGain).connect(out);
+
+    const drift = this.buildDrift(ctx, out, sources);
+    out.gain.setTargetAtTime(1, t, 0.2);
+    return { kind: "sample", out, core, coreFilter, coreGain, rumble, rumbleGain, boost, boostFilter, boostGain, ...drift, sources };
+  }
+
+  /** Fades an engine out and releases its nodes. */
+  private dropEngine(e: EngineNodes, seconds: number): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime;
+    e.out.gain.cancelScheduledValues(t);
+    e.out.gain.setTargetAtTime(0, t, seconds / 4);
+    for (const s of e.sources) {
+      try {
+        s.stop(t + seconds);
+      } catch {
+        // Already stopped.
+      }
+    }
+    window.setTimeout(() => e.out.disconnect(), seconds * 1000 + 200);
   }
 
   /** Called every frame with the local ship state. */
@@ -1432,7 +1653,12 @@ export class RaceAudio {
     this.keepAlive();
     const ctx = this.ctx;
     if (!ctx || !this.engBus) return;
-    if (!this.eng) this.eng = this.buildEngine(ctx, this.engBus);
+    // The recorded engine takes over from the synth as soon as the sprite is in.
+    if (this.eng?.kind === "synth" && this.sampleEngineReady()) {
+      this.dropEngine(this.eng, 0.4);
+      this.eng = null;
+    }
+    if (!this.eng) this.eng = this.buildSampleEngine(ctx, this.engBus) ?? this.buildSynthEngine(ctx, this.engBus);
     const e = this.eng;
     if (!e) return;
     const t = ctx.currentTime;
@@ -1442,6 +1668,29 @@ export class RaceAudio {
     const b = clamp(Number.isFinite(state.boost) ? state.boost : 0, 0, 1);
     const air = state.airborne;
     const tier = clamp(Math.round(state.driftTier || 0), 0, 3);
+
+    const drift = state.drifting && !air;
+    const df = 560 + tier * 280 + s * 60;
+    e.drift1.frequency.setTargetAtTime(df, t, 0.05);
+    e.drift2.frequency.setTargetAtTime(df * 1.5, t, 0.05);
+    e.driftFilter.frequency.setTargetAtTime(df * 1.4, t, 0.05);
+    e.driftGain.gain.setTargetAtTime(drift ? 0.016 + tier * 0.009 : 0, t, 0.05);
+    e.screechGain.gain.setTargetAtTime(drift ? 0.04 + s * 0.03 : 0, t, 0.05);
+    e.out.gain.setTargetAtTime(state.muted ? 0 : 1, t, 0.08);
+
+    if (e.kind === "sample") {
+      // Playback rate is the pitch: idle burble up to a high whine at top speed.
+      const rate = clamp(0.55 + s * 0.95 + thr * 0.08 + b * 0.18 + (air ? 0.12 : 0), 0.3, 2.4);
+      e.core.playbackRate.setTargetAtTime(rate, t, k);
+      e.coreFilter.frequency.setTargetAtTime(clamp(700 + s * 3800 + thr * 900 + b * 3500, 200, 16000), t, k);
+      e.coreGain.gain.setTargetAtTime((0.16 + thr * 0.12 + s * 0.14) * (air ? 0.75 : 1), t, k);
+      e.rumble.playbackRate.setTargetAtTime(clamp(0.7 + s * 0.45 + b * 0.12, 0.3, 2), t, k);
+      e.rumbleGain.gain.setTargetAtTime((0.1 + s * 0.08 + thr * 0.06) * (air ? 0.4 : 1), t, 0.08);
+      e.boost.playbackRate.setTargetAtTime(clamp(0.85 + s * 0.3, 0.5, 2), t, k);
+      e.boostFilter.frequency.setTargetAtTime(250 + s * 500, t, k);
+      e.boostGain.gain.setTargetAtTime(b * 0.42, t, b > 0.01 ? 0.03 : 0.15);
+      return;
+    }
 
     const base = 42 + s * 115 + thr * 10 + (air ? 14 : 0) + b * 12;
     e.saw.frequency.setTargetAtTime(base, t, k);
@@ -1458,16 +1707,6 @@ export class RaceAudio {
     e.hissGain.gain.setTargetAtTime(b * 0.09, t, b > 0.01 ? 0.03 : 0.15);
     e.harm.frequency.setTargetAtTime(base * 4, t, k);
     e.harmGain.gain.setTargetAtTime(b * 0.03, t, b > 0.01 ? 0.03 : 0.15);
-
-    const drift = state.drifting && !air;
-    const df = 560 + tier * 280 + s * 60;
-    e.drift1.frequency.setTargetAtTime(df, t, 0.05);
-    e.drift2.frequency.setTargetAtTime(df * 1.5, t, 0.05);
-    e.driftFilter.frequency.setTargetAtTime(df * 1.4, t, 0.05);
-    e.driftGain.gain.setTargetAtTime(drift ? 0.016 + tier * 0.009 : 0, t, 0.05);
-    e.screechGain.gain.setTargetAtTime(drift ? 0.04 + s * 0.03 : 0, t, 0.05);
-
-    e.out.gain.setTargetAtTime(state.muted ? 0 : 1, t, 0.08);
   }
 
   /* ---------------------------------------------------------------------- */
@@ -1503,6 +1742,7 @@ export class RaceAudio {
       src.connect(out);
       src.start(ctx.currentTime + 0.005, clip.start, clip.dur);
       nodes.push(src);
+      if (STINGERS.has(sound)) this.duckForStinger((clip.dur * 0.8) / rate);
     } else {
       if (this.sfxVerb) {
         const send = ctx.createGain();
@@ -1776,7 +2016,8 @@ export class RaceAudio {
         [2093, 2637.02, 3135.96].forEach((f, i) => this.bell(v, f, 0.5 + i * 0.07, 0.5, 0.04));
         break;
       }
-      case "win": {
+      case "win":
+      case "podium": {
         const seq: [number, number, number][] = [
           [523.25, 0, 0.09],
           [659.25, 0.1, 0.09],
@@ -1848,20 +2089,40 @@ export class RaceAudio {
       return;
     }
     if (themeName === this.curTheme && (this.timer !== null || this.fileMusic)) return;
-    if (!this.playRecorded(themeName)) {
-      this.startTheme(themeName);
-      // Fetch the recording; it takes over (crossfade) as soon as it's decoded.
-      void this.loadMusic(themeName).then(() => {
-        if (this.wantTheme === themeName && this.curTheme === themeName && !this.fileMusic) this.playRecorded(themeName);
-      });
+    if (this.playRecorded(themeName)) return;
+    // Not decoded yet: let the old song go and fetch the recording. The synth
+    // only steps in if the recording isn't there within a moment (or fails).
+    if (this.curTheme !== themeName) {
+      this.fadeOutSong(0.5);
+      this.stopScheduler();
+      this.curTheme = null;
     }
+    const synth = (): void => {
+      if (this.wantTheme === themeName && !this.fileMusic && this.timer === null) this.startTheme(themeName);
+    };
+    const fallback = window.setTimeout(synth, 2500);
+    void this.loadMusic(themeName, this.finalLap ? "final" : "normal").then((ok) => {
+      window.clearTimeout(fallback);
+      if (this.wantTheme !== themeName) return;
+      if (!ok) synth();
+      else if (this.curTheme !== themeName || !this.fileMusic) this.playRecorded(themeName);
+    });
   }
 
-  /** Final lap: ~8% faster, a semitone higher, plus a counter-melody and busier hats. */
+  /** Final lap: the recording crossfades to its faster take; the synth goes ~8% faster, a semitone up, with a counter-melody. */
   setIntensity(finalLap: boolean): void {
     if (this.finalLap === finalLap) return;
     this.finalLap = finalLap;
-    if (this.fileMusic && this.curTheme) this.playRecorded(this.curTheme);
+    const cur = this.curTheme;
+    if (this.fileMusic && cur && !this.playRecorded(cur)) {
+      // Not preloaded: fetch it, unless another song is asked for right away (the race ending).
+      window.setTimeout(() => {
+        if (this.wantTheme !== cur || this.finalLap !== finalLap) return;
+        void this.loadMusic(cur, finalLap ? "final" : "normal").then((ok) => {
+          if (ok && this.wantTheme === cur && this.curTheme === cur && this.finalLap === finalLap) this.playRecorded(cur);
+        });
+      }, 0);
+    }
     const th = this.song;
     const delay = this.bus?.delay;
     if (th && delay && this.ctx) delay.delayTime.setTargetAtTime(3 * this.sixteenth(th), this.ctx.currentTime, 0.05);
@@ -1869,9 +2130,7 @@ export class RaceAudio {
 
   setMusicVolume(v: number): void {
     this.musicVol = clamp(Number.isFinite(v) ? v : 0.5, 0, 1);
-    if (this.musicBus && this.ctx) {
-      this.musicBus.gain.setTargetAtTime(this.musicVol * MUSIC_BUS * (this.speaking ? 0.55 : 1), this.ctx.currentTime, 0.05);
-    }
+    if (this.musicBus && this.ctx) this.musicBus.gain.setTargetAtTime(this.musicLevel(), this.ctx.currentTime, 0.05);
   }
 
   private stopScheduler(): void {
@@ -1898,15 +2157,24 @@ export class RaceAudio {
     );
   }
 
-  /* Recorded audio (public/audio/nova-rally, baked by scripts/render-nova-audio.mjs) */
+  /* Recorded audio (public/audio/nova-rally, built by scripts/render-nova-audio.mjs) */
 
   private manifest: AudioManifest | null = null;
   private manifestLoad: Promise<AudioManifest | null> | null = null;
+  /** Effects, announcer lines and engine loops. Context-independent: decoded once, as soon as the view mounts. */
   private sprite: AudioBuffer | null = null;
-  private spriteLoad: Promise<void> | null = null;
-  private musicBuffers = new Map<string, AudioBuffer>();
-  private musicLoads = new Map<string, Promise<void>>();
-  private fileMusic: { src: AudioBufferSourceNode; gain: GainNode; key: string } | null = null;
+  private spriteLoad: Promise<AudioBuffer | null> | null = null;
+  /** The sprite failed to load: lines fall back to speech synthesis. */
+  private noRecordings = false;
+  /**
+   * Music streams through <audio> elements wired into the graph (decoding a 2 min
+   * track would hold ~45 MB of PCM). Only the playing loop and the next one stay.
+   */
+  private musicEls = new Map<string, HTMLAudioElement>();
+  /** A media element can feed exactly one source node, ever: remember it (per context). */
+  private musicNodes = new WeakMap<HTMLAudioElement, { ctx: AudioContext; node: MediaElementAudioSourceNode }>();
+  private musicLoads = new Map<string, Promise<boolean>>();
+  private fileMusic: { el: HTMLAudioElement; node: MediaElementAudioSourceNode; gain: GainNode; key: string } | null = null;
 
   private loadManifest(): Promise<AudioManifest | null> {
     if (!this.manifestLoad) {
@@ -1931,33 +2199,96 @@ export class RaceAudio {
     }
   }
 
-  /** Effects sprite: fetched once per audio context. */
-  private loadSprite(): void {
-    if (this.spriteLoad || typeof fetch === "undefined") return;
-    const ctx = this.ctx;
-    this.spriteLoad = this.loadManifest().then(async (m) => {
-      if (!m) return;
-      const buf = await this.decode("sfx.mp3");
-      if (buf && this.ctx === ctx) this.sprite = buf;
+  /**
+   * Fetches and decodes the sprite as soon as the view mounts, so it's ready
+   * by the countdown even before the first gesture creates the audio context:
+   * it decodes in an OfflineAudioContext (an AudioBuffer plays in any context).
+   */
+  private prefetchSprite(): void {
+    if (this.sprite || this.spriteLoad || typeof fetch === "undefined" || typeof window === "undefined") return;
+    this.noRecordings = false;
+    const p: Promise<AudioBuffer | null> = this.loadManifest()
+      .then((m) => (m ? fetch(`${AUDIO_BASE}/sfx.mp3`) : null))
+      .then((r) => (r?.ok ? r.arrayBuffer() : null))
+      .then((data) => (data ? this.decodeDetached(data) : null))
+      .catch(() => null);
+    this.spriteLoad = p;
+    void p.then((buf) => {
+      if (this.spriteLoad !== p) return;
+      this.spriteLoad = null;
+      if (buf) this.sprite = buf;
+      else this.noRecordings = true; // the next audio context tries again
     });
   }
 
-  private loadMusic(name: MusicTheme): Promise<void> {
-    const key = name;
-    let p = this.musicLoads.get(key);
-    if (!p) {
-      const ctx = this.ctx;
-      p = this.loadManifest().then(async (m) => {
-        const entry = m?.music[name];
-        if (!entry) return;
-        for (const variant of ["normal", "final"] as const) {
-          const buf = await this.decode(entry[variant].file);
-          if (buf && this.ctx === ctx) this.musicBuffers.set(`${name}:${variant}`, buf);
-        }
-      });
-      this.musicLoads.set(key, p);
+  private async decodeDetached(data: ArrayBuffer): Promise<AudioBuffer | null> {
+    try {
+      if (typeof OfflineAudioContext !== "undefined") return await new OfflineAudioContext(2, 1, this.manifest?.sampleRate ?? 44100).decodeAudioData(data);
+      return this.ctx ? await this.ctx.decodeAudioData(data) : null;
+    } catch {
+      return null;
     }
-    return p;
+  }
+
+  /** Starts buffering one music loop. Resolves false when there's no recording (or it failed). */
+  private loadMusic(name: MusicTheme, variant: "normal" | "final"): Promise<boolean> {
+    if (typeof document === "undefined") return Promise.resolve(false);
+    return this.loadManifest().then((m) => {
+      const file = m?.music[name]?.[variant]?.file;
+      if (!file) return false;
+      let p = this.musicLoads.get(file);
+      if (!p) {
+        const el = document.createElement("audio");
+        el.preload = "auto";
+        el.loop = true;
+        el.src = `${AUDIO_BASE}/${file}`;
+        p = new Promise<boolean>((resolve) => {
+          const done = (ok: boolean) => {
+            el.removeEventListener("canplay", yes);
+            el.removeEventListener("error", no);
+            resolve(ok);
+          };
+          const yes = () => done(true);
+          const no = () => done(false);
+          el.addEventListener("canplay", yes);
+          el.addEventListener("error", no);
+          el.load();
+        }).then((ok) => {
+          if (this.musicLoads.get(file) !== p) return false;
+          if (ok) this.musicEls.set(file, el);
+          else this.musicLoads.delete(file);
+          return ok;
+        });
+        this.musicLoads.set(file, p);
+      }
+      return p;
+    });
+  }
+
+  private dropMusicEl(file: string): void {
+    const el = this.musicEls.get(file);
+    this.musicEls.delete(file);
+    this.musicLoads.delete(file);
+    if (!el || this.fileMusic?.el === el) return;
+    el.pause();
+    el.removeAttribute("src");
+    el.load();
+  }
+
+  /**
+   * Frees every decoded loop but `keep`, then preloads the one that comes
+   * next: a race's final-lap take, and during the final lap the menu loop.
+   */
+  private keepMusic(name: MusicTheme, variant: "normal" | "final"): void {
+    const music = this.manifest?.music;
+    if (!music) return;
+    const next: [MusicTheme, "normal" | "final"] | null = name === "menu" ? null : variant === "normal" ? [name, "final"] : ["menu", "normal"];
+    const keep = new Set([music[name]?.[variant]?.file, next && music[next[0]]?.[next[1]]?.file]);
+    for (const file of [...this.musicEls.keys(), ...this.musicLoads.keys()]) {
+      if (keep.has(file)) continue;
+      this.dropMusicEl(file);
+    }
+    if (next) void this.loadMusic(next[0], next[1]);
   }
 
   /** Plays the recorded loop for a theme (crossfading from whatever played). Returns false when it isn't loaded yet. */
@@ -1965,10 +2296,10 @@ export class RaceAudio {
     const ctx = this.ctx;
     const musicBus = this.musicBus;
     const variant = this.finalLap ? "final" : "normal";
-    const buf = this.musicBuffers.get(`${name}:${variant}`);
     const entry = this.manifest?.music[name]?.[variant];
-    if (!ctx || !musicBus || !buf || !entry) return false;
-    const key = `${name}:${variant}`;
+    const el = entry && this.musicEls.get(entry.file);
+    if (!ctx || !musicBus || !el || !entry || !(ctx instanceof AudioContext)) return false;
+    const key = entry.file;
     if (this.fileMusic?.key === key) return true;
     // Hand over from the synth (or the other variant) with a short crossfade.
     const prevSynth = this.bus;
@@ -1988,16 +2319,25 @@ export class RaceAudio {
     gain.gain.setValueAtTime(0, t);
     gain.gain.linearRampToValueAtTime(1, t + (name === "menu" ? 0.8 : 0.4));
     gain.connect(musicBus);
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.loop = true;
-    src.loopStart = entry.loopStart;
-    src.loopEnd = entry.loopEnd;
-    src.connect(gain);
-    src.start(t, entry.loopStart);
-    this.fileMusic = { src, gain, key };
+    let wired = this.musicNodes.get(el);
+    if (!wired || wired.ctx !== ctx) {
+      if (wired) return false; // tied to an old context; a fresh element is fetched with the new one
+      wired = { ctx, node: ctx.createMediaElementSource(el) };
+      this.musicNodes.set(el, wired);
+    }
+    wired.node.disconnect();
+    wired.node.connect(gain);
+    el.loop = true;
+    try {
+      el.currentTime = entry.loopStart;
+    } catch {
+      // Not seekable yet: it starts from the top.
+    }
+    void el.play().catch(() => {});
+    this.fileMusic = { el, node: wired.node, gain, key };
     this.song = theme(name);
     this.curTheme = name;
+    this.keepMusic(name, variant);
     return true;
   }
 
@@ -2010,12 +2350,10 @@ export class RaceAudio {
     fm.gain.gain.cancelScheduledValues(t);
     fm.gain.gain.setValueAtTime(fm.gain.gain.value, t);
     fm.gain.gain.linearRampToValueAtTime(0, t + seconds);
-    try {
-      fm.src.stop(t + seconds + 0.05);
-    } catch {
-      // Already stopped.
-    }
-    window.setTimeout(() => fm.gain.disconnect(), seconds * 1000 + 200);
+    window.setTimeout(() => {
+      if (this.fileMusic?.el !== fm.el) fm.el.pause();
+      fm.gain.disconnect();
+    }, seconds * 1000 + 200);
   }
 
   private startTheme(name: MusicTheme): void {

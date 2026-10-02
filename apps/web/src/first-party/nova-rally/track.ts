@@ -64,6 +64,8 @@ export interface TrackDef {
   hazards: readonly HazardDef[];
   /** A short, wide battle arena rather than a race circuit. */
   arena?: boolean;
+  /** Open space: the road is a see-through hard-light lane (no deck, slab or metal rails under you). */
+  lightLane?: boolean;
 }
 
 export interface Frame {
@@ -319,7 +321,7 @@ function build(def: TrackDef): CompiledTrack {
     }),
     ramps: def.ramps.map((r) => ({ s: sAt(r.at), lift: r.lift, boost: r.boost ?? true })),
     hazards: def.hazards.map((h) => ({ s: sAt(h.at), item: h })),
-    outline: { count, length, pos, up, right, halfWidth: outlineHalf, floating },
+    outline: { count, length, pos, up, right, halfWidth: outlineHalf, floating, lightLane: !!def.lightLane },
     grid(slot: number) {
       const row = Math.floor(slot / 2);
       const col = slot % 2 === 0 ? -1 : 1;

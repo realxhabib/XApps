@@ -19,6 +19,7 @@ import {
 } from "postprocessing";
 import {
   AdditiveBlending,
+  BoxGeometry,
   BufferAttribute,
   BufferGeometry,
   Color,
@@ -32,13 +33,12 @@ import {
   HemisphereLight,
   IcosahedronGeometry,
   LatheGeometry,
-  LineBasicMaterial,
-  LineSegments,
   InstancedMesh,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
+  NormalBlending,
   NoToneMapping,
   Object3D,
   OctahedronGeometry,
@@ -379,8 +379,10 @@ interface ProjectileView {
   kind: string;
 }
 
-const DRIFT_SPARK = [new Color("#ffffff"), new Color("#48b4ff"), new Color("#ff9a2e"), new Color("#c35cff")];
+const DRIFT_SPARK = [new Color("#ffffff"), new Color("#1f7bff"), new Color("#ff7a12"), new Color("#a838ff")];
 const UP = new Vector3(0, 1, 0);
+const BOLT_GLOW = new Color("#9a5cff").multiplyScalar(1.6);
+const BOLT_CORE = new Color("#f4ecff").multiplyScalar(3.2);
 const CONFETTI = ["#ff5ad1", "#ffd166", "#5dffb0", "#48b4ff", "#ffffff", "#ff7a2f"].map((c) => new Color(c));
 
 export class RaceScene {
@@ -429,15 +431,30 @@ export class RaceScene {
   private empLife = 0;
   private empFrom = -1;
   private empTargets: number[] = [];
-  private readonly lightningPos = new Float32Array(8 * 12 * 2 * 3);
-  private lightning!: LineSegments;
+  /** Bolt ribbons: per segment two layers (glow, core) of 4 vertices each. */
+  private static readonly BOLT_QUADS = 8 * 12 * 2;
+  private readonly lightningPos = new Float32Array(RaceScene.BOLT_QUADS * 4 * 3);
+  private readonly lightningCol = new Float32Array(RaceScene.BOLT_QUADS * 4 * 3);
+  private lightning!: Mesh;
 
   /** Jagged purple arcs from the EMP user to everyone it zapped, re-rolled every frame. */
   private updateLightning(k: number): void {
     const from = this.rt.racers[this.empFrom];
     const arr = this.lightningPos;
+    const col = this.lightningCol;
     arr.fill(0);
     let w = 0;
+    const cam = this.camera.position;
+    const side = new Vector3();
+    const toCam = new Vector3();
+    // One camera-facing quad from p to q, `width` wide.
+    const quad = (p: Vector3, q: Vector3, width: number, c: Color) => {
+      toCam.copy(p).add(q).multiplyScalar(0.5).sub(cam);
+      side.subVectors(q, p).cross(toCam).normalize().multiplyScalar(width / 2);
+      arr.set([p.x - side.x, p.y - side.y, p.z - side.z, p.x + side.x, p.y + side.y, p.z + side.z, q.x + side.x, q.y + side.y, q.z + side.z, q.x - side.x, q.y - side.y, q.z - side.z], w);
+      for (let v = 0; v < 4; v++) col.set([c.r, c.g, c.b], w + v * 3);
+      w += 12;
+    };
     if (from && k < 0.7) {
       for (const idx of this.empTargets.slice(0, 8)) {
         const to = this.rt.racers[idx];
@@ -449,15 +466,17 @@ export class RaceScene {
           const t = seg / 12;
           const next = a.clone().lerp(b, t);
           if (seg < 12) next.add(new Vector3((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 3, (Math.random() - 0.5) * 4));
-          arr.set([prev.x, prev.y, prev.z, next.x, next.y, next.z], w);
-          // Glow beads along the bolt so it reads thick, not as a 1 px line.
-          if (!this.reduced && seg % 2 === 0) this.particles.emit(next, new Vector3(), new Color("#c9a2ff"), 0.9, 0.08, 0);
-          w += 6;
+          quad(prev, next, 1.1, BOLT_GLOW);
+          quad(prev, next, 0.22, BOLT_CORE);
+          // Glow beads at the kinks.
+          if (!this.reduced && seg % 3 === 0) this.particles.emit(next, new Vector3(), new Color("#c9a2ff"), 1.1, 0.08, 0);
           prev = next;
         }
       }
     }
     (this.lightning.geometry.getAttribute("position") as BufferAttribute).needsUpdate = true;
+    (this.lightning.geometry.getAttribute("color") as BufferAttribute).needsUpdate = true;
+    this.lightning.geometry.setDrawRange(0, (w / 12) * 6);
     this.lightning.visible = w > 0;
   }
   private empDome: Mesh;
@@ -586,8 +605,30 @@ export class RaceScene {
     this.scene.add(this.empRing);
     const lgeo = new BufferGeometry();
     lgeo.setAttribute("position", new BufferAttribute(this.lightningPos, 3).setUsage(DynamicDrawUsage));
-    const lmat = new LineBasicMaterial({ color: new Color("#d9b8ff").multiplyScalar(3), transparent: true, blending: AdditiveBlending, depthWrite: false, toneMapped: false });
-    this.lightning = new LineSegments(lgeo, lmat);
+    lgeo.setAttribute("color", new BufferAttribute(this.lightningCol, 3).setUsage(DynamicDrawUsage));
+    // Soft edges across each ribbon (v = 0 and 1 at the long edges).
+    const boltUv = new Float32Array(RaceScene.BOLT_QUADS * 4 * 2);
+    const boltIdx: number[] = [];
+    for (let q = 0; q < RaceScene.BOLT_QUADS; q++) {
+      boltUv.set([0, 0, 0, 1, 1, 1, 1, 0], q * 8);
+      const b = q * 4;
+      boltIdx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+    }
+    lgeo.setAttribute("uv", new BufferAttribute(boltUv, 2));
+    lgeo.setIndex(boltIdx);
+    const lmat = new ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: AdditiveBlending,
+      side: DoubleSide,
+      toneMapped: false,
+      vertexColors: true,
+      vertexShader: `varying vec2 vUv; varying vec3 vCol;
+        void main() { vUv = uv; vCol = color; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `varying vec2 vUv; varying vec3 vCol;
+        void main() { float e = 1.0 - abs(vUv.y * 2.0 - 1.0); float a = e * e; gl_FragColor = vec4(vCol * a, a); }`,
+    });
+    this.lightning = new Mesh(lgeo, lmat);
     this.lightning.frustumCulled = false;
     this.lightning.visible = false;
     this.scene.add(this.lightning);
@@ -667,6 +708,11 @@ export class RaceScene {
     this.exposure = this.env.exposure;
 
     this.trackView = buildTrackView(track, this.quality.detail);
+    // On a hard-light lane a black blob reads as a hole: the ship casts a soft glow pool instead.
+    const lane = !!track.def.lightLane;
+    this.blobMat.color.set(lane ? "#8fd8ff" : "#000000");
+    this.blobMat.blending = lane ? AdditiveBlending : NormalBlending;
+    this.blobMat.needsUpdate = true;
     this.scene.add(this.trackView.group);
 
     // Item capsules.
@@ -1043,12 +1089,13 @@ export class RaceScene {
       const throttle = r.isMe ? (r.finished ? 0.7 : rt.input.throttle) : ship.speed > 5 ? 0.9 : 0.2;
       model.setThrottle(Math.max(0.15, throttle), boosting, this.time);
       model.setDriftGlow(ship.driftDir !== 0 ? ship.driftTier : 0);
-      model.setShield(ship.shield > 0, this.time);
       // Rivals right in front of the lens fade out instead of filling the screen.
       const lensDist = r === rt.focus ? 99 : pos.distanceTo(this.camera.position);
-      const lensFade = lensDist < 15 ? Math.max(0.06, (lensDist - 5) / 10) : 1;
+      const lensFade = lensDist < 16 ? Math.max(0.06, (lensDist - 6) / 10) : 1;
+      model.setShield(ship.shield > 0 && lensDist > 6, this.time);
       model.setGhost(r.kind === "ghost" ? 0.35 : ship.cloak > 0 ? (r.isMe ? 0.4 : 0.12) : lensFade);
-      root.visible = !r.out && (ship.state !== "fall" || ship.h > -30);
+      // Rivals brushing the lens are hidden outright (even faded they fill the frame).
+      root.visible = !r.out && (ship.state !== "fall" || ship.h > -30) && lensDist > 4.5;
       view.trail.mesh.visible = !r.out;
       root.scale.setScalar(ship.shocked > 0 ? 0.6 : 1);
 
@@ -1063,13 +1110,14 @@ export class RaceScene {
       // Drift flares.
       const tier = ship.driftDir !== 0 && !ship.airborne ? ship.driftTier : 0;
       view.flares.forEach((sp, i) => {
-        sp.visible = tier > 0 || (ship.driftDir !== 0 && !ship.airborne);
+        // Tied to the ship: a rival hidden at the lens must not leave its flare (drawn without depth test) on screen.
+        sp.visible = root.visible && lensFade > 0.3 && (tier > 0 || (ship.driftDir !== 0 && !ship.airborne));
         if (!sp.visible) return;
         const side = i === 0 ? -1 : 1;
         sp.position.copy(pos).addScaledVector(ship.fwd, -1.45).addScaledVector(this.v2.crossVectors(ship.fwd, f.up).normalize(), side * 0.9).addScaledVector(f.up, 0.2);
         const flick = 0.75 + Math.random() * 0.5;
         sp.scale.setScalar((tier === 0 ? 0.4 : 0.75 + tier * 0.22) * flick);
-        sp.material.color.copy(DRIFT_SPARK[tier]!).multiplyScalar(tier === 0 ? 0.6 : 2.4);
+        sp.material.color.copy(DRIFT_SPARK[tier]!).multiplyScalar((tier === 0 ? 0.6 : 1.5) * Math.min(1, lensFade));
         sp.material.depthTest = false;
         sp.renderOrder = 8;
       });
@@ -1079,8 +1127,8 @@ export class RaceScene {
         view.blob.position.copy(pos).addScaledVector(f.up, -(0.35 + bob + ship.h) + 0.04);
         view.blob.quaternion.copy(root.quaternion);
         const fade = Math.max(0, 1 - ship.h / 8);
-        view.blob.scale.setScalar(0.8 + ship.h * 0.08);
-        (view.blob.material as MeshBasicMaterial).opacity = 0.55;
+        view.blob.scale.setScalar((this.track?.def.lightLane ? 0.5 : 0.8) + ship.h * 0.08);
+        (view.blob.material as MeshBasicMaterial).opacity = this.track?.def.lightLane ? 0.12 * fade : 0.55;
         view.blob.visible = fade > 0.05;
       }
       // Missile lock-on reticle over whoever a seeker is chasing.
@@ -1116,7 +1164,7 @@ export class RaceScene {
       const tail = this.v3.copy(pos).addScaledVector(ship.fwd, -1.7).addScaledVector(f.up, 0.2);
       const speed01 = Math.min(1.4, Math.max(0, ship.speed) / ship.tune.top);
       const trailColor = this.c1.set(ship.driftDir !== 0 && ship.driftTier > 0 ? DRIFT_SPARK[ship.driftTier]! : new Color(r.livery.glow));
-      view.trail.update(tail, f.up, right, 0.13 + boosting * 0.12, (ship.cloak > 0 ? 0.05 : 1) * Math.min(1, speed01) * (0.12 + boosting * 0.6 + (ship.driftTier > 0 && ship.driftDir !== 0 ? 0.35 : 0)), trailColor);
+      view.trail.update(tail, f.up, right, 0.13 + boosting * 0.12, (ship.cloak > 0 ? 0.05 : 1) * (this.track?.def.lightLane ? 0.55 : 1) * (r === rt.focus ? 1 : Math.min(1, lensFade)) * Math.min(1, speed01) * (0.12 + boosting * 0.6 + (ship.driftTier > 0 && ship.driftDir !== 0 ? 0.35 : 0)), trailColor);
 
       // Particles: exhaust, drift sparks, offroad dust.
       const nearCam = root.position.distanceToSquared(this.camera.position) < 120 * 120;
@@ -1282,6 +1330,8 @@ export class RaceScene {
       }
       frameAt(track, p.s, f);
       view.mesh.position.copy(f.pos).addScaledVector(f.right, p.d).addScaledVector(f.up, p.h);
+      // Nothing parks in the lens: shots that pass right by the camera are hidden for those frames.
+      view.mesh.visible = view.mesh.position.distanceToSquared(this.camera.position) > 25;
       this.m4.makeBasis(f.right, f.up, this.v2.copy(f.fwd).negate().multiplyScalar(Math.sign(p.vs) || 1));
       view.mesh.quaternion.setFromRotationMatrix(this.m4);
       if (p.kind === "mine") {
@@ -1323,9 +1373,20 @@ export class RaceScene {
     const g = new Group();
     g.scale.setScalar(kind === "seeker" ? 2.4 : kind === "singularity" ? 1.8 : kind === "bolt" ? 1.25 : 1.2);
     if (kind === "seeker") {
-      const body = new Mesh(new CylinderGeometry(0.28, 0.35, 1.8, 12), new MeshStandardMaterial({ color: "#e8e8ee", metalness: 0.7, roughness: 0.3 }));
+      const body = new Mesh(new CylinderGeometry(0.28, 0.35, 1.8, 12), new MeshStandardMaterial({ color: "#ff3d5a", metalness: 0.35, roughness: 0.35, emissive: "#ff1a3a", emissiveIntensity: 0.45 }));
       body.rotation.x = Math.PI / 2;
       g.add(body);
+      // White band and four tail fins so it reads as a missile, not a tube.
+      const band = new Mesh(new CylinderGeometry(0.31, 0.31, 0.3, 12), new MeshStandardMaterial({ color: "#ffffff", roughness: 0.4, emissive: "#ffffff", emissiveIntensity: 0.3 }));
+      band.rotation.x = Math.PI / 2;
+      band.position.z = -0.35;
+      g.add(band);
+      for (let k = 0; k < 4; k++) {
+        const fin = new Mesh(new BoxGeometry(0.05, 0.75, 0.5), new MeshStandardMaterial({ color: "#ffd166", roughness: 0.4, emissive: "#ff9a2e", emissiveIntensity: 0.4 }));
+        fin.position.set(Math.cos((k * Math.PI) / 2) * 0.38, Math.sin((k * Math.PI) / 2) * 0.38, 0.75);
+        fin.rotation.z = (k * Math.PI) / 2;
+        g.add(fin);
+      }
       const nose = new Mesh(new ConeGeometry(0.28, 0.7, 12), this.glow("#ff2a4a", 2));
       nose.rotation.x = -Math.PI / 2;
       nose.position.z = -1.2;
@@ -1593,8 +1654,9 @@ export class RaceScene {
     const cupProfile = [
       [0, 0], [0.55, 0], [0.55, 0.12], [0.18, 0.22], [0.14, 0.7], [0.5, 0.9], [0.72, 1.5], [0.66, 1.52], [0.44, 0.98], [0, 0.9],
     ].map(([x, y]) => new Vector2(x!, y!));
-    const trophy = new Mesh(new LatheGeometry(cupProfile, 32), new MeshStandardMaterial({ color: "#ffd24a", metalness: 1, roughness: 0.15, emissive: "#ff9a00", emissiveIntensity: 0.35 }));
-    trophy.position.set(xs[0]!, heights[0]! + 3.3, 0);
+    const trophy = new Mesh(new LatheGeometry(cupProfile, 32), new MeshStandardMaterial({ color: "#ffd24a", metalness: 0.6, roughness: 0.25, emissive: "#ffb21a", emissiveIntensity: 0.9 }));
+    trophy.position.set(xs[0]!, heights[0]! + 2.7, -0.3);
+    trophy.scale.setScalar(1.15);
     trophy.name = "trophy";
     g.add(trophy);
     g.position.copy(this.podiumAnchor);
@@ -1656,10 +1718,10 @@ export class RaceScene {
     // Confetti drifting down over the steps.
     if (!this.reduced) {
       const side = new Vector3(1, 0, 0).applyQuaternion(this.podium.quaternion);
-      for (let k = 0; k < 5; k++) {
-        const p = this.podiumAnchor.clone().addScaledVector(side, (Math.random() - 0.5) * 14).add(new Vector3(0, 9 + Math.random() * 3, (Math.random() - 0.5) * 6));
-        const v = new Vector3((Math.random() - 0.5) * 2, -2.5 - Math.random() * 2, (Math.random() - 0.5) * 2);
-        this.particles.emit(p, v, CONFETTI[Math.floor(Math.random() * CONFETTI.length)]!, 0.22, 3 + Math.random(), 0.3);
+      for (let k = 0; k < 14; k++) {
+        const p = this.podiumAnchor.clone().addScaledVector(side, (Math.random() - 0.5) * 18).add(new Vector3(0, 7 + Math.random() * 6, (Math.random() - 0.5) * 9));
+        const v = new Vector3((Math.random() - 0.5) * 3, -2 - Math.random() * 2.5, (Math.random() - 0.5) * 3);
+        this.particles.emit(p, v, CONFETTI[Math.floor(Math.random() * CONFETTI.length)]!, 0.32 + Math.random() * 0.14, 3 + Math.random() * 1.5, 0.3);
       }
     }
     if (!this.reduced && Math.random() < 0.25) {
@@ -1737,7 +1799,7 @@ export class RaceScene {
       const center = this.podiumAnchor.clone().add(new Vector3(0, 2.4, 0));
       const back = new Vector3(0, 0, 1).applyQuaternion(this.podium.quaternion);
       const side = new Vector3(1, 0, 0).applyQuaternion(this.podium.quaternion);
-      targetPos = center.clone().addScaledVector(back, 11 + Math.cos(a) * 1.2).addScaledVector(side, Math.sin(a) * 3.5).add(new Vector3(0, 4.2, 0));
+      targetPos = center.clone().addScaledVector(back, 8.6 + Math.cos(a) * 1.2).addScaledVector(side, Math.sin(a) * 4.5).add(new Vector3(0, 2.6, 0));
       targetLook = center.clone().add(new Vector3(0, -0.6, 0));
       targetUp = UP;
       rate = this.podiumSnap ? 1000 : 4;
@@ -1765,7 +1827,9 @@ export class RaceScene {
       rate = p < 0.05 ? 1000 : 10;
     } else if (rt.phase === "countdown") {
       rate = 10;
-    } else if (rt.phase === "finished" || rt.phase === "results" || rt.phase === "podium") {
+    } else if ((rt.phase === "finished" && !(rt.me?.out && r !== rt.me)) || rt.phase === "results" || rt.phase === "podium") {
+      // (Knocked out and watching someone still racing: keep the chase camera on them; the slow
+      // orbit can't keep up with a ship at full speed.)
       const a = this.time * 0.35;
       const orbit = new Vector3(Math.cos(a) * 9, 0, Math.sin(a) * 9);
       targetPos = new Vector3().copy(pos).add(orbit.applyQuaternion(new Quaternion().setFromUnitVectors(UP, f.up))).addScaledVector(f.up, 3.2);
@@ -1838,7 +1902,11 @@ export class RaceScene {
     const focus = this.rt.focus;
     for (const view of this.ships.values()) {
       const r = view.racer;
-      if (r === focus) continue;
+      if (r === focus) {
+        // Still reported, so the HUD hides a tag left over from before we started watching this ship.
+        out.push({ idx: r.idx, x: 0, y: 0, visible: false, dist: 0 });
+        continue;
+      }
       const p = view.model.root.position.clone().addScaledVector(r.ship.frame.up, 2.6);
       const dist = p.distanceTo(this.camera.position);
       const ndc = p.clone().project(this.camera);

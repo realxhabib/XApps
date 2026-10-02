@@ -4,171 +4,259 @@
  "sfx": {
   "countdown": {
    "start": 0.02506,
-   "dur": 0.9761451247165533
+   "dur": 0.65923
   },
   "go": {
-   "start": 1.2512,
-   "dur": 1.1962358276643992
+   "start": 0.88429,
+   "dur": 0.7519
   },
   "rocketStart": {
-   "start": 2.69744,
-   "dur": 0.8293877551020409
+   "start": 1.83619,
+   "dur": 1.01104
   },
   "stall": {
-   "start": 3.77683,
-   "dur": 1.0550113378684807
+   "start": 3.04723,
+   "dur": 0.97887
   },
   "boost": {
-   "start": 5.08184,
-   "dur": 0.7681179138321995
+   "start": 4.2261,
+   "dur": 0.81671
   },
   "boostPad": {
-   "start": 6.09995,
-   "dur": 0.6911111111111111
+   "start": 5.24281,
+   "dur": 0.6363
   },
   "miniTurbo1": {
-   "start": 7.04107,
-   "dur": 0.7172335600907029
+   "start": 6.07912,
+   "dur": 0.61324
   },
   "miniTurbo2": {
-   "start": 8.0083,
-   "dur": 0.8462585034013606
+   "start": 6.89236,
+   "dur": 0.66107
   },
   "miniTurbo3": {
-   "start": 9.10456,
-   "dur": 1.0225396825396826
+   "start": 7.75342,
+   "dur": 0.87601
   },
   "driftStart": {
-   "start": 10.3771,
-   "dur": 0.25405895691609975
+   "start": 8.82943,
+   "dur": 0.42989
   },
   "itemBox": {
-   "start": 10.88116,
-   "dur": 0.9901133786848073
+   "start": 9.45932,
+   "dur": 0.73787
   },
   "roulette": {
-   "start": 12.12127,
-   "dur": 1.3533106575963718
+   "start": 10.39719,
+   "dur": 1.08751
   },
   "rouletteStop": {
-   "start": 13.72458,
-   "dur": 1.0751020408163265
+   "start": 11.68469,
+   "dur": 0.93712
   },
   "fire": {
-   "start": 15.04968,
-   "dur": 0.5336507936507937
+   "start": 12.82181,
+   "dur": 0.67129
   },
   "missile": {
-   "start": 15.83333,
-   "dur": 0.9803401360544218
+   "start": 13.69311,
+   "dur": 1.1483
   },
   "mineDrop": {
-   "start": 17.06367,
-   "dur": 0.5472108843537415
+   "start": 15.04141,
+   "dur": 0.49299
   },
   "shieldUp": {
-   "start": 17.86088,
-   "dur": 1.0121315192743763
+   "start": 15.7344,
+   "dur": 0.90819
   },
   "shieldPop": {
-   "start": 19.12302,
-   "dur": 0.5295238095238095
+   "start": 16.84259,
+   "dur": 0.34179
   },
   "explosion": {
-   "start": 19.90254,
-   "dur": 1.261201814058957
+   "start": 17.38438,
+   "dur": 1.77175
   },
   "spinout": {
-   "start": 21.41374,
-   "dur": 0.8065759637188209
+   "start": 19.35612,
+   "dur": 0.73764
   },
   "empZap": {
-   "start": 22.47032,
-   "dur": 0.59
+   "start": 20.29376,
+   "dur": 1.17286
   },
   "singularity": {
-   "start": 23.31032,
-   "dur": 1.5539909297052155
+   "start": 21.66662,
+   "dur": 1.76351
   },
   "warp": {
-   "start": 25.11431,
-   "dur": 1.4897052154195012
+   "start": 23.63014,
+   "dur": 1.33626
   },
   "cloak": {
-   "start": 26.85401,
-   "dur": 1.0007482993197279
+   "start": 25.16639,
+   "dur": 1.00143
   },
   "wallHit": {
-   "start": 28.10476,
-   "dur": 0.6435147392290249
+   "start": 26.36782,
+   "dur": 0.50791
   },
   "bump": {
-   "start": 28.99828,
-   "dur": 0.5190022675736962
+   "start": 27.07574,
+   "dur": 0.57537
   },
   "land": {
-   "start": 29.76728,
-   "dur": 0.6278231292517007
+   "start": 27.85111,
+   "dur": 0.69279
   },
   "trick": {
-   "start": 30.6451,
-   "dur": 0.8401360544217688
+   "start": 28.7439,
+   "dur": 0.68898
   },
   "coin": {
-   "start": 31.73524,
-   "dur": 0.9450113378684808
+   "start": 29.63288,
+   "dur": 0.57723
   },
   "jump": {
-   "start": 32.93025,
-   "dur": 0.5321088435374149
+   "start": 30.41011,
+   "dur": 0.44939
   },
   "fall": {
-   "start": 33.71236,
-   "dur": 0.9899546485260771
+   "start": 31.0595,
+   "dur": 0.88628
   },
   "respawn": {
-   "start": 34.95231,
-   "dur": 1.1071428571428572
+   "start": 32.14578,
+   "dur": 1.51923
   },
   "lap": {
-   "start": 36.30946,
-   "dur": 0.9834013605442177
+   "start": 33.86501,
+   "dur": 0.94644
   },
   "finalLap": {
-   "start": 37.54286,
-   "dur": 2.2110657596371883
+   "start": 35.01145,
+   "dur": 5.2202
   },
   "finish": {
-   "start": 40.00392,
-   "dur": 2.273219954648526
+   "start": 40.43166,
+   "dur": 1.47313
   },
   "win": {
-   "start": 42.52714,
-   "dur": 2.551496598639456
+   "start": 42.10478,
+   "dur": 1.60018
   },
   "lose": {
-   "start": 45.32864,
-   "dur": 2.1115419501133785
+   "start": 43.90497,
+   "dur": 1.29925
+  },
+  "podium": {
+   "start": 45.40422,
+   "dur": 1.54354
   },
   "positionUp": {
-   "start": 47.69018,
-   "dur": 0.5984353741496599
+   "start": 47.14776,
+   "dur": 0.60463
   },
   "positionDown": {
-   "start": 48.53862,
-   "dur": 0.25587301587301586
+   "start": 47.95238,
+   "dur": 0.27444
   },
   "select": {
-   "start": 49.04449,
-   "dur": 0.45292517006802724
+   "start": 48.42683,
+   "dur": 0.33744
   },
   "click": {
-   "start": 49.74741,
-   "dur": 0.04972789115646259
+   "start": 48.96426,
+   "dur": 0.03145
   },
   "whoosh": {
-   "start": 50.04714,
-   "dur": 0.31802721088435376
+   "start": 49.19571,
+   "dur": 0.53741
+  }
+ },
+ "voice": {
+  "three": {
+   "start": 49.93313,
+   "dur": 0.96304
+  },
+  "two": {
+   "start": 51.09617,
+   "dur": 0.89497
+  },
+  "one": {
+   "start": 52.19113,
+   "dur": 0.83424
+  },
+  "go": {
+   "start": 53.22537,
+   "dur": 0.99834
+  },
+  "finalLap": {
+   "start": 54.42372,
+   "dur": 1.45417
+  },
+  "finish": {
+   "start": 56.07789,
+   "dur": 1.62125
+  },
+  "first": {
+   "start": 57.89914,
+   "dur": 1.15744
+  },
+  "podium": {
+   "start": 59.25658,
+   "dur": 1.39728
+  },
+  "lose": {
+   "start": 60.85385,
+   "dur": 1.55848
+  },
+  "newRecord": {
+   "start": 62.61234,
+   "dur": 1.46256
+  },
+  "itemHit": {
+   "start": 64.2749,
+   "dur": 1.57907
+  },
+  "rocketStart": {
+   "start": 66.05397,
+   "dur": 1.59537
+  },
+  "ultraTurbo": {
+   "start": 67.84934,
+   "dur": 1.13773
+  },
+  "lookOut": {
+   "start": 69.18707,
+   "dur": 1.08465
+  },
+  "out": {
+   "start": 70.47172,
+   "dur": 1.53937
+  },
+  "timeOver": {
+   "start": 72.21109,
+   "dur": 1.49488
+  },
+  "hurryUp": {
+   "start": 73.90596,
+   "dur": 1.08229
+  }
+ },
+ "engine": {
+  "core": {
+   "start": 75.23825,
+   "dur": 3
+  },
+  "rumble": {
+   "start": 78.53825,
+   "dur": 3
+  },
+  "boost": {
+   "start": 81.83825,
+   "dur": 2.5
   }
  },
  "music": {
@@ -176,96 +264,96 @@
    "normal": {
     "file": "music-mars.mp3",
     "loopStart": 0.03456,
-    "loopEnd": 48.03456
+    "loopEnd": 120.03528
    },
    "final": {
     "file": "music-mars-final.mp3",
     "loopStart": 0.03456,
-    "loopEnd": 44.479
+    "loopEnd": 111.12172
    }
   },
   "belt": {
    "normal": {
     "file": "music-belt.mp3",
     "loopStart": 0.03456,
-    "loopEnd": 51.23456
+    "loopEnd": 128.03456
    },
    "final": {
     "file": "music-belt-final.mp3",
     "loopStart": 0.03456,
-    "loopEnd": 47.44195
+    "loopEnd": 117.36789
    }
   },
   "saturn": {
    "normal": {
     "file": "music-saturn.mp3",
     "loopStart": 0.03456,
-    "loopEnd": 54.11905
+    "loopEnd": 96.03456
    },
    "final": {
     "file": "music-saturn-final.mp3",
     "loopStart": 0.03456,
-    "loopEnd": 50.11279
+    "loopEnd": 87.80599
    }
   },
   "nebula": {
    "normal": {
     "file": "music-nebula.mp3",
     "loopStart": 0.03456,
-    "loopEnd": 51.23456
+    "loopEnd": 89.17887
    },
    "final": {
     "file": "music-nebula-final.mp3",
     "loopStart": 0.03456,
-    "loopEnd": 47.44195
+    "loopEnd": 80.55265
    }
   },
   "luna": {
    "normal": {
     "file": "music-luna.mp3",
     "loopStart": 0.03456,
-    "loopEnd": 45.74884
+    "loopEnd": 116.39846
    },
    "final": {
     "file": "music-luna-final.mp3",
     "loopStart": 0.03456,
-    "loopEnd": 42.36259
+    "loopEnd": 106.70122
    }
   },
   "sun": {
    "normal": {
     "file": "music-sun.mp3",
     "loopStart": 0.03456,
-    "loopEnd": 44.68571
+    "loopEnd": 85.85551
    },
    "final": {
     "file": "music-sun-final.mp3",
-    "loopStart": 0.03447,
-    "loopEnd": 41.37814
+    "loopStart": 0.03456,
+    "loopEnd": 78.70376
    }
   },
   "europa": {
    "normal": {
     "file": "music-europa.mp3",
     "loopStart": 0.03456,
-    "loopEnd": 54.8917
+    "loopEnd": 102.89315
    },
    "final": {
     "file": "music-europa-final.mp3",
     "loopStart": 0.03456,
-    "loopEnd": 50.82821
+    "loopEnd": 92.9405
    }
   },
   "menu": {
    "normal": {
     "file": "music-menu.mp3",
     "loopStart": 0.03456,
-    "loopEnd": 71.14567
+    "loopEnd": 116.39846
    },
    "final": {
-    "file": "music-menu-final.mp3",
+    "file": "music-menu.mp3",
     "loopStart": 0.03456,
-    "loopEnd": 65.87819
+    "loopEnd": 116.39846
    }
   }
  }

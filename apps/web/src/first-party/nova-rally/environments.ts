@@ -2400,6 +2400,7 @@ function findSite(ctx: Ctx, t: Terrain, seed: number, minEdge: number, maxEdge: 
 
 function addSupports(ctx: Ctx, every: number, color: Color, metal: Color): void {
   const o = ctx.outline;
+  if (o.lightLane) return; // Hard light needs no pylons: keep the space under the lane empty.
   const r = rng(99);
   const struts: { p: Vector3; q: Quaternion; len: number }[] = [];
   const nodes: Vector3[] = [];
